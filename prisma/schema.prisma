@@ -1,0 +1,132 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "sqlite"
+  url      = env("DATABASE_URL")
+}
+
+// ============================================================
+// 小说管理系统 数据模型
+// ============================================================
+
+// 书籍（主关键词 = 书名，书信息页即主关键词落地页）
+model Book {
+  id              String    @id @default(cuid())
+  title           String // 书名（主关键词）
+  author          String    @default("")
+  category        String    @default("") // 智能匹配后的分类
+  categoryScore   Float     @default(0) // 智能匹配置信度
+  keywords        String    @default("") // 采集到的关键词，逗号分隔
+  suggestKeywords String    @default("") // 多搜索引擎下拉词，逗号分隔（辅助标签/关联词）
+  intro           String    @default("")
+  coverUrl        String    @default("") // 原始封面地址
+  coverLocal      String    @default("") // 本地 webp 文件名（storage/covers/）
+  status          String    @default("连载") // 连载 | 完结
+  statusConfidence Float   @default(0) // 完结判断置信度 0~1
+  statusSource    String    @default("") // 判断依据说明
+  latestChapter   String    @default("")
+  totalChapters   Int       @default(0)
+  sourceUrl       String    @default("") // 书籍信息页地址（主关键词落地页）
+  sourceName      String    @default("") // 来源站名称
+  createdAt       DateTime  @default(now())
+  updatedAt       DateTime  @updatedAt
+  chapters        Chapter[]
+
+  @@unique([sourceUrl, title])
+  @@index([title])
+}
+
+// 章节
+model Chapter {
+  id           String  @id @default(cuid())
+  bookId       String
+  book         Book    @relation(fields: [bookId], references: [id], onDelete: Cascade)
+  title        String
+  order        Int     @default(0) // 乱序重排后的顺序号
+  url          String  @default("")
+  content      String  @default("") // db 模式：清洗后的正文
+  contentLocal String  @default("") // txt 模式：文件相对路径
+  wordCount    Int     @default(0)
+  collected    Boolean @default(false)
+  createdAt    DateTime @default(now())
+
+  @@unique([bookId, url])
+  @@index([bookId, order])
+}
+
+// 采集规则：list 列表页 | book 书籍信息页 | toc 章节目录页 | content 章节内容页
+model CollectRule {
+  id        String   @id @default(cuid())
+  name      String
+  type      String // list | book | toc | content
+  enabled   Boolean  @default(true)
+  config    String   @default("{}") // 规则配置 JSON（css/regex/xpath 选择器、分页、去重、重排等）
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+}
+
+// 采集任务（可编辑 / 立即执行 / 暂停 / 停止，线程与间隔均为随机范围）
+model CollectTask {
+  id            String   @id @default(cuid())
+  name          String
+  targetType    String   @default("single") // single 单本 | range 范围(列表分页区间)
+  listRuleId    String? // 范围采集所需的列表页规则
+  bookRuleId    String?
+  tocRuleId     String?
+  contentRuleId String?
+  targetUrls    String   @default("[]") // 单本模式：书籍信息页 URL 数组 JSON
+  urlTemplate   String   @default("") // 范围模式：列表页 URL 模板，{page} 占位
+  pageStart     Int      @default(1)
+  pageEnd       Int      @default(1)
+  mode          String   @default("incremental") // full 完全重采集 | incremental 增量更新
+  storageMode   String   @default("db") // db 写库 | txt 生成文件 | both 两者
+  txtDir        String   @default("") // txt 存储目录（空则默认 storage/novels）
+  threadMin     Int      @default(1)
+  threadMax     Int      @default(3)
+  intervalMin   Int      @default(500) // 毫秒
+  intervalMax   Int      @default(2000)
+  status        String   @default("pending") // pending|running|paused|stopping|stopped|done|failed
+  stage         String   @default("") // 当前阶段：列表解析/书籍采集/目录采集/内容采集
+  progress      Int      @default(0) // 0~100
+  total         Int      @default(0)
+  stats         String   @default("{}") // {books,booksNew,chapters,chaptersNew,contents,errors}
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+}
+
+// 任务日志
+model TaskLog {
+  id        String   @id @default(cuid())
+  taskId    String
+  level     String   @default("info") // info | warn | error | success
+  message   String
+  createdAt DateTime @default(now())
+
+  @@index([taskId, createdAt])
+}
+
+// 站群配置：一套后台+数据库+本地文件，按域名/站名/主题/TDK/偏移量派生多站
+model SiteConfig {
+  id          String   @id @default(cuid())
+  domain      String   @default("")
+  siteName    String
+  themeId     String   @default("classic")
+  title       String   @default("") // TDK - T
+  description String   @default("") // TDK - D
+  keywords    String   @default("") // TDK - K
+  offset      Int      @default(0) // 列表偏移量：不同站点展示不同排序起点
+  mainBookId  String   @default("") // 绑定的主书籍（主关键词）
+  footerText  String   @default("")
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+}
+
+// 系统级配置（单行）：内容清洗规则 + 下载注入配置
+model SystemConfig {
+  id        String   @id @default("main")
+  cleaning  String   @default("{}")
+  download  String   @default("{}")
+  updatedAt DateTime @updatedAt
+}

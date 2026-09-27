@@ -1,0 +1,12 @@
+node_modules
+.next
+.git
+dev.log
+server.log
+storage
+download
+*.md
+!README.md
+tests
+examples
+.env.local
