@@ -3,6 +3,8 @@
 // 用于书籍辅助标签与关联词，独立关键词页均指向主书籍信息页
 // ============================================================
 
+import { randomUA } from './fetcher'
+
 export interface SuggestSourceResult {
   source: string
   keywords: string[]
@@ -14,8 +16,7 @@ const TIMEOUT = 4500
 async function fetchJson(url: string): Promise<unknown> {
   const res = await fetch(url, {
     headers: {
-      'User-Agent':
-        'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
+      'User-Agent': randomUA(),
       Accept: 'application/json, text/plain, */*',
       Referer: new URL(url).origin,
     },

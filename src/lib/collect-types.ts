@@ -48,6 +48,21 @@ export interface FetchConfig {
   timeout?: number // ms
   rotateUA?: boolean // UA 轮换，默认 true
   referer?: string
+  /** 同域请求最小间隔 ms（全局节流，默认 1200；0 = 不节流） */
+  throttleGap?: number
+  /**
+   * JS 渲染翻页交互（仅 playwright 策略生效）：
+   * 适用于分页参数加密/URL 不变的站点（如下拉页码、按钮翻页），
+   * 逐项点击后抓取页面快照并以分隔符拼接
+   */
+  jsPages?: {
+    enabled: boolean
+    itemsSelector: string // 分页项选择器，每个元素对应一页（如 '.dropDown li[data-p]'）
+    triggerSelector?: string // 每次选择分页项前先点击的展开控件（如下拉按钮 '.selBox .btn'）
+    skipFirst?: boolean // 跳过第一项（首屏已是第一页），默认 false
+    waitAfterClick?: number // 点击后等待渲染 ms，默认 1200
+    maxPages?: number // 安全上限，默认 30
+  }
 }
 
 /** 列表页规则 */
@@ -67,6 +82,7 @@ export interface BookRuleConfig extends FetchConfig {
     cover?: FieldSelector
     status?: FieldSelector
     latestChapter?: FieldSelector
+    tocLink?: FieldSelector // 目录页链接（书籍页与目录页分离的站点配置；默认书籍页即目录页）
   }
   smartCategory?: boolean // 智能匹配分类
   smartCompletion?: boolean // 智能判断完结

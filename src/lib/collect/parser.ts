@@ -94,12 +94,26 @@ interface SelectorOpts {
 }
 
 /** 单一选择器提取（支持 css/regex/xpath） */
+const URL_ATTRS = new Set([
+  'href', 'src', 'data-src', 'data-original', 'data-url', 'data-lazy-src',
+  'data-lazyload', 'data-srcset', 'poster', 'action', 'cite', 'icon', 'manifest', 'longdesc', 'srcset',
+])
+
 export function selectValue(html: string, sel: FieldSelector, opts: SelectorOpts = {}): string | string[] {
   if (!sel || !sel.expr) return sel?.multiple ? [] : ''
   const trim = sel.trim !== false
+  // attr 明确为 URL 语义属性时总是尝试相对→绝对解析；其他属性（如 content/text）仅在值形如链接时解析
+  const urlSemantics = sel.attr !== undefined && URL_ATTRS.has(sel.attr)
   const finish = (v: string) => {
     let out = trim ? v.trim() : v
-    if (opts.baseUrl && (out.startsWith('http') || out.startsWith('/'))) out = resolveUrl(out, opts.baseUrl)
+    if (opts.baseUrl && out) {
+      const looksUrl = /^(https?:\/\/|\/\/|\/)/i.test(out)
+      if (urlSemantics) {
+        if (!/^(data|javascript|mailto|tel):/i.test(out)) out = resolveUrl(out, opts.baseUrl)
+      } else if (looksUrl) {
+        out = resolveUrl(out, opts.baseUrl)
+      }
+    }
     return out
   }
 

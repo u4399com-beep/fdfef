@@ -1,13 +1,14 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { db } from '@/lib/db'
+import { taskManager } from '@/lib/collect/task-manager'
 
 export const runtime = 'nodejs'
 export const dynamic = 'force-dynamic'
 
-/** 任务列表（带实时状态修正：重启后残留的 running 标记改为 stopped） */
+/** 任务列表（带实时状态修正：仅当运行时不存在时才将残留的 running 标记改为 stopped，避免误杀正在执行的任务） */
 export async function GET() {
   const tasks = await db.collectTask.findMany({ orderBy: { updatedAt: 'desc' } })
-  const stale = tasks.filter((t) => t.status === 'running' || t.status === 'paused')
+  const stale = tasks.filter((t) => (t.status === 'running' || t.status === 'paused') && !taskManager.has(t.id))
   for (const t of stale) {
     await db.collectTask.update({
       where: { id: t.id },

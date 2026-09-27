@@ -14,7 +14,7 @@ import { parseContentHtml, parseFields, parseListEntries, resolveUrl, selectValu
 import { cleanContent } from './cleaner'
 import { detectCompletion, extractChapterNumber, smartMatchCategory } from './matcher'
 import { fetchSuggestKeywords, mergeSuggestKeywords } from './suggest'
-import { downloadCoverAsWebp, hashText, readChapterTxt, saveChapterTxt } from './storage'
+import { downloadCoverAsWebp, hashText, saveChapterTxt } from './storage'
 import { runRandomPool, taskLog } from './task-manager'
 import { fetchPaginated } from './paginated'
 
@@ -191,11 +191,11 @@ async function collectBookInfo(
   let coverUrl = parsed.cover ?? ''
   if (coverUrl) coverUrl = resolveUrl(coverUrl, res.finalUrl)
 
-  // 目录页地址（默认书籍页本身）
+  // 目录页地址（默认书籍页本身，字段 tocLink 可指定目录页链接）
   let tocUrl = res.finalUrl
-  const tocLinkSel = (fields as Record<string, unknown>).tocLink as never
-  if (tocLinkSel && (tocLinkSel as { expr?: string }).expr) {
-    const toc = String(selectValue(res.html, { ...(tocLinkSel as object), multiple: false } as never, { $: undefined, baseUrl: res.finalUrl }) || '')
+  const tocLinkSel = fields.tocLink
+  if (tocLinkSel?.expr) {
+    const toc = String(selectValue(res.html, { ...tocLinkSel, multiple: false }, { baseUrl: res.finalUrl }) || '')
     if (toc) tocUrl = resolveUrl(toc, res.finalUrl)
   }
 
@@ -302,16 +302,21 @@ export async function executeTask(taskId: string): Promise<void> {
       },
       process: async (bookUrl) => {
         try {
-          // ---- 书籍信息 ----
-          const info = await collectBookInfo(bookUrl, bookCfg, {
+          // ---- 书籍信息（失败重试，跨过 WAF 冷却期） ----
+          const infoOpts = {
             smartCategory: bookCfg.smartCategory ?? true,
             smartCompletion: bookCfg.smartCompletion ?? true,
             fetchSuggest: bookCfg.fetchSuggest ?? false,
             downloadCover: bookCfg.downloadCover ?? true,
-          })
+          }
+          let info = await collectBookInfo(bookUrl, bookCfg, infoOpts)
+          if (!info) {
+            await sleep(randomInt(task.intervalMin, task.intervalMax) + 150_000)
+            info = await collectBookInfo(bookUrl, bookCfg, infoOpts)
+          }
           if (!info) {
             stats.errors++
-            await taskLog(taskId, 'warn', `书籍字段解析失败（title 为空）：${bookUrl}`)
+            await taskLog(taskId, 'warn', `书籍字段解析失败（title 为空，可能被目标站拦截）：${bookUrl}`)
             return
           }
 
@@ -378,17 +383,19 @@ export async function executeTask(taskId: string): Promise<void> {
             await taskLog(taskId, 'success', `新增书籍《${info.title}》${info.author ? ` / ${info.author}` : ''} [${info.category}]`)
           }
 
-          // ---- 封面下载 webp ----
+          // ---- 封面下载 webp（阶段间隔限频） ----
+          await sleep(randomInt(task.intervalMin, task.intervalMax))
           if ((bookCfg.downloadCover ?? true) && info.coverUrl) {
             try {
-              const fileName = await downloadCoverAsWebp(info.coverUrl, bookId, info.finalUrl)
+              const fileName = await downloadCoverAsWebp(info.coverUrl, bookId, info.finalUrl, bookCfg.headers?.['User-Agent'])
               await db.book.update({ where: { id: bookId }, data: { coverLocal: fileName } })
             } catch (e) {
               await taskLog(taskId, 'warn', `封面下载失败《${info.title}》：${e instanceof Error ? e.message : String(e)}`)
             }
           }
 
-          // ---- 章节目录 ----
+          // ---- 章节目录（阶段间隔限频） ----
+          await sleep(randomInt(task.intervalMin, task.intervalMax))
           const toc = await collectTocEntries(info.tocUrl, tocCfg)
           if (toc.entries.length === 0) {
             await taskLog(taskId, 'warn', `目录解析为空《${info.title}》：${info.tocUrl}`)
@@ -434,7 +441,15 @@ export async function executeTask(taskId: string): Promise<void> {
           const chapters = await db.chapter.findMany({ where: { bookId }, orderBy: { order: 'asc' } })
           const todo = task.mode === 'full' ? chapters : chapters.filter((c) => !c.collected)
           if (todo.length === 0) {
-            await taskLog(taskId, 'info', `《${info.title}》正文无需更新（增量模式）`)
+            await taskLog(
+              taskId,
+              'info',
+              chapters.length === 0
+                ? `《${info.title}》无章节可采集（目录为空）`
+                : task.mode === 'full'
+                  ? `《${info.title}》正文无需更新`
+                  : `《${info.title}》正文无需更新（增量模式，均已采集）`
+            )
             return
           }
           let contentDone = 0
@@ -472,10 +487,6 @@ export async function executeTask(taskId: string): Promise<void> {
                 if (contentDone % 20 === 0) {
                   await taskLog(taskId, 'info', `《${info.title}》正文进度 ${contentDone}/${todo.length}`)
                 }
-                if (task.storageMode === 'db') {
-                  // db 模式下写完即释放内存引用
-                  void readChapterTxt
-                }
               } catch (e) {
                 stats.errors++
                 await taskLog(taskId, 'error', `正文采集失败《${info.title}》${chapter.title}：${e instanceof Error ? e.message : String(e)}`)
@@ -489,7 +500,7 @@ export async function executeTask(taskId: string): Promise<void> {
       },
     })
 
-    const finalStatus = stats.errors > 0 && stats.books === 0 ? 'failed' : 'done'
+    const finalStatus = stats.books === 0 && stats.errors > 0 ? 'failed' : 'done'
     await db.collectTask.update({
       where: { id: taskId },
       data: {
@@ -510,8 +521,6 @@ export async function executeTask(taskId: string): Promise<void> {
       data: { status: 'failed', stage: '失败', stats: JSON.stringify(stats) },
     })
     await taskLog(taskId, 'error', `任务失败：${e instanceof Error ? e.message : String(e)}`)
-  } finally {
-    void task
   }
 }
 

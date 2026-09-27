@@ -38,29 +38,23 @@ export async function saveChapterTxt(
 }
 
 export async function readChapterTxt(relPath: string): Promise<string> {
-  const full = path.join(NOVELS_DIR, relPath)
-  if (!full.startsWith(NOVELS_DIR)) throw new Error('非法路径')
-  return fs.readFile(full, 'utf-8')
-}
-
-export async function fileExists(relPath: string): Promise<boolean> {
-  try {
-    await fs.access(path.join(NOVELS_DIR, relPath))
-    return true
-  } catch {
-    return false
+  const full = path.resolve(NOVELS_DIR, relPath)
+  if (full !== NOVELS_DIR && !full.startsWith(NOVELS_DIR + path.sep)) {
+    throw new Error('非法路径')
   }
+  return fs.readFile(full, 'utf-8')
 }
 
 /** 封面下载并转换为 webp，返回文件名 */
 export async function downloadCoverAsWebp(
   coverUrl: string,
   bookId: string,
-  referer?: string
+  referer?: string,
+  ua?: string
 ): Promise<string> {
   const { fetchImage } = await import('./fetcher')
   const sharp = (await import('sharp')).default
-  const buffer = await fetchImage(coverUrl, referer)
+  const buffer = await fetchImage(coverUrl, referer, 20000, ua)
   const fileName = `${bookId}.webp`
   await fs.mkdir(COVERS_DIR, { recursive: true })
   await sharp(buffer)

@@ -86,23 +86,23 @@ export function cleanContent(
 
   const kept: string[] = []
   for (const line of lines) {
-    let keep = true
+    // 广告清洗：循环应用全部命中规则（先剔除 URL，再剔除站点话术，直至整行清除）
+    let cleaned = line
+    let matched = false
     for (const re of adRegexes) {
-      if (re.test(line)) {
-        // 整行广告：若广告匹配覆盖整行则丢弃，否则行内剔除
-        const cleaned = line.replace(new RegExp(re.source, 'g'), '').trim()
-        if (!isContentLine(cleaned) || cleaned.length < 4) {
-          keep = false
-        } else {
-          kept.push(cleaned)
-          keep = false
-          removed++
-        }
-        removed++
-        break
+      if (re.test(cleaned)) {
+        cleaned = cleaned.replace(new RegExp(re.source, 'g'), '').trim()
+        matched = true
       }
     }
-    if (!keep) continue
+    if (matched) {
+      removed++
+      // 剔除后剩余内容仍像正文则保留，否则整行丢弃
+      if (isContentLine(cleaned) && cleaned.length >= 4) {
+        kept.push(cleaned)
+      }
+      continue
+    }
     if (cfg.minParagraphLength > 0 && line.length < cfg.minParagraphLength) {
       removed++
       continue

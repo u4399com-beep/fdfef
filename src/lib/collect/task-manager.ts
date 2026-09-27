@@ -14,8 +14,15 @@ export interface TaskRuntime {
   processed: number
 }
 
-class TaskManagerImpl {
-  private runtimes = new Map<string, TaskRuntime>()
+// 状态数据挂 globalThis（跨热重载保留），类实例每次新建（类代码始终最新）
+const RUNTIME_STATE_KEY = '__novelTaskRuntimes'
+const globalForTaskManager = globalThis as unknown as { [RUNTIME_STATE_KEY]?: Map<string, TaskRuntime> }
+const runtimeStore: Map<string, TaskRuntime> =
+  globalForTaskManager[RUNTIME_STATE_KEY] ?? new Map()
+globalForTaskManager[RUNTIME_STATE_KEY] = runtimeStore
+
+export class TaskManagerImpl {
+  private runtimes = runtimeStore
 
   get(taskId: string): TaskRuntime | undefined {
     return this.runtimes.get(taskId)
@@ -33,6 +40,17 @@ class TaskManagerImpl {
     const rt: TaskRuntime = { taskId, status: 'running', startedAt: Date.now(), processed: 0 }
     this.runtimes.set(taskId, rt)
     return rt
+  }
+
+  /**
+   * 获取或创建 runtime（嵌套池复用同一 runtime）。
+   * 返回 owned=true 表示本次调用创建的 runtime（负责 remove）；
+   * owned=false 表示复用外层 runtime（绝不能 remove，否则外层暂停/停止将失效）。
+   */
+  ensure(taskId: string): { rt: TaskRuntime; owned: boolean } {
+    const existing = this.runtimes.get(taskId)
+    if (existing) return { rt: existing, owned: false }
+    return { rt: this.create(taskId), owned: true }
   }
 
   pause(taskId: string): boolean {
@@ -79,10 +97,8 @@ class TaskManagerImpl {
   }
 }
 
-const globalForTaskManager = globalThis as unknown as { __novelTaskManager?: TaskManagerImpl }
-export const taskManager: TaskManagerImpl =
-  globalForTaskManager.__novelTaskManager ?? new TaskManagerImpl()
-globalForTaskManager.__novelTaskManager = taskManager
+// 实例每次模块加载新建，共享 globalThis 状态
+export const taskManager = new TaskManagerImpl()
 
 // ============================================================
 // 随机线程池：线程数与间隔均在 [min, max] 随机取值
@@ -100,7 +116,8 @@ export interface PoolOptions<T> {
 }
 
 export async function runRandomPool<T>(opts: PoolOptions<T>): Promise<{ stopped: boolean; completed: number }> {
-  const rt = taskManager.create(opts.taskId)
+  // 嵌套池（书级池内嵌章节池）必须复用外层 runtime，否则暂停/停止控制会失效
+  const { rt, owned } = taskManager.ensure(opts.taskId)
   const total = opts.items.length
   let counter = 0
   let completed = 0
@@ -141,7 +158,7 @@ export async function runRandomPool<T>(opts: PoolOptions<T>): Promise<{ stopped:
 
   const threadCount = Math.max(1, randomInt(opts.threadMin, opts.threadMax))
   await Promise.all(Array.from({ length: threadCount }, () => worker(0)))
-  taskManager.remove(opts.taskId)
+  if (owned) taskManager.remove(opts.taskId)
   return { stopped, completed }
 }
 

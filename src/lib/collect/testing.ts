@@ -1,10 +1,9 @@
 import type { BookRuleConfig, ContentRuleConfig, FieldSelector, ListRuleConfig, RuleType, TocRuleConfig } from '../collect-types'
 import { mergeCleaning } from '../collect-types'
 import { fetchPage } from './fetcher'
-import { parseContentHtml, parseFields, parseListEntries } from './parser'
-import { cleanContent } from './cleaner'
+import { parseContentHtml, parseFields, parseListEntries, resolveUrl, selectValue } from './parser'
+import { cleanContent, cleanIntro } from './cleaner'
 import { detectCompletion, extractChapterNumber, smartMatchCategory } from './matcher'
-import { resolveUrl } from './parser'
 
 // ============================================================
 // 规则测试引擎：每个规则编写页面均带测试能力
@@ -50,8 +49,8 @@ async function testList(cfg: ListRuleConfig, url: string, started: number): Prom
   const entries = parseListEntries(res.html, cfg.items, res.finalUrl)
   let nextUrl: string | undefined
   if (cfg.pagination?.enabled && cfg.pagination.nextLink?.expr) {
-    const { selectValue } = await import('./parser')
     nextUrl = String(selectValue(res.html, { ...cfg.pagination.nextLink, multiple: false }, { baseUrl: res.finalUrl }) || '') || undefined
+    if (nextUrl === res.finalUrl) nextUrl = undefined
   }
   return {
     ok: true,
@@ -74,7 +73,6 @@ async function testBook(cfg: BookRuleConfig, url: string, started: number): Prom
   const title = parsed.title?.trim()
   if (!title) return { ok: false, message: '书名解析为空，请检查书名选择器', elapsedMs: Date.now() - started }
 
-  const { cleanIntro } = await import('./cleaner')
   const intro = parsed.intro ? cleanIntro(parsed.intro, mergeCleaning()) : ''
   const keywords = (parsed.keywords ?? '').split(/[,，、|\s]+/).filter(Boolean).slice(0, 12).join(',')
   const match = smartMatchCategory({
@@ -153,7 +151,7 @@ async function testToc(cfg: TocRuleConfig, url: string, started: number): Promis
     message: `解析成功：共 ${all.length} 章${scrambled ? `（检测到乱序 ${disorderCount} 处${cfg.reorder?.enabled ? '，已重排' : '，建议开启乱序重排'}）` : ''}，去重后 ${ordered.length} 章`,
     elapsedMs: Date.now() - started,
     data: {
-      strategy: res0(pages),
+      strategy: firstPageUrl(pages),
       pagesFetched: pages.length,
       total: all.length,
       dupRemoved: before - ordered.length,
@@ -165,7 +163,7 @@ async function testToc(cfg: TocRuleConfig, url: string, started: number): Promis
   }
 }
 
-function res0(pages: { url: string }[]): string {
+function firstPageUrl(pages: { url: string }[]): string {
   return pages[0]?.url ?? ''
 }
 
@@ -184,9 +182,8 @@ async function testContent(cfg: ContentRuleConfig, url: string, started: number)
       parts.push(cleaned.text)
     }
     if (!cfg.pagination?.enabled || !cfg.pagination.nextLink?.expr) break
-    const { selectValue } = await import('./parser')
     const next = String(selectValue(res.html, { ...cfg.pagination.nextLink, multiple: false }, { baseUrl: res.finalUrl }) || '')
-    if (!next || !/^https?:\/\//.test(next)) break
+    if (!next || !/^https?:\/\//.test(next) || next === res.finalUrl) break
     pageUrl = next
     pageCount++
   }
