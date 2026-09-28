@@ -301,6 +301,35 @@ function mergeCookieStrings(base: string, override: string): string {
   return [...map.entries()].map(([k, v]) => `${k}=${v}`).join('; ')
 }
 
+/**
+ * UA 轮换时同步重建 Client Hints 指纹。
+ * 只换 User-Agent 而保留旧 UA 的 sec-ch-ua 会造成自相矛盾的浏览器指纹（Firefox UA + Chrome Hints），
+ * 反而是比固定 UA 更显眼的爬虫特征。
+ */
+function rotateFingerprint(headers: Record<string, string>): Record<string, string> {
+  const ua = randomUA()
+  const out: Record<string, string> = { ...headers, 'User-Agent': ua }
+  const chromeVer = chromeMajorVersion(ua)
+  if (chromeVer) {
+    out['sec-ch-ua'] = `"Chromium";v="${chromeVer}", "Google Chrome";v="${chromeVer}", "Not-A.Brand";v="99"`
+    out['sec-ch-ua-mobile'] = /Mobile|Android|iPhone/.test(ua) ? '?1' : '?0'
+    out['sec-ch-ua-platform'] = /Windows/i.test(ua)
+      ? '"Windows"'
+      : /Macintosh/i.test(ua)
+        ? '"macOS"'
+        : /Android/i.test(ua)
+          ? '"Android"'
+          : /iPhone|iPad/i.test(ua)
+            ? '"iOS"'
+            : '"Linux"'
+  } else {
+    delete out['sec-ch-ua']
+    delete out['sec-ch-ua-mobile']
+    delete out['sec-ch-ua-platform']
+  }
+  return out
+}
+
 function buildHeaders(cfg: FetchConfig, url: string, uaOverride?: string): Record<string, string> {
   const ua = uaOverride ?? (cfg.rotateUA === false ? FIXED_UA : randomUA())
   const headers: Record<string, string> = {
@@ -335,14 +364,14 @@ function buildHeaders(cfg: FetchConfig, url: string, uaOverride?: string): Recor
       /* 非法 URL 已在入口拦 */
     }
   }
-  // 显式 cookies 与 jar 会话 cookie 合并（显式优先同名键）：
-  // WAF 解题后新入 jar 的通行 cookie 不再被旧显式 cookie 完全屏蔽
-  if (cfg.cookies) {
+  // 显式 cookies 与 jar 会话 cookie 合并：jar 同名键优先。
+  // WAF 通行 cookie 与 UA/会话绑定且会滚动更新，规则里保存的只是注册时刻的旧快照——
+  // 长期稳定采集必须让解题后新入 jar 的通行 cookie 覆盖旧快照，否则每次都要重新解题
+  {
     const jarCookie = cookieJar.header(url)
-    headers.Cookie = jarCookie ? mergeCookieStrings(jarCookie, cfg.cookies) : cfg.cookies
-  } else {
-    const jarCookie = cookieJar.header(url)
-    if (jarCookie) headers.Cookie = jarCookie
+    if (cfg.cookies && jarCookie) headers.Cookie = mergeCookieStrings(cfg.cookies, jarCookie)
+    else if (cfg.cookies) headers.Cookie = cfg.cookies
+    else if (jarCookie) headers.Cookie = jarCookie
   }
   if (cfg.headers) {
     // 兼容 UI 保存的 JSON 字符串形式（对象按原样合并，字符串则解析后再合并）
@@ -361,6 +390,101 @@ function buildHeaders(cfg: FetchConfig, url: string, uaOverride?: string): Recor
 
 /** 主入口：按策略抓取页面 */
 export async function fetchPage(url: string, cfg: FetchConfig = {}): Promise<FetchResult> {
+  if (!/^https?:\/\//i.test(url)) throw new Error(`非法 URL：${url}`)
+  // 镜像加速：主域名近期网络不可达时直接改写到可用镜像（域名轮换是小说站常态）
+  const mirrored = rerouteToMirror(url)
+  try {
+    return await fetchPageInner(mirrored.url, cfg)
+  } catch (e) {
+    if (!mirrored.swapped && isNetworkUnreachableError(e) && cfg.mirrorUrls?.length) {
+      let lastErr: unknown = e
+      for (const mirror of cfg.mirrorUrls) {
+        const alt = swapOrigin(url, mirror)
+        if (!alt || alt === mirrored.url) continue
+        try {
+          const r = await fetchPageInner(alt, cfg)
+          // 记忆可用镜像：后续请求跳过已死主域，直至冷却期结束复检
+          markMirrorAlive(url, alt)
+          return r
+        } catch (err) {
+          lastErr = err
+        }
+      }
+      throw lastErr instanceof Error ? lastErr : e
+    }
+    throw e
+  }
+}
+
+// ============================================================
+// 镜像域名轮换：主域网络级不可达（DNS 解析失败/连接拒绝/超时）时自动切换镜像源。
+// 状态挂 globalThis：originalHost → { mirrorOrigin, deadUntil }
+// ============================================================
+interface MirrorState {
+  active: Map<string, { mirrorOrigin: string; deadUntil: number }>
+}
+const MIRROR_STATE_KEY = '__novelMirrorState'
+const globalForMirror = globalThis as unknown as { [MIRROR_STATE_KEY]?: MirrorState }
+const mirrorState: MirrorState = globalForMirror[MIRROR_STATE_KEY] ?? { active: new Map() }
+globalForMirror[MIRROR_STATE_KEY] = mirrorState
+
+/** 主域死亡冷却期（期间请求直接走镜像，到期后复检主域） */
+const MIRROR_DEAD_MS = 10 * 60_000
+
+function rerouteToMirror(url: string): { url: string; swapped: boolean } {
+  try {
+    const u = new URL(url)
+    const rec = mirrorState.active.get(u.hostname)
+    if (!rec) return { url, swapped: false }
+    if (Date.now() < rec.deadUntil) {
+      const alt = swapOrigin(url, rec.mirrorOrigin)
+      if (alt && alt !== url) return { url: alt, swapped: true }
+    } else {
+      mirrorState.active.delete(u.hostname)
+    }
+  } catch {
+    /* ignore */
+  }
+  return { url, swapped: false }
+}
+
+function markMirrorAlive(originalUrl: string, mirrorUrl: string): void {
+  try {
+    const orig = new URL(originalUrl)
+    const mir = new URL(mirrorUrl)
+    if (orig.hostname === mir.hostname) return
+    mirrorState.active.set(orig.hostname, { mirrorOrigin: mir.origin, deadUntil: Date.now() + MIRROR_DEAD_MS })
+  } catch {
+    /* ignore */
+  }
+}
+
+/** 识别网络层不可达错误（区别于 WAF/HTTP 状态错误——后者换域名无意义） */
+export function isNetworkUnreachableError(e: unknown): boolean {
+  const msg = e instanceof Error ? e.message : String(e)
+  return (
+    /fetch failed|ENOTFOUND|EAI_AGAIN|ECONNREFUSED|ECONNRESET|ETIMEDOUT|EHOSTUNREACH|ENETUNREACH/i.test(msg) ||
+    /ERR_ADDRESS_UNREACHABLE|ERR_CONNECTION_(REFUSED|RESET|TIMED_OUT)|ERR_NAME_NOT_RESOLVED|ERR_NETWORK/i.test(msg) ||
+    /请求失败.*(timed?\s*out|abort|socket|terminated|unreachable)/i.test(msg) ||
+    /(operation was aborted|operation timed out|network error|connection (closed|terminated|error))/i.test(msg)
+  )
+}
+
+/** 保留路径与查询，替换协议+域名（mirror 传 origin 或完整 URL 均可） */
+export function swapOrigin(url: string, mirror: string): string | null {
+  try {
+    const u = new URL(url)
+    const m = new URL(mirror)
+    u.protocol = m.protocol
+    u.hostname = m.hostname
+    u.port = m.port
+    return u.href
+  } catch {
+    return null
+  }
+}
+
+async function fetchPageInner(url: string, cfg: FetchConfig): Promise<FetchResult> {
   if (!/^https?:\/\//i.test(url)) throw new Error(`非法 URL：${url}`)
   const strategy = cfg.strategy ?? 'http'
   const timeout = cfg.timeout ?? 20000
@@ -419,7 +543,7 @@ async function fetchWithRetry(
     try {
       // 每次重试轮换 UA（模拟多用户）；keepUA=true 时固定 UA（WAF 通行 cookie 与 UA 绑定，换 UA 即失效）
       const res = await fetch(url, {
-        headers: i === 0 || keepUA ? headers : { ...headers, 'User-Agent': randomUA() },
+        headers: i === 0 || keepUA ? headers : rotateFingerprint(headers),
         redirect: 'follow',
         signal: AbortSignal.timeout(timeout),
         cache: 'no-store',
@@ -468,6 +592,25 @@ const STEALTH_SCRIPT = `
   Object.defineProperty(navigator, 'languages', { get: () => ['zh-CN', 'zh', 'en-US'] });
   Object.defineProperty(navigator, 'plugins', { get: () => [1, 2, 3, 4, 5] });
   Object.defineProperty(navigator, 'hardwareConcurrency', { get: () => 8 });
+  Object.defineProperty(navigator, 'deviceMemory', { get: () => 8 });
+  Object.defineProperty(navigator, 'maxTouchPoints', { get: () => 0 });
+  // WebGL 指纹：真实显卡厂商/型号（默认 SwiftShader 是 headless 的显著特征）
+  try {
+    const getParameter = WebGLRenderingContext.prototype.getParameter;
+    WebGLRenderingContext.prototype.getParameter = function (param) {
+      if (param === 37445) return 'Intel Inc.';
+      if (param === 37446) return 'Intel Iris OpenGL Engine';
+      return getParameter.call(this, param);
+    };
+    if (window.WebGL2RenderingContext) {
+      const p2 = WebGL2RenderingContext.prototype.getParameter;
+      WebGL2RenderingContext.prototype.getParameter = function (param) {
+        if (param === 37445) return 'Intel Inc.';
+        if (param === 37446) return 'Intel Iris OpenGL Engine';
+        return p2.call(this, param);
+      };
+    }
+  } catch (e) {}
   const origQuery = window.navigator.permissions && window.navigator.permissions.query;
   if (origQuery) {
     window.navigator.permissions.query = (p) =>
@@ -528,12 +671,15 @@ async function fetchWithPlaywright(url: string, cfg: FetchConfig, timeout: numbe
   }
   const headers = buildHeaders(cfg, url)
   const jarCookie = cookieJar.header(url)
+  // Cookie 单独经 addCookies 注入（context 级会话），避免 extraHTTPHeaders 里的静态 Cookie 头
+  // 与浏览器 cookie 罐重复发送同名字段造成 WAF 判定异常
+  const { Cookie: _cookieHeader, ...extraHeaders } = headers
   const context = await browser.newContext({
     userAgent: headers['User-Agent'],
     viewport: { width: 1366, height: 850 },
     locale: 'zh-CN',
     timezoneId: 'Asia/Shanghai',
-    extraHTTPHeaders: headers,
+    extraHTTPHeaders: extraHeaders,
   })
   await context.addInitScript(STEALTH_SCRIPT)
 
@@ -640,16 +786,14 @@ async function collectJsPages(
     const wait = js.waitAfterClick ?? 1200
     const max = Math.min(js.maxPages ?? 30, 40)
     const startIdx = js.skipFirst ? 1 : 0
-    let trigger: PlaywrightElement | null = null
-    if (js.triggerSelector) {
-      trigger = await page.$(js.triggerSelector)
-    }
     for (let i = startIdx; snapshots.length < max; i++) {
-      // 每轮重新查询分页项：点击翻页后 DOM 常被重建，跨轮持有的 ElementHandle 会失效（stale element）
+      // 每轮重新查询分页项与展开控件：点击翻页后 DOM 常被重建，
+      // 跨轮持有的 ElementHandle 会失效（stale element）导致后续翻页静默失败
       const items = await page.$$(js.itemsSelector)
       if (i >= items.length) break
       try {
         // 下拉类控件需先展开再选目标项
+        const trigger = js.triggerSelector ? await page.$(js.triggerSelector) : null
         if (trigger) {
           await trigger.click({ timeout: 1500, force: true }).catch(() => undefined)
           await page.waitForTimeout(200)
@@ -791,6 +935,8 @@ interface HyperbrowserModule {
 }
 
 async function fetchWithHyperbrowser(url: string, cfg: FetchConfig, timeout: number, started: number): Promise<FetchResult> {
+  // 与 http/playwright 策略一致的同域节流：云端渲染请求同样受全局限频约束
+  await domainThrottle.wait(url, cfg.throttleGap)
   const spec = '@hyperbrowser/sdk'
   const mod = (await import(/* webpackIgnore: true */ spec).catch(() => null)) as HyperbrowserModule | null
   if (!mod) {
@@ -828,8 +974,10 @@ export async function fetchImage(url: string, referer?: string, timeout = 20000,
     Referer: referer || new URL(url).origin,
     Accept: 'image/avif,image/webp,image/apng,image/*,*/*;q=0.8',
   }
-  const jarCookie = cookies || cookieJar.header(url)
-  if (jarCookie) headers.Cookie = jarCookie
+  // 显式 cookies 与 jar 会话 cookie 合并（jar 同名优先，与 fetchPage 语义一致）
+  const jarCookie = cookieJar.header(url)
+  const mergedCookie = cookies && jarCookie ? mergeCookieStrings(cookies, jarCookie) : cookies || jarCookie
+  if (mergedCookie) headers.Cookie = mergedCookie
   const res = await fetchWithRetry(url, headers, timeout, 1, Boolean(ua))
   const buf = Buffer.from(await res.arrayBuffer())
   if (!res.ok || buf.length === 0) {

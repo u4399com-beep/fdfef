@@ -235,7 +235,10 @@ export async function executeTask(taskId: string): Promise<void> {
       await taskLog(taskId, 'info', `范围采集：模板 ${task.urlTemplate}，第 ${task.pageStart} ~ ${task.pageEnd} 页`)
       for (let p = task.pageStart; p <= task.pageEnd; p++) {
         const url = task.urlTemplate.replace('{page}', String(p))
-        const pages = await fetchPaginated(url, listCfg, listCfg.pagination, 20)
+        // 任务模板已定义分页区间，忽略规则自身的 pagination 配置：
+        // 否则规则的 template 分页（有自己的 startPage/endPage）会覆盖任务页码，
+        // 导致同一页被重复抓 N 遍（浪费请求且增加风控暴露面）
+        const pages = await fetchPaginated(url, listCfg, undefined, 20)
         for (const page of pages) {
           const entries = parseListEntries(page.html, listCfg.items, page.url)
           for (const e of entries) if (e.url && /^https?:\/\//.test(e.url)) bookUrls.push(e.url)
@@ -256,6 +259,14 @@ export async function executeTask(taskId: string): Promise<void> {
     const totalBooks = bookUrls.length
     await db.collectTask.update({ where: { id: taskId }, data: { total: totalBooks } })
     await taskLog(taskId, 'info', `共 ${totalBooks} 本待采集`)
+
+    // 来源站名称（取书籍页主机名，回填书籍 sourceName 供筛选/展示）
+    let sourceName = ''
+    try {
+      sourceName = new URL(bookUrls[0]).hostname
+    } catch {
+      /* ignore */
+    }
 
     const cleaningCfg = mergeCleaning()
     let doneBooks = 0
@@ -297,7 +308,10 @@ export async function executeTask(taskId: string): Promise<void> {
           })
           let bookId: string
           if (existing) {
-            const updateData: Record<string, string | number | undefined> = {}
+            const updateData: Record<string, string | number | undefined> = {
+              // 来源站仅首次写入，避免同书多源互覆盖
+              sourceName: existing.sourceName || sourceName,
+            }
             if (task.mode === 'full') {
               Object.assign(updateData, {
                 author: info.author,
@@ -347,6 +361,7 @@ export async function executeTask(taskId: string): Promise<void> {
                 statusSource: info.statusSource,
                 latestChapter: info.latestChapter,
                 sourceUrl: info.finalUrl,
+                sourceName,
               },
             })
             bookId = created.id
@@ -379,7 +394,6 @@ export async function executeTask(taskId: string): Promise<void> {
               `《${info.title}》目录 ${toc.entries.length} 章${toc.scrambled ? '（检测到乱序，已重排）' : ''}，去重移除 ${toc.dupRemoved} 条`
             )
           }
-          const orderMap: Record<string, string> = {}
           let order = 0
           for (const entry of toc.entries) {
             order++
@@ -394,13 +408,11 @@ export async function executeTask(taskId: string): Promise<void> {
                   data: { title: entry.title, order },
                 })
               }
-              orderMap[entry.title] = existingChapter.id
               stats.chapters++
             } else {
-              const created = await db.chapter.create({
+              await db.chapter.create({
                 data: { bookId, title: entry.title, order, url: urlKey },
               })
-              orderMap[entry.title] = created.id
               stats.chapters++
               stats.chaptersNew++
             }

@@ -3,7 +3,7 @@ import { fetchPage, randomInt, sleep } from './fetcher'
 import { parseContentHtml, selectValue } from './parser'
 import { cleanContent } from './cleaner'
 
-/** 分页抓取：nextLink 跟随 / URL 模板区间（列表页、目录页、内容页通用） */
+/** 分页抓取：nextLink 跟随 / URL 模板区间 / select 下拉枚举（列表页、目录页、内容页通用） */
 export async function fetchPaginated(
   startUrl: string,
   cfg: FetchConfig,
@@ -16,6 +16,7 @@ export async function fetchPaginated(
   }
   const cap = Math.min(pagination.maxPages ?? hardCap, hardCap)
   const pages: { url: string; html: string }[] = []
+  const sleepBetween = () => sleep(randomInt(400, 1200))
 
   if (pagination.mode === 'template' && pagination.urlTemplate) {
     const start = pagination.startPage ?? 1
@@ -24,7 +25,33 @@ export async function fetchPaginated(
       const url = pagination.urlTemplate.replace('{page}', String(p))
       const r = await fetchPage(url, cfg)
       pages.push({ url: r.finalUrl, html: r.html })
-      if (p < end) await sleep(randomInt(400, 1200))
+      if (p < end) await sleepBetween()
+    }
+    return pages
+  }
+
+  if (pagination.mode === 'select' && pagination.nextLink?.expr) {
+    // 下拉选页：解析 select option value 枚举全部分页地址（相对地址按当前页解析），
+    // 跳过起始页自身与重复值，逐页抓取（对末页"下一页"指向书籍页的蜜罐免疫）
+    const r0 = await fetchPage(startUrl, cfg)
+    pages.push({ url: r0.finalUrl, html: r0.html })
+    const rawVals = selectValue(r0.html, { ...pagination.nextLink, multiple: true }, { baseUrl: r0.finalUrl })
+    const seen = new Set([r0.finalUrl.replace(/\/$/, ''), r0.finalUrl])
+    const queue: string[] = []
+    if (Array.isArray(rawVals)) {
+      for (const v of rawVals) {
+        const key = v.replace(/\/$/, '')
+        if (!v || seen.has(key) || seen.has(v)) continue
+        seen.add(key)
+        seen.add(v)
+        queue.push(v)
+      }
+    }
+    for (const url of queue) {
+      if (pages.length >= cap) break
+      const r = await fetchPage(url, cfg)
+      pages.push({ url: r.finalUrl, html: r.html })
+      await sleepBetween()
     }
     return pages
   }
@@ -38,9 +65,27 @@ export async function fetchPaginated(
     const next = String(selectValue(r.html, { ...pagination.nextLink, multiple: false }, { baseUrl: r.finalUrl }) || '')
     if (!next || !/^https?:\/\//.test(next) || next === r.finalUrl) break
     url = next
-    await sleep(randomInt(400, 1200))
+    await sleepBetween()
   }
   return pages
+}
+
+/**
+ * 内容分页防跨章保护：归一化分页 base（剥去 _N.html 后缀与查询串）。
+ * xnnmummd.html 与 xnnmummd_1.html → 同一 base；下一章 xnnmummb.html → 不同 base。
+ */
+function pageBase(url: string): string {
+  try {
+    const u = new URL(url)
+    u.search = ''
+    u.hash = ''
+    const m = /_(\d+)(\.x?html?|\/)?$/i.exec(u.pathname)
+    if (m) u.pathname = u.pathname.slice(0, m.index)
+    else u.pathname = u.pathname.replace(/\.(x?html?)$/i, '')
+    return u.href.replace(/\/$/, '')
+  } catch {
+    return url
+  }
 }
 
 /**
@@ -72,6 +117,9 @@ export async function fetchCleanedContent(
       selectValue(res.html, { ...pagination.nextLink, multiple: false }, { baseUrl: res.finalUrl }) || ''
     )
     if (!next || !/^https?:\/\//.test(next) || next === res.finalUrl) break
+    // 防跨章保护：下一页必须与当前页同 base（剥去 _N.html 后缀一致），否则立即终止
+    // （部分站点把"下一章"伪装成"下一页"，误跟会把整本书正文合并进一章）
+    if (pagination.sameChapterOnly && pageBase(next) !== pageBase(res.finalUrl)) break
     url = next
     await sleep(randomInt(300, 1000))
   }

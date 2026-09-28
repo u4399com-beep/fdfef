@@ -37,13 +37,24 @@ export interface ListItemSelectors {
 /** 分页配置（目录页/内容页/列表页通用，预留） */
 export interface PaginationConfig {
   enabled: boolean
-  mode: 'nextLink' | 'template' // 追加下一页 | URL 模板翻页
-  nextLink?: FieldSelector // 下一页链接
+  /**
+   * nextLink 跟随下一页 | template URL 模板翻页 | select 下拉页码枚举
+   * select：解析 <select><option value="..."> 各分页地址并逐页抓取
+   * （常见于下拉选页站点；对末页"下一页"指向 honeypot 的站点也安全）
+   */
+  mode: 'nextLink' | 'template' | 'select'
+  nextLink?: FieldSelector // 下一页链接（select 模式下为 option value 选择器，配 multiple:true）
   urlTemplate?: string // 含 {page} 占位符
   startPage?: number
   endPage?: number
   maxPages?: number // 安全上限
   maxConcat?: number // 内容页拼接上限（章节正文分页合并）
+  /**
+   * 内容分页防跨章保护（按 _N.html 后缀分页的站点）：
+   * 仅跟随与当前页同 base（去除 _N 后缀后一致）的下一页链接，
+   * 防止把"下一章"链接误当分页导致整本书正文合并成一章。
+   */
+  sameChapterOnly?: boolean
 }
 
 /** 通用请求配置（反反爬基础层） */
@@ -57,6 +68,12 @@ export interface FetchConfig {
   referer?: string
   /** 同域请求最小间隔 ms（全局节流，默认 1200；0 = 不节流） */
   throttleGap?: number
+  /**
+   * 镜像域名列表（反失效增强）：主域名网络级不可达（DNS/连接失败）时，
+   * 自动按序尝试镜像源（保留路径改写 origin），成功的镜像会被记忆，
+   * 冷却期内后续请求直连镜像、到期复检主域。小说站频繁轮换域名的标准应对。
+   */
+  mirrorUrls?: string[]
   /**
    * JS 渲染翻页交互（仅 playwright 策略生效）：
    * 适用于分页参数加密/URL 不变的站点（如下拉页码、按钮翻页），

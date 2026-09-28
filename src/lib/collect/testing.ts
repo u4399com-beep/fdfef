@@ -85,6 +85,14 @@ async function testBook(cfg: BookRuleConfig, url: string, started: number): Prom
   let coverResolved = parsed.cover ?? ''
   if (coverResolved) coverResolved = resolveUrl(coverResolved, res.finalUrl)
 
+  // 目录页地址（与采集管线 collectBookInfo 同逻辑，供测试面板直观展示目录入口）
+  let tocUrl = res.finalUrl
+  const tocLinkSel = cfg.fields?.tocLink
+  if (tocLinkSel?.expr) {
+    const toc = String(selectValue(res.html, { ...tocLinkSel, multiple: false }, { baseUrl: res.finalUrl }) || '')
+    if (toc) tocUrl = resolveUrl(toc, res.finalUrl)
+  }
+
   return {
     ok: true,
     message: '书籍信息解析成功',
@@ -92,6 +100,7 @@ async function testBook(cfg: BookRuleConfig, url: string, started: number): Prom
     data: {
       strategy: res.strategy,
       finalUrl: res.finalUrl,
+      tocUrl,
       fields: {
         书名: title,
         作者: parsed.author ?? '',

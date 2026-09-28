@@ -312,3 +312,32 @@ Stage Summary:
 - biqutu.info：四类规则就绪且在结构一致的活站上实测 4/4 通过；站点本身当前不可达（宕机/封锁），恢复即用
 - 引擎与反反爬：base64 transform、简介方言清洗、cookie 合并、CF 识别、随机混淆名通配、Referer 指纹、Retry-After
 - 全项目 lint 0 错误、tsc 0 错误（含 tests），浏览器零报错
+
+---
+Task ID: R4(iteration)-full
+Agent: orchestrator (Z.ai Code)
+Task: 本轮迭代（恢复→深审→增强→精简→集成→验证）：全库规则实盘突破 + 反反爬增强 + 深度抓bug + 推送 git
+
+Work Log:
+- 【R1 恢复】盘点项目状态：dev server 正常、tsc 0 错误、lint 0 错误、20 条规则 5 站点在库、18 本书数据完好
+- 【R2 深审·fetcher 6 处】①HTTP 路径 cookie 合并优先级反了（显式快照覆盖 jar 新通行 cookie → WAF 解题后每次又要重新解题，长期稳定性的关键缺陷）改为 jar 优先 ②collectJsPages trigger 控件跨轮持有 stale element（每轮重查）③UA 轮换重试只换 UA 不换 sec-ch-ua 指纹自相矛盾 → rotateFingerprint 同步重建 Client Hints ④Playwright extraHTTPHeaders 静态 Cookie 头与 addCookies 重复注入 → 剥离 ⑤Hyperbrowser 策略漏接同域节流 → 补 domainThrottle.wait ⑥stealth 增强：WebGL vendor/renderer 伪装 + deviceMemory/maxTouchPoints
+- 【R2 深审·pipeline 3 处】①sourceName 从未写入（18 本书来源全空）→ create/update 按主机名写入 + 存量 18 本回填 ②orderMap 死代码清除 ③范围采集：规则自身 template 分页覆盖任务页码区间 → 同一页重复抓 N 遍 → 范围模式忽略规则 pagination
+- 【R3 增强·镜像域名轮换】FetchConfig 新增 mirrorUrls：主域网络级不可达（DNS/超时/连接失败）自动按序切换镜像（保留路径改写 origin），成功镜像记忆 10 分钟冷却期直连、到期复检主域；isNetworkUnreachableError 覆盖 fetch failed/ENOTFOUND/timed out/aborted 等
+- 【R3 增强·select 下拉分页】PaginationConfig 新增 mode:'select'（解析 select option 枚举全部分页），免疫"末页下一页指向书籍页"蜜罐；新增 sameChapterOnly 防跨章保护（_N.html 后缀归一化 base 比对，防"下一章"伪装分页导致整书并章）
+- 【R3 增强·规则适配】biqutu 四规则适配 bqgbe 活镜像：列表 s3 列改可选、书籍 og:novel+tocLink(a[href$=ml1.html])、目录重写（乱序+重复分布+select 分页+乱序重排）、内容下一[页章]正则+sameChapterOnly；全部规则注入 mirrorUrls
+- 【R4 精简】删除一次性脚本、orderMap 死代码；tests 目录保留可复用资产（验证脚本/规则注册器/验证码求解/再清洗）
+- 【R5 增强·测试引擎】testBook 返回 tocUrl（与管线 collectBookInfo 同逻辑），测试面板可直视目录入口
+- 【R6 集成验证】tsc 0 / lint 0；Agent Browser E2E：仪表盘实时统计 ✓ → 规则页 UI 测试面板实测 biqutu.info 主域 URL（镜像自动切换成功，解析 60 项）✓ → 前台预览 UAA 主题首页 ✓ → 书籍页「最新更新 12 章/共 100 章」+开始阅读+完整目录 ✓ → 目录页分页 ✓ → 章节阅读上下章导航 ✓ → 390px 移动端 ✓ → console 零报错 ✓
+- 【R6 全库规则实盘验证（tests/verify-all-rules.ts）】5/5 全链路贯通：
+  · 演示(mock)：list 3项 → book《斗罗星河传》 → toc 12章 → content 212字/2页 ✅
+  · 可乐小说 kelexs：list 20项 → book《夜空中凡星点点》 → toc 100章 → content 1845字/2页 ✅
+  · 存书啦 cunshu：list 15项 → book → toc 479章 → content 2263字/1页 ✅
+  · 人气完本 rqwb：list 6项 → book《穿书70》 → toc 72章 → content 3075字/1页 ✅
+  · 笔趣阁 biqutu.info（主域不可达→镜像 bqgbe 自动切换）：list 60项 → book《寻秦记之云梦仙踪》 → toc 358章/测试3页上限 → content 2566字/3页 ✅
+- 【git】提交并推送全部代码与数据到 github.com/u4399com-beep/fdfef.git
+
+Stage Summary:
+- 任务1 全库规则突破：5/5 站点全链路实盘验证通过；biqutu.info 主域不可达场景由镜像轮换机制兜底（域名轮换是小说站常态，机制保证长期可采集）
+- 任务2 深审修复：fetcher 6 处 + pipeline 3 处 + 测试引擎 1 处，共 10 处 bug/缺陷全修；反反爬新增镜像轮换/select 分页/防跨章/WebGL 指纹四层能力
+- 任务3 精简：死代码清除，规则配置与类型契约同步演进（mirrorUrls/select/sameChapterOnly）
+- 数据：18 书 / 1991 章 / 447 万字，sourceName 全量回填
