@@ -1,0 +1,840 @@
+     1→     1→import type { FetchConfig } from '../collect-types'
+     2→     2→
+     3→     3→// ============================================================
+     4→     4→// 抓取器：多策略（http / playwright / hyperbrowser）
+     5→     5→// 反反爬增强层：
+     6→     6→//   1. CookieJar 会话保持（WAF 通过后 cookie 全局复用）
+     7→     7→//   2. UA 轮换 + Client Hints / Sec-Fetch 真实浏览器指纹
+     8→     8→//   3. Playwright stealth 注入（移除 webdriver 特征）
+     9→     9→//   4. WAF 挑战页自动检测 + VLM 验证码求解
+    10→    10→//   5. HTTP 被 WAF 拦截时自动升级为浏览器渲染
+    11→    11→//   6. 编码识别（GBK/GB2312/Big5 经 iconv-lite）
+    12→    12→// ============================================================
+    13→    13→
+    14→    14→const UA_LIST = [
+    15→    15→  'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
+    16→    16→  'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0.0.0 Safari/537.36 Edg/123.0.0.0',
+    17→    17→  'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.4 Safari/605.1.15',
+    18→    18→  'Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:125.0) Gecko/20100101 Firefox/125.0',
+    19→    19→  'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0.0.0 Safari/537.36',
+    20→    20→  'Mozilla/5.0 (iPhone; CPU iPhone OS 17_4 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.4 Mobile/15E148 Safari/604.1',
+    21→    21→  'Mozilla/5.0 (Linux; Android 14; Pixel 8) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Mobile Safari/537.36',
+    22→    22→  'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36 115browser/26.0.0',
+    23→    23→  'Mozilla/5.0 (Linux; U; Android 13; zh-cn; M2102J2SC Build/TKQ1.220829.002) AppleWebKit/537.36 (KHTML, like Gecko) Version/4.0 Chrome/114.0.0.0 Mobile Safari/537.36 XiaoMi/MiuiBrowser/17.5.11',
+    24→    24→]
+    25→    25→
+    26→    26→/** 从 UA 推断主版本号（生成匹配的 Client Hints） */
+    27→    27→function chromeMajorVersion(ua: string): string | null {
+    28→    28→  const m = /Chrome\/(\d+)/.exec(ua)
+    29→    29→  return m ? m[1] : null
+    30→    30→}
+    31→    31→
+    32→    32→export function randomUA(): string {
+    33→    33→  return UA_LIST[Math.floor(Math.random() * UA_LIST.length)]
+    34→    34→}
+    35→    35→
+    36→    36→/** 固定 UA（rotateUA=false 时全局使用；WAF 通行 cookie 与 UA 绑定的站点必须用同一 UA） */
+    37→    37→export const FIXED_UA = UA_LIST[0]
+    38→    38→
+    39→    39→export function randomInt(min: number, max: number): number {
+    40→    40→  if (!Number.isFinite(min) || !Number.isFinite(max)) return min
+    41→    41→  const lo = Math.max(0, Math.ceil(min))
+    42→    42→  const hi = Math.max(lo, Math.floor(max))
+    43→    43→  if (lo === hi) return lo
+    44→    44→  return lo + Math.floor(Math.random() * (hi - lo + 1))
+    45→    45→}
+    46→    46→
+    47→    47→export function sleep(ms: number): Promise<void> {
+    48→    48→  return new Promise((r) => setTimeout(r, Math.max(0, ms)))
+    49→    49→}
+    50→    50→
+    51→    51→export interface FetchResult {
+    52→    52→  html: string
+    53→    53→  status: number
+    54→    54→  finalUrl: string
+    55→    55→  strategy: string
+    56→    56→  elapsedMs: number
+    57→    57→  /** 本次响应是否为 WAF 验证页（未通过） */
+    58→    58→  wafChallenged?: boolean
+    59→    59→}
+    60→    60→
+    61→    61→// ============================================================
+    62→    62→// CookieJar：按 host 持久会话 cookie（进程级单例）
+    63→    63→// ============================================================
+    64→    64→
+    65→    65→interface JarCookie {
+    66→    66→  name: string
+    67→    67→  value: string
+    68→    68→  domain?: string
+    69→    69→  path?: string
+    70→    70→  expires?: number
+    71→    71→}
+    72→    72→
+    73→    73→class CookieJar {
+    74→    74→  private store: Map<string, JarCookie[]>
+    75→    75→
+    76→    76→  constructor(store?: Map<string, JarCookie[]>) {
+    77→    77→    this.store = store ?? new Map()
+    78→    78→  }
+    79→    79→
+    80→    80→  /** 解析 Set-Cookie 响应头并入 jar */
+    81→    81→  absorbFromFetch(host: string, headers: Headers): void {
+    82→    82→    const raw = typeof headers.getSetCookie === 'function' ? headers.getSetCookie() : []
+    83→    83→    if (!raw.length) return
+    84→    84→    const list = this.store.get(host) ?? []
+    85→    85→    for (const line of raw) {
+    86→    86→      const [pair, ...attrs] = line.split(';')
+    87→    87→      const idx = pair.indexOf('=')
+    88→    88→      if (idx <= 0) continue
+    89→    89→      const name = pair.slice(0, idx).trim()
+    90→    90→      const value = pair.slice(idx + 1).trim()
+    91→    91→      const lower = attrs.map((a) => a.trim().toLowerCase())
+    92→    92→      const expired = lower.some((a) => a.startsWith('expires=') && new Date(a.slice(8)).getTime() < Date.now())
+    93→    93→      const pos = list.findIndex((c) => c.name === name)
+    94→    94→      if (expired) {
+    95→    95→        if (pos >= 0) list.splice(pos, 1)
+    96→    96→        continue
+    97→    97→      }
+    98→    98→      if (pos >= 0) list.splice(pos, 1)
+    99→    99→      list.push({ name, value })
+   100→   100→    }
+   101→   101→    this.store.set(host, list)
+   102→   102→  }
+   103→   103→
+   104→   104→  /** Playwright context.cookies() 结果并入 jar */
+   105→   105→  absorbFromBrowser(originHost: string, cookies: { name: string; value: string; expires?: number }[]): void {
+   106→   106→    const list = this.store.get(originHost) ?? []
+   107→   107→    for (const c of cookies) {
+   108→   108→      if (!c.name) continue
+   109→   109→      const pos = list.findIndex((x) => x.name === c.name)
+   110→   110→      if (pos >= 0) list.splice(pos, 1)
+   111→   111→      if (c.expires && c.expires > 0 && c.expires * 1000 < Date.now()) continue
+   112→   112→      list.push({ name: c.name, value: c.value, expires: c.expires })
+   113→   113→    }
+   114→   114→    this.store.set(originHost, list)
+   115→   115→  }
+   116→   116→
+   117→   117→  /** 取指定 URL 的 Cookie 请求头 */
+   118→   118→  header(url: string): string {
+   119→   119→    let host = ''
+   120→   120→    try {
+   121→   121→      host = new URL(url).hostname
+   122→   122→    } catch {
+   123→   123→      return ''
+   124→   124→    }
+   125→   125→    // 允许父子域共享（.kelexs.com 场景）：精确 host + 以点开头的域后缀
+   126→   126→    const list: JarCookie[] = []
+   127→   127→    for (const [key, cookies] of this.store) {
+   128→   128→      if (key === host || host.endsWith(key.replace(/^\./, ''))) list.push(...cookies)
+   129→   129→    }
+   130→   130→    if (!list.length) return ''
+   131→   131→    return list.map((c) => `${c.name}=${c.value}`).join('; ')
+   132→   132→  }
+   133→   133→
+   134→   134→  count(): number {
+   135→   135→    let n = 0
+   136→   136→    for (const cookies of this.store.values()) n += cookies.length
+   137→   137→    return n
+   138→   138→  }
+   139→   139→}
+   140→   140→
+   141→   141→// 状态数据挂 globalThis（跨热重载保留），实例每次新建
+   142→   142→interface JarState {
+   143→   143→  store: Map<string, JarCookie[]>
+   144→   144→}
+   145→   145→const JAR_STATE_KEY = '__novelCookieJarState'
+   146→   146→const globalForJar = globalThis as unknown as { [JAR_STATE_KEY]?: JarState }
+   147→   147→const jarState: JarState = globalForJar[JAR_STATE_KEY] ?? { store: new Map() }
+   148→   148→globalForJar[JAR_STATE_KEY] = jarState
+   149→   149→export const cookieJar = new CookieJar(jarState.store)
+   150→   150→
+   151→   151→// ============================================================
+   152→   152→// 全局同域节流器：无论任务线程数如何，同一域名的请求间隔不小于最小值，
+   153→   153→// 从源头避免高频请求触发目标站 WAF（反反爬核心基础设施）
+   154→   154→// ============================================================
+   155→   155→
+   156→   156→// 状态数据挂 globalThis（跨热重载保留），类实例每次模块加载新建（类代码始终最新）——
+   157→   157→// 从根上避免 dev 热重载后旧实例缺少新方法的问题
+   158→   158→interface ThrottleState {
+   159→   159→  queues: Map<string, Promise<void>>
+   160→   160→  blockedUntil: Map<string, number>
+   161→   161→}
+   162→   162→const THROTTLE_STATE_KEY = '__novelThrottleState'
+   163→   163→const globalForThrottle = globalThis as unknown as { [THROTTLE_STATE_KEY]?: ThrottleState }
+   164→   164→const throttleState: ThrottleState =
+   165→   165→  globalForThrottle[THROTTLE_STATE_KEY] ?? { queues: new Map(), blockedUntil: new Map() }
+   166→   166→globalForThrottle[THROTTLE_STATE_KEY] = throttleState
+   167→   167→
+   168→   168→class DomainThrottle {
+   169→   169→  private queues = throttleState.queues
+   170→   170→  private blockedUntil = throttleState.blockedUntil
+   171→   171→
+   172→   172→  /**
+   173→   173→   * 同域串行化：每个请求至少间隔 minGapMs。
+   174→   174→   * 若该域处于封禁冷却期（reportBlock），自动等待冷却结束后再入队。
+   175→   175→   */
+   176→   176→  async wait(url: string, customGap?: number): Promise<void> {
+   177→   177→    let host = ''
+   178→   178→    try {
+   179→   179→      host = new URL(url).hostname
+   180→   180→    } catch {
+   181→   181→      return
+   182→   182→    }
+   183→   183→    // 封禁冷却期：等待解除后继续（避免在封禁期继续请求加剧封禁）
+   184→   184→    const blockedUntil = this.blockedUntil.get(host) ?? 0
+   185→   185→    const now = Date.now()
+   186→   186→    if (now < blockedUntil) {
+   187→   187→      await sleep(blockedUntil - now + 200)
+   188→   188→      this.blockedUntil.delete(host)
+   189→   189→    }
+   190→   190→    const gap = Math.max(0, customGap ?? 1200)
+   191→   191→    if (gap <= 0) return
+   192→   192→    const prev = this.queues.get(host) ?? Promise.resolve()
+   193→   193→    const next = prev.then(
+   194→   194→      () => new Promise<void>((r) => setTimeout(r, gap)),
+   195→   195→      () => new Promise<void>((r) => setTimeout(r, gap))
+   196→   196→    )
+   197→   197→    this.queues.set(host, next)
+   198→   198→    await next
+   199→   199→  }
+   200→   200→
+   201→   201→  /** 目标站封禁（硬 403）：设置同域全局冷却期 */
+   202→   202→  reportBlock(url: string, ms = 180_000): void {
+   203→   203→    try {
+   204→   204→      const host = new URL(url).hostname
+   205→   205→      const until = Date.now() + ms + Math.random() * 60_000
+   206→   206→      const prev = this.blockedUntil.get(host) ?? 0
+   207→   207→      if (until > prev) this.blockedUntil.set(host, until)
+   208→   208→    } catch {
+   209→   209→      /* ignore */
+   210→   210→    }
+   211→   211→  }
+   212→   212→}
+   213→   213→
+   214→   214→export const domainThrottle = new DomainThrottle()
+   215→   215→
+   216→   216→// ============================================================
+   217→   217→// WAF 挑战页识别
+   218→   218→// ============================================================
+   219→   219→
+   220→   220→const WAF_SIGNATURES = [
+   221→   221→  /WAF\/VERIFY\/CAPTCHA/i,
+   222→   222→  /GOEDGE_WAF_CAPTCHA/i,
+   223→   223→  /ui-captcha-image/i,
+   224→   224→  /captcha-form/i,
+   225→   225→  /verify yourself/i,
+   226→   226→  // Cloudflare 挑战页（headless 无法通过，但至少给出明确的 WAF 报错而非静默解析为空）
+   227→   227→  /<title>[^<]*just a moment[^<]*<\/title>/i,
+   228→   228→  /challenges\.cloudflare\.com\//i,
+   229→   229→]
+   230→   230→
+   231→   231→/** 判断 HTML 是否为 WAF/验证码挑战页或硬拒绝页（403 黑名单） */
+   232→   232→export function isWafChallengeHtml(html: string): boolean {
+   233→   233→  if (isHardDeniedHtml(html)) return true
+   234→   234→  if (!html || html.length > 20000) {
+   235→   235→    // 验证页很小；超长页面再做签名兜底检查（避免正文误判）
+   236→   236→    return WAF_SIGNATURES.slice(0, 2).some((re) => re.test(html))
+   237→   237→  }
+   238→   238→  return WAF_SIGNATURES.some((re) => re.test(html))
+   239→   239→}
+   240→   240→
+   241→   241→/** 硬 403/封禁页（IP 黑名单，需向调用方明确报告而非静默解析为空） */
+   242→   242→export function isHardDeniedHtml(html: string): boolean {
+   243→   243→  if (!html || html.length > 4000) return false
+   244→   244→  return /<title>\s*403\s*Forbidden\s*<\/title>/i.test(html) || /\b403 Forbidden\b/.test(html)
+   245→   245→}
+   246→   246→
+   247→   247→// ============================================================
+   248→   248→// 编码识别与解码
+   249→   249→// ============================================================
+   250→   250→
+   251→   251→function detectCharset(buffer: Buffer, contentType: string, fallback: string): string {
+   252→   252→  const explicit = fallback !== 'auto' ? fallback : ''
+   253→   253→  if (explicit) return explicit
+   254→   254→  const ctMatch = /charset=["']?([\w-]+)/i.exec(contentType)
+   255→   255→  if (ctMatch) return ctMatch[1].toLowerCase()
+   256→   256→  const head = buffer.subarray(0, 4096).toString('latin1')
+   257→   257→  const meta = /<meta[^>]+charset=["']?([\w-]+)/i.exec(head) ?? /charset=["']([\w-]+)/i.exec(head)
+   258→   258→  if (meta) return meta[1].toLowerCase()
+   259→   259→  return 'utf-8'
+   260→   260→}
+   261→   261→
+   262→   262→function decodeBuffer(buffer: Buffer, charset: string): string {
+   263→   263→  const cs = charset.toLowerCase()
+   264→   264→  if (cs === 'utf-8' || cs === 'utf8' || cs === 'ascii') {
+   265→   265→    return new TextDecoder('utf-8').decode(buffer)
+   266→   266→  }
+   267→   267→  // 动态加载 iconv-lite 以处理 gbk/gb2312/big5
+   268→   268→  try {
+   269→   269→    // eslint-disable-next-line @typescript-eslint/no-require-imports
+   270→   270→    const iconv = require('iconv-lite') as {
+   271→   271→      decode: (b: Buffer, enc: string) => string
+   272→   272→      encodingExists: (enc: string) => boolean
+   273→   273→    }
+   274→   274→    if (iconv.encodingExists(cs === 'gb2312' ? 'gbk' : cs)) {
+   275→   275→      return iconv.decode(buffer, cs === 'gb2312' ? 'gbk' : cs)
+   276→   276→    }
+   277→   277→  } catch {
+   278→   278→    /* fallthrough */
+   279→   279→  }
+   280→   280→  return new TextDecoder('utf-8').decode(buffer)
+   281→   281→}
+   282→   282→
+   283→   283→// ============================================================
+   284→   284→// 请求头构建：UA + Client Hints + Sec-Fetch 指纹
+   285→   285→// ============================================================
+   286→   286→
+   287→   287→/** 合并两组 cookie 串：override 中同名键优先，base 中独有键保留（jar 通行 cookie 与显式 cookie 合并） */
+   288→   288→function mergeCookieStrings(base: string, override: string): string {
+   289→   289→  const parse = (s: string): [string, string][] =>
+   290→   290→    s
+   291→   291→      .split(';')
+   292→   292→      .map((c) => c.trim())
+   293→   293→      .filter(Boolean)
+   294→   294→      .map((c) => {
+   295→   295→        const idx = c.indexOf('=')
+   296→   296→        return idx <= 0 ? null : ([c.slice(0, idx).trim(), c.slice(idx + 1).trim()] as [string, string])
+   297→   297→      })
+   298→   298→      .filter((p): p is [string, string] => p !== null)
+   299→   299→  const map = new Map(parse(base))
+   300→   300→  for (const [k, v] of parse(override)) map.set(k, v)
+   301→   301→  return [...map.entries()].map(([k, v]) => `${k}=${v}`).join('; ')
+   302→   302→}
+   303→   303→
+   304→   304→function buildHeaders(cfg: FetchConfig, url: string, uaOverride?: string): Record<string, string> {
+   305→   305→  const ua = uaOverride ?? (cfg.rotateUA === false ? FIXED_UA : randomUA())
+   306→   306→  const headers: Record<string, string> = {
+   307→   307→    'User-Agent': ua,
+   308→   308→    Accept: 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8',
+   309→   309→    'Accept-Language': 'zh-CN,zh;q=0.9,en;q=0.6',
+   310→   310→    'Cache-Control': 'no-cache',
+   311→   311→    Pragma: 'no-cache',
+   312→   312→    'Upgrade-Insecure-Requests': '1',
+   313→   313→  }
+   314→   314→  // Chrome 系 UA 注入配套 Client Hints（真实浏览器指纹）
+   315→   315→  const chromeVer = chromeMajorVersion(ua)
+   316→   316→  if (chromeVer) {
+   317→   317→    headers['sec-ch-ua'] = `"Chromium";v="${chromeVer}", "Google Chrome";v="${chromeVer}", "Not-A.Brand";v="99"`
+   318→   318→    headers['sec-ch-ua-mobile'] = /Mobile|Android|iPhone/.test(ua) ? '?1' : '?0'
+   319→   319→    headers['sec-ch-ua-platform'] = /Windows/i.test(ua)
+   320→   320→      ? '"Windows"'
+   321→   321→      : /Macintosh/i.test(ua)
+   322→   322→        ? '"macOS"'
+   323→   323→        : /Android/i.test(ua)
+   324→   324→          ? '"Android"'
+   325→   325→          : /iPhone|iPad/i.test(ua)
+   326→   326→            ? '"iOS"'
+   327→   327→            : '"Linux"'
+   328→   328→  }
+   329→   329→  if (cfg.referer) headers.Referer = cfg.referer
+   330→   330→  else {
+   331→   331→    // 默认 Referer 指纹：真实浏览器站内跳转必带同源 Referer，裸无 Referer 是明显爬虫特征
+   332→   332→    try {
+   333→   333→      headers.Referer = `${new URL(url).origin}/`
+   334→   334→    } catch {
+   335→   335→      /* 非法 URL 已在入口拦 */
+   336→   336→    }
+   337→   337→  }
+   338→   338→  // 显式 cookies 与 jar 会话 cookie 合并（显式优先同名键）：
+   339→   339→  // WAF 解题后新入 jar 的通行 cookie 不再被旧显式 cookie 完全屏蔽
+   340→   340→  if (cfg.cookies) {
+   341→   341→    const jarCookie = cookieJar.header(url)
+   342→   342→    headers.Cookie = jarCookie ? mergeCookieStrings(jarCookie, cfg.cookies) : cfg.cookies
+   343→   343→  } else {
+   344→   344→    const jarCookie = cookieJar.header(url)
+   345→   345→    if (jarCookie) headers.Cookie = jarCookie
+   346→   346→  }
+   347→   347→  if (cfg.headers) {
+   348→   348→    // 兼容 UI 保存的 JSON 字符串形式（对象按原样合并，字符串则解析后再合并）
+   349→   349→    let extra = cfg.headers as unknown
+   350→   350→    if (typeof extra === 'string') {
+   351→   351→      try {
+   352→   352→        extra = JSON.parse(extra)
+   353→   353→      } catch {
+   354→   354→        extra = null
+   355→   355→      }
+   356→   356→    }
+   357→   357→    if (extra && typeof extra === 'object') Object.assign(headers, extra)
+   358→   358→  }
+   359→   359→  return headers
+   360→   360→}
+   361→   361→
+   362→   362→/** 主入口：按策略抓取页面 */
+   363→   363→export async function fetchPage(url: string, cfg: FetchConfig = {}): Promise<FetchResult> {
+   364→   364→  if (!/^https?:\/\//i.test(url)) throw new Error(`非法 URL：${url}`)
+   365→   365→  const strategy = cfg.strategy ?? 'http'
+   366→   366→  const timeout = cfg.timeout ?? 20000
+   367→   367→  const started = Date.now()
+   368→   368→
+   369→   369→  if (strategy === 'playwright') return fetchWithPlaywright(url, cfg, timeout, started)
+   370→   370→  if (strategy === 'hyperbrowser') return fetchWithHyperbrowser(url, cfg, timeout, started)
+   371→   371→
+   372→   372→  // HTTP 直连策略（遇 WAF 自动升级浏览器渲染；同域全局节流）
+   373→   373→  await domainThrottle.wait(url, cfg.throttleGap)
+   374→   374→  let html = ''
+   375→   375→  let status = 0
+   376→   376→  let finalUrl = url
+   377→   377→  for (let attempt = 0; attempt < 2; attempt++) {
+   378→   378→    const res = await fetchWithRetry(url, buildHeaders(cfg, url), timeout, 2, cfg.rotateUA === false)
+   379→   379→    const buffer = Buffer.from(await res.arrayBuffer())
+   380→   380→    cookieJar.absorbFromFetch(new URL(res.url || url).hostname, res.headers)
+   381→   381→    const charset = detectCharset(buffer, res.headers.get('content-type') ?? '', cfg.encoding ?? 'auto')
+   382→   382→    html = decodeBuffer(buffer, charset)
+   383→   383→    status = res.status
+   384→   384→    finalUrl = res.url || url
+   385→   385→    if (isHardDeniedHtml(html)) {
+   386→   386→      // IP 已被目标站拉黑（硬 403）：全局冷却后向调用方明确报告
+   387→   387→      domainThrottle.reportBlock(finalUrl, 180_000)
+   388→   388→      throw new Error(`目标站拒绝访问（IP 临时封禁，HTTP 403）：${finalUrl}。已自动冷却 3 分钟`)
+   389→   389→    }
+   390→   390→    if (!isWafChallengeHtml(html)) {
+   391→   391→      return { html, status, finalUrl, strategy: 'http', elapsedMs: Date.now() - started }
+   392→   392→    }
+   393→   393→    // WAF 拦截：升级为 Playwright（带验证码求解），仅尝试一次
+   394→   394→    try {
+   395→   395→      const pwResult = await fetchWithPlaywright(url, cfg, timeout, started)
+   396→   396→      return { ...pwResult, elapsedMs: Date.now() - started }
+   397→   397→    } catch (e) {
+   398→   398→      if (attempt === 1) {
+   399→   399→        throw new Error(
+   400→   400→          `WAF 拦截且浏览器策略不可用：${e instanceof Error ? e.message : String(e)}（请安装 Playwright：bun add playwright && bunx playwright install chromium）`
+   401→   401→        )
+   402→   402→      }
+   403→   403→      // 浏览器策略失败后稍候再试一轮 HTTP：此时 jar 里可能已有解题通行 cookie，直连即可通过
+   404→   404→      await sleep(1500)
+   405→   405→    }
+   406→   406→  }
+   407→   407→  return { html, status, finalUrl, strategy: 'http', elapsedMs: Date.now() - started, wafChallenged: true }
+   408→   408→}
+   409→   409→
+   410→   410→async function fetchWithRetry(
+   411→   411→  url: string,
+   412→   412→  headers: Record<string, string>,
+   413→   413→  timeout: number,
+   414→   414→  retries = 2,
+   415→   415→  keepUA = false
+   416→   416→): Promise<Response> {
+   417→   417→  let lastErr: unknown = null
+   418→   418→  for (let i = 0; i <= retries; i++) {
+   419→   419→    try {
+   420→   420→      // 每次重试轮换 UA（模拟多用户）；keepUA=true 时固定 UA（WAF 通行 cookie 与 UA 绑定，换 UA 即失效）
+   421→   421→      const res = await fetch(url, {
+   422→   422→        headers: i === 0 || keepUA ? headers : { ...headers, 'User-Agent': randomUA() },
+   423→   423→        redirect: 'follow',
+   424→   424→        signal: AbortSignal.timeout(timeout),
+   425→   425→        cache: 'no-store',
+   426→   426→      })
+   427→   427→      if (!res.ok) {
+   428→   428→        // 403（WAF 拒绝）：重试只会加剧封禁，直接抛出
+   429→   429→        if (res.status === 403) {
+   430→   430→          const body = await res.text().catch(() => '')
+   431→   431→          if (isHardDeniedHtml(body)) {
+   432→   432→            domainThrottle.reportBlock(url, 180_000)
+   433→   433→            throw new Error(`目标站拒绝访问（IP 临时封禁，HTTP 403）：${url}。已自动冷却 3 分钟`)
+   434→   434→          }
+   435→   435→          lastErr = new Error(`HTTP 403`)
+   436→   436→          break
+   437→   437→        }
+   438→   438→        if (i < retries) {
+   439→   439→          // 429/5xx：更长退避（尊重 Retry-After 头）+ 轮换 UA
+   440→   440→          lastErr = new Error(`HTTP ${res.status}`)
+   441→   441→          let backoff = res.status === 429 ? 1500 + Math.random() * 2000 : 600 + Math.random() * 800
+   442→   442→          const ra = Number.parseFloat(res.headers.get('retry-after') ?? '')
+   443→   443→          if (Number.isFinite(ra) && ra >= 0) backoff = Math.min(ra * 1000 + 250, 30_000)
+   444→   444→          await sleep(backoff)
+   445→   445→          continue
+   446→   446→        }
+   447→   447→        // 最后一次重试仍非 2xx：不再把错误页 body 当解析对象（避免 5xx 错误页文本混入正文）
+   448→   448→        throw new Error(`HTTP ${res.status}（${url.slice(0, 120)}）`)
+   449→   449→      }
+   450→   450→      return res
+   451→   451→    } catch (e) {
+   452→   452→      if (e instanceof Error && e.message.includes('IP 临时封禁')) throw e
+   453→   453→      lastErr = e
+   454→   454→      if (i < retries) await sleep(600 + Math.random() * 800)
+   455→   455→    }
+   456→   456→  }
+   457→   457→  throw new Error(`请求失败: ${lastErr instanceof Error ? lastErr.message : String(lastErr)}`)
+   458→   458→}
+   459→   459→
+   460→   460→// ============================================================
+   461→   461→// Playwright 策略：stealth 注入 + Cookie 会话 + WAF 验证码求解
+   462→   462→// ============================================================
+   463→   463→
+   464→   464→/** 浏览器指纹伪装脚本（每个页面加载前注入） */
+   465→   465→const STEALTH_SCRIPT = `
+   466→   466→  Object.defineProperty(navigator, 'webdriver', { get: () => undefined });
+   467→   467→  window.chrome = window.chrome || { runtime: {}, loadTimes: () => ({}), csi: () => ({}) };
+   468→   468→  Object.defineProperty(navigator, 'languages', { get: () => ['zh-CN', 'zh', 'en-US'] });
+   469→   469→  Object.defineProperty(navigator, 'plugins', { get: () => [1, 2, 3, 4, 5] });
+   470→   470→  Object.defineProperty(navigator, 'hardwareConcurrency', { get: () => 8 });
+   471→   471→  const origQuery = window.navigator.permissions && window.navigator.permissions.query;
+   472→   472→  if (origQuery) {
+   473→   473→    window.navigator.permissions.query = (p) =>
+   474→   474→      p && p.name === 'notifications'
+   475→   475→        ? Promise.resolve({ state: Notification.permission })
+   476→   476→        : origQuery(p);
+   477→   477→  }
+   478→   478→`
+   479→   479→
+   480→   480→// 浏览器进程级单例：持久会话 + 稳定 TLS 指纹，WAF 视为同一真实用户会话（反反爬核心）
+   481→   481→const BROWSER_STATE_KEY = '__novelPwBrowser'
+   482→   482→interface BrowserState {
+   483→   483→  browser: PlaywrightBrowser | null
+   484→   484→  starting: Promise<PlaywrightBrowser> | null
+   485→   485→}
+   486→   486→const globalForBrowser = globalThis as unknown as { [BROWSER_STATE_KEY]?: BrowserState }
+   487→   487→const browserState: BrowserState = globalForBrowser[BROWSER_STATE_KEY] ?? { browser: null, starting: null }
+   488→   488→globalForBrowser[BROWSER_STATE_KEY] = browserState
+   489→   489→
+   490→   490→async function getSharedBrowser(): Promise<PlaywrightBrowser | null> {
+   491→   491→  const pwSpec = 'playwright'
+   492→   492→  const pw = (await import(/* webpackIgnore: true */ pwSpec).catch(() => null)) as {
+   493→   493→    chromium: { launch: (o: Record<string, unknown>) => Promise<PlaywrightBrowser> }
+   494→   494→  } | null
+   495→   495→  if (!pw) return null
+   496→   496→  // 复用存活实例
+   497→   497→  const existing = browserState.browser
+   498→   498→  if (existing && typeof existing.isConnected === 'function' && existing.isConnected()) return existing
+   499→   499→  // 并发去重：共享同一个启动 Promise
+   500→   500→  if (!browserState.starting) {
+   501→   501→    browserState.starting = pw.chromium
+   502→   502→      .launch({
+   503→   503→        headless: true,
+   504→   504→        args: [
+   505→   505→          '--no-sandbox',
+   506→   506→          '--disable-blink-features=AutomationControlled',
+   507→   507→          '--disable-features=IsolateOrigins,site-per-process',
+   508→   508→          '--disable-infobars',
+   509→   509→          '--window-size=1366,850',
+   510→   510→        ],
+   511→   511→      })
+   512→   512→      .then((b) => {
+   513→   513→        browserState.browser = b
+   514→   514→        return b
+   515→   515→      })
+   516→   516→      .finally(() => {
+   517→   517→        browserState.starting = null
+   518→   518→      })
+   519→   519→  }
+   520→   520→  return browserState.starting
+   521→   521→}
+   522→   522→
+   523→   523→async function fetchWithPlaywright(url: string, cfg: FetchConfig, timeout: number, started: number): Promise<FetchResult> {
+   524→   524→  await domainThrottle.wait(url, cfg.throttleGap)
+   525→   525→  const browser = await getSharedBrowser()
+   526→   526→  if (!browser) {
+   527→   527→    throw new Error('Playwright 未安装：请在服务器执行 `bun add playwright && bunx playwright install chromium` 后使用 js 渲染策略')
+   528→   528→  }
+   529→   529→  const headers = buildHeaders(cfg, url)
+   530→   530→  const jarCookie = cookieJar.header(url)
+   531→   531→  const context = await browser.newContext({
+   532→   532→    userAgent: headers['User-Agent'],
+   533→   533→    viewport: { width: 1366, height: 850 },
+   534→   534→    locale: 'zh-CN',
+   535→   535→    timezoneId: 'Asia/Shanghai',
+   536→   536→    extraHTTPHeaders: headers,
+   537→   537→  })
+   538→   538→  await context.addInitScript(STEALTH_SCRIPT)
+   539→   539→
+   540→   540→  // 显式 cookies + jar 会话 cookies 一并注入
+   541→   541→  const jarCookies: { name: string; value: string; domain?: string }[] = jarCookie
+   542→   542→    ? jarCookie.split(';').map((c) => {
+   543→   543→        const idx = c.indexOf('=')
+   544→   544→        return { name: c.slice(0, idx).trim(), value: c.slice(idx + 1).trim() }
+   545→   545→      })
+   546→   546→    : []
+   547→   547→  const explicitCookies = (cfg.cookies ?? '')
+   548→   548→    .split(';')
+   549→   549→    .map((c) => c.trim())
+   550→   550→    .filter(Boolean)
+   551→   551→    .map((c) => {
+   552→   552→      const idx = c.indexOf('=')
+   553→   553→      if (idx <= 0) return null
+   554→   554→      const u = new URL(url)
+   555→   555→      return { name: c.slice(0, idx).trim(), value: c.slice(idx + 1).trim(), domain: u.hostname, path: '/' }
+   556→   556→    })
+   557→   557→    .filter((c): c is { name: string; value: string; domain: string; path: string } => c !== null)
+   558→   558→  const allCookies = [...explicitCookies, ...jarCookies].map((c) => ({
+   559→   559→    name: c.name,
+   560→   560→    value: c.value,
+   561→   561→    domain: c.domain ?? new URL(url).hostname,
+   562→   562→    path: '/',
+   563→   563→  }))
+   564→   564→  if (allCookies.length) await context.addCookies(allCookies)
+   565→   565→
+   566→   566→  try {
+   567→   567→    const page = await context.newPage()
+   568→   568→    // goto 带一次重试（沙箱/网络偶发 ERR_ADDRESS_UNREACHABLE）
+   569→   569→    try {
+   570→   570→      await page.goto(url, { waitUntil: 'domcontentloaded', timeout })
+   571→   571→    } catch (e) {
+   572→   572→      const msg = e instanceof Error ? e.message : String(e)
+   573→   573→      if (!/ERR_ADDRESS_UNREACHABLE|ERR_CONNECTION|net::ERR/i.test(msg)) throw e
+   574→   574→      await page.waitForTimeout(2500)
+   575→   575→      await page.goto(url, { waitUntil: 'domcontentloaded', timeout })
+   576→   576→    }
+   577→   577→    await page.waitForLoadState('networkidle', { timeout: 6000 }).catch(() => undefined)
+   578→   578→    await page.waitForTimeout(800)
+   579→   579→
+   580→   580→    let html = await page.content()
+   581→   581→    let finalUrl = page.url()
+   582→   582→
+   583→   583→    // WAF 挑战页 → 自动求解验证码
+   584→   584→    if (isWafChallengeHtml(html) && !isHardDeniedHtml(html)) {
+   585→   585→      const solved = await solveWafChallenge(page)
+   586→   586→      if (solved) {
+   587→   587→        await page.waitForTimeout(600)
+   588→   588→        html = await page.content()
+   589→   589→        finalUrl = page.url()
+   590→   590→      }
+   591→   591→    }
+   592→   592→
+   593→   593→    // 硬 403（IP 黑名单）：全局冷却后明确抛错，避免静默返回空解析结果
+   594→   594→    if (isHardDeniedHtml(html)) {
+   595→   595→      domainThrottle.reportBlock(url, 180_000)
+   596→   596→      throw new Error(`目标站拒绝浏览器访问（IP 临时封禁，HTTP 403）：${url}。已自动冷却 3 分钟`)
+   597→   597→    }
+   598→   598→
+   599→   599→    // JS 渲染翻页交互：逐项点击分页控件并拼接快照（参数加密/URL 不变站点）
+   600→   600→    if (cfg.jsPages?.enabled && cfg.jsPages.itemsSelector && !isWafChallengeHtml(html)) {
+   601→   601→      html = await collectJsPages(page, html, cfg.jsPages)
+   602→   602→    }
+   603→   603→
+   604→   604→    // 会话 cookie 回写 jar（WAF 通过后的通行 cookie 全局复用）
+   605→   605→    try {
+   606→   606→      const cookies = await context.cookies()
+   607→   607→      cookieJar.absorbFromBrowser(new URL(url).hostname, cookies)
+   608→   608→    } catch {
+   609→   609→      /* ignore */
+   610→   610→    }
+   611→   611→
+   612→   612→    return {
+   613→   613→      html,
+   614→   614→      status: isWafChallengeHtml(html) ? 403 : 200,
+   615→   615→      finalUrl,
+   616→   616→      strategy: 'playwright',
+   617→   617→      elapsedMs: Date.now() - started,
+   618→   618→      wafChallenged: isWafChallengeHtml(html),
+   619→   619→    }
+   620→   620→  } finally {
+   621→   621→    // 仅关闭 context（页面级），共享 browser 单例保持存活以复用会话
+   622→   622→    await context.close().catch(() => undefined)
+   623→   623→  }
+   624→   624→}
+   625→   625→
+   626→   626→/**
+   627→   627→ * JS 渲染翻页交互：逐项点击分页控件（下拉/按钮）并拼接每页快照。
+   628→   628→ * 适用于分页参数加密、点击后 URL 不变的站点；拼接结果用 <!--JSPAGE--> 分隔，
+   629→   629→ * 解析器（css/regex/xpath）对拼接后的 HTML 透明。
+   630→   630→ * 点击均用短超时（3s）且单页失败跳过，避免不可见元素 30s 重试导致整体挂起。
+   631→   631→ */
+   632→   632→async function collectJsPages(
+   633→   633→  page: PlaywrightPage,
+   634→   634→  firstPageHtml: string,
+   635→   635→  js: NonNullable<FetchConfig['jsPages']>
+   636→   636→): Promise<string> {
+   637→   637→  const snapshots: string[] = [firstPageHtml]
+   638→   638→  const CLICK_TIMEOUT = 3000
+   639→   639→  try {
+   640→   640→    const wait = js.waitAfterClick ?? 1200
+   641→   641→    const max = Math.min(js.maxPages ?? 30, 40)
+   642→   642→    const startIdx = js.skipFirst ? 1 : 0
+   643→   643→    let trigger: PlaywrightElement | null = null
+   644→   644→    if (js.triggerSelector) {
+   645→   645→      trigger = await page.$(js.triggerSelector)
+   646→   646→    }
+   647→   647→    for (let i = startIdx; snapshots.length < max; i++) {
+   648→   648→      // 每轮重新查询分页项：点击翻页后 DOM 常被重建，跨轮持有的 ElementHandle 会失效（stale element）
+   649→   649→      const items = await page.$$(js.itemsSelector)
+   650→   650→      if (i >= items.length) break
+   651→   651→      try {
+   652→   652→        // 下拉类控件需先展开再选目标项
+   653→   653→        if (trigger) {
+   654→   654→          await trigger.click({ timeout: 1500, force: true }).catch(() => undefined)
+   655→   655→          await page.waitForTimeout(200)
+   656→   656→        }
+   657→   657→        await items[i].click({ timeout: CLICK_TIMEOUT, force: true })
+   658→   658→        await page.waitForTimeout(wait)
+   659→   659→        await page.waitForLoadState('domcontentloaded', { timeout: 5000 }).catch(() => undefined)
+   660→   660→        snapshots.push(await page.content())
+   661→   661→      } catch {
+   662→   662→        // 单页点击失败跳过
+   663→   663→      }
+   664→   664→    }
+   665→   665→  } catch {
+   666→   666→    // 分页控件不存在 → 仅返回首屏
+   667→   667→  }
+   668→   668→  return snapshots.length > 1 ? snapshots.join('<!--JSPAGE-->') : firstPageHtml
+   669→   669→}
+   670→   670→
+   671→   671→/** VLM 识别验证码图片，返回识别出的字符 */
+   672→   672→async function recognizeCaptcha(pngBuffer: Buffer): Promise<string> {
+   673→   673→  const spec = 'z-ai-web-dev-sdk'
+   674→   674→  const mod = (await import(/* webpackIgnore: true */ spec).catch(() => null)) as {
+   675→   675→    default: {
+   676→   676→      create: () => Promise<{
+   677→   677→        chat: {
+   678→   678→          completions: {
+   679→   679→            createVision: (req: Record<string, unknown>) => Promise<{
+   680→   680→              choices?: { message?: { content?: string } }[]
+   681→   681→            }>
+   682→   682→          }
+   683→   683→        }
+   684→   684→      }>
+   685→   685→    }
+   686→   686→  } | null
+   687→   687→  if (!mod) throw new Error('z-ai-web-dev-sdk 不可用，无法自动识别验证码')
+   688→   688→  const zai = await mod.default.create()
+   689→   689→  const base64 = pngBuffer.toString('base64')
+   690→   690→  // VLM 调用带 25s 超时保护，避免网络异常时请求挂起
+   691→   691→  const response = await Promise.race([
+   692→   692→    zai.chat.completions.createVision({
+   693→   693→      messages: [
+   694→   694→        {
+   695→   695→          role: 'user',
+   696→   696→          content: [
+   697→   697→            {
+   698→   698→              type: 'text',
+   699→   699→              text: '图片中是一个网站验证码。请准确识别其中的全部字符（可能包含数字与英文字母，注意区分大小写与易混字符如 0/O、1/l/I、6/b、8/B）。只输出识别出的验证码字符本身，不要任何解释、标点或空格。',
+   700→   700→            },
+   701→   701→            { type: 'image_url', image_url: { url: `data:image/png;base64,${base64}` } },
+   702→   702→          ],
+   703→   703→        },
+   704→   704→      ],
+   705→   705→      thinking: { type: 'disabled' },
+   706→   706→    }),
+   707→   707→    new Promise<never>((_, reject) => setTimeout(() => reject(new Error('VLM 验证码识别超时')), 25000)),
+   708→   708→  ])
+   709→   709→  const content = response.choices?.[0]?.message?.content ?? ''
+   710→   710→  return content.replace(/[^a-zA-Z0-9]/g, '').slice(0, 8)
+   711→   711→}
+   712→   712→
+   713→   713→/**
+   714→   714→ * GoEdge WAF（及同构验证码页）自动求解：
+   715→   715→ * 截图验证码 → VLM 识别 → 填表提交 → 校验是否通过（最多 4 次刷新重试）
+   716→   716→ */
+   717→   717→async function solveWafChallenge(page: PlaywrightPage): Promise<boolean> {
+   718→   718→  for (let attempt = 0; attempt < 4; attempt++) {
+   719→   719→    try {
+   720→   720→      const img = await page.$('#ui-captcha-image')
+   721→   721→      if (!img) return !isWafChallengeHtml(await page.content())
+   722→   722→      const shot = await img.screenshot({ encoding: 'base64' })
+   723→   723→      const base64 = typeof shot === 'string' ? shot : Buffer.from(shot).toString('base64')
+   724→   724→      if (!base64) continue
+   725→   725→      const code = await recognizeCaptcha(Buffer.from(base64, 'base64'))
+   726→   726→      if (!code || code.length < 3) continue
+   727→   727→      const input = await page.$('#GOEDGE_WAF_CAPTCHA_CODE')
+   728→   728→      const submit = await page.$('#captcha-form button')
+   729→   729→      if (!input || !submit) return !isWafChallengeHtml(await page.content())
+   730→   730→      await input.fill(code)
+   731→   731→      await submit.click()
+   732→   732→      // 等待跳转/刷新（WAF 通过后会 302 回原页面）
+   733→   733→      await page.waitForLoadState('domcontentloaded', { timeout: 12000 }).catch(() => undefined)
+   734→   734→      await page.waitForTimeout(1500)
+   735→   735→      const html = await page.content()
+   736→   736→      if (!isWafChallengeHtml(html)) return true
+   737→   737→    } catch {
+   738→   738→      // 下一轮刷新重试
+   739→   739→    }
+   740→   740→    // 刷新验证码后重试
+   741→   741→    await page.reload({ waitUntil: 'domcontentloaded', timeout: 15000 }).catch(() => undefined)
+   742→   742→    await page.waitForTimeout(800)
+   743→   743→  }
+   744→   744→  return false
+   745→   745→}
+   746→   746→
+   747→   747→// ============================================================
+   748→   748→// 类型别名（Playwright 最小接口面）
+   749→   749→// ============================================================
+   750→   750→
+   751→   751→interface PlaywrightElement {
+   752→   752→  screenshot: (opts?: Record<string, unknown>) => Promise<string | Buffer>
+   753→   753→  fill: (v: string) => Promise<void>
+   754→   754→  click: (opts?: Record<string, unknown>) => Promise<void>
+   755→   755→}
+   756→   756→interface PlaywrightPage {
+   757→   757→  goto: (url: string, o: Record<string, unknown>) => Promise<unknown>
+   758→   758→  waitForLoadState: (state: string, o?: Record<string, unknown>) => Promise<unknown>
+   759→   759→  waitForTimeout: (ms: number) => Promise<void>
+   760→   760→  content: () => Promise<string>
+   761→   761→  url: () => string
+   762→   762→  reload: (o?: Record<string, unknown>) => Promise<unknown>
+   763→   763→  $: (sel: string) => Promise<PlaywrightElement | null>
+   764→   764→  $$: (sel: string) => Promise<PlaywrightElement[]>
+   765→   765→}
+   766→   766→interface PlaywrightContext {
+   767→   767→  addCookies: (cookies: unknown[]) => Promise<void>
+   768→   768→  addInitScript: (script: string) => Promise<void>
+   769→   769→  cookies: () => Promise<{ name: string; value: string; expires?: number }[]>
+   770→   770→  newPage: () => Promise<PlaywrightPage>
+   771→   771→  close: () => Promise<void>
+   772→   772→}
+   773→   773→interface PlaywrightBrowser {
+   774→   774→  newContext: (o: Record<string, unknown>) => Promise<PlaywrightContext>
+   775→   775→  isConnected?: () => boolean
+   776→   776→  close: () => Promise<void>
+   777→   777→}
+   778→   778→
+   779→   779→// ============================================================
+   780→   780→// Hyperbrowser 云端隐身策略
+   781→   781→// ============================================================
+   782→   782→
+   783→   783→interface HyperbrowserModule {
+   784→   784→  Hyperbrowser: new (options: { apiKey: string }) => {
+   785→   785→    scrape: {
+   786→   786→      startAndWait: (options: Record<string, unknown>) => Promise<{
+   787→   787→        data?: { html?: string; finalUrl?: string }
+   788→   788→      }>
+   789→   789→    }
+   790→   790→  }
+   791→   791→}
+   792→   792→
+   793→   793→async function fetchWithHyperbrowser(url: string, cfg: FetchConfig, timeout: number, started: number): Promise<FetchResult> {
+   794→   794→  const spec = '@hyperbrowser/sdk'
+   795→   795→  const mod = (await import(/* webpackIgnore: true */ spec).catch(() => null)) as HyperbrowserModule | null
+   796→   796→  if (!mod) {
+   797→   797→    throw new Error('Hyperbrowser SDK 未安装：请执行 `bun add @hyperbrowser/sdk` 后使用')
+   798→   798→  }
+   799→   799→  const apiKey = process.env.HYPERBROWSER_API_KEY
+   800→   800→  if (!apiKey) throw new Error('未配置 HYPERBROWSER_API_KEY 环境变量，无法使用 Hyperbrowser 策略')
+   801→   801→  const client = new mod.Hyperbrowser({ apiKey })
+   802→   802→  const result = await client.scrape.startAndWait({
+   803→   803→    url,
+   804→   804→    useStealth: true,
+   805→   805→    timeout,
+   806→   806→    sessionOptions: {
+   807→   807→      acceptCookies: true,
+   808→   808→    },
+   809→   809→  })
+   810→   810→  const html = result.data?.html ?? ''
+   811→   811→  return {
+   812→   812→    html,
+   813→   813→    status: html ? 200 : 502,
+   814→   814→    finalUrl: result.data?.finalUrl ?? url,
+   815→   815→    strategy: 'hyperbrowser',
+   816→   816→    elapsedMs: Date.now() - started,
+   817→   817→  }
+   818→   818→}
+   819→   819→
+   820→   820→// ============================================================
+   821→   821→// 图片抓取（封面下载）：带会话 cookie + Referer 伪装
+   822→   822→// ============================================================
+   823→   823→
+   824→   824→export async function fetchImage(url: string, referer?: string, timeout = 20000, ua?: string, cookies?: string): Promise<Buffer> {
+   825→   825→  await domainThrottle.wait(url)
+   826→   826→  const headers: Record<string, string> = {
+   827→   827→    'User-Agent': ua ?? randomUA(),
+   828→   828→    Referer: referer || new URL(url).origin,
+   829→   829→    Accept: 'image/avif,image/webp,image/apng,image/*,*/*;q=0.8',
+   830→   830→  }
+   831→   831→  const jarCookie = cookies || cookieJar.header(url)
+   832→   832→  if (jarCookie) headers.Cookie = jarCookie
+   833→   833→  const res = await fetchWithRetry(url, headers, timeout, 1, Boolean(ua))
+   834→   834→  const buf = Buffer.from(await res.arrayBuffer())
+   835→   835→  if (!res.ok || buf.length === 0) {
+   836→   836→    throw new Error(`图片下载失败：HTTP ${res.status}（${url.slice(0, 120)}）`)
+   837→   837→  }
+   838→   838→  return buf
+   839→   839→}
+   840→   840→
