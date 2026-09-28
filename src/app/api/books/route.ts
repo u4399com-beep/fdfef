@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { db } from '@/lib/db'
+import { toInt } from '../_lib/http'
 
 export const runtime = 'nodejs'
 export const dynamic = 'force-dynamic'
@@ -8,8 +9,9 @@ export const dynamic = 'force-dynamic'
 export async function GET(req: NextRequest) {
   const q = req.nextUrl.searchParams.get('q') ?? ''
   const category = req.nextUrl.searchParams.get('category') ?? ''
-  const page = Math.max(1, Number(req.nextUrl.searchParams.get('page') ?? 1))
-  const pageSize = Math.min(60, Math.max(6, Number(req.nextUrl.searchParams.get('pageSize') ?? 12)))
+  // toInt 防 NaN/Infinity 注入（page=1e999 → skip=Infinity → Prisma 500）
+  const page = toInt(req.nextUrl.searchParams.get('page'), 1, 1)
+  const pageSize = toInt(req.nextUrl.searchParams.get('pageSize'), 12, 6, 60)
 
   const where = {
     ...(q ? { OR: [{ title: { contains: q } }, { author: { contains: q } }, { keywords: { contains: q } }] } : {}),

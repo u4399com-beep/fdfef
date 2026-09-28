@@ -22,6 +22,8 @@ function viewToQuery(view: SiteView): string {
   switch (view.type) {
     case 'book':
       return `type=book&bookId=${encodeURIComponent(view.bookId)}`
+    case 'toc':
+      return `type=toc&bookId=${encodeURIComponent(view.bookId)}`
     case 'chapter':
       return `type=chapter&chapterId=${encodeURIComponent(view.chapterId)}`
     case 'keyword':
@@ -64,6 +66,15 @@ function computeTDK(preview: PreviewResponse): { title: string; description: str
         keywords: [kw, site.keywords].filter(Boolean).join(','),
       }
     }
+    case 'toc': {
+      const b = data.book
+      if (!b) break
+      return {
+        title: `${b.title}章节目录_${b.author ? b.author + '_' : ''}${site.siteName}`,
+        description: `《${b.title}》${b.author ? `（${b.author} 著）` : ''}全部 ${b.totalChapters} 章完整目录，${siteDesc}`,
+        keywords: [b.title, '章节目录', '全部章节', ...b.keywords.slice(0, 3)].filter(Boolean).join(','),
+      }
+    }
     default:
       break
   }
@@ -94,8 +105,11 @@ export function SitePreview({
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState('')
   const containerRef = useRef<HTMLDivElement>(null)
+  // 请求序号：快速导航时旧响应晚到不得覆盖新视图（乱序竞态）
+  const reqRef = useRef(0)
 
   const load = useCallback(async () => {
+    const reqId = ++reqRef.current
     setLoading(true)
     setError('')
     try {
@@ -105,12 +119,15 @@ export function SitePreview({
         const err = (await res.json().catch(() => ({}))) as { error?: string }
         throw new Error(err.error || `加载失败（${res.status}）`)
       }
-      setPreview((await res.json()) as PreviewResponse)
+      const data = (await res.json()) as PreviewResponse
+      if (reqId !== reqRef.current) return
+      setPreview(data)
       containerRef.current?.scrollTo({ top: 0 })
     } catch (e) {
+      if (reqId !== reqRef.current) return
       setError(e instanceof Error ? e.message : String(e))
     } finally {
-      setLoading(false)
+      if (reqId === reqRef.current) setLoading(false)
     }
   }, [siteId, view])
 
@@ -119,6 +136,26 @@ export function SitePreview({
   }, [load])
 
   // ---------- TDK + JSON-LD（SEO / GEO 结构化数据） ----------
+  // 卸载时还原后台页面自身的 title/meta，避免预览污染宿主页面的 head
+  const headSnapshotRef = useRef<{ title: string; description: string | null; keywords: string | null } | null>(null)
+  useEffect(() => {
+    headSnapshotRef.current = {
+      title: document.title,
+      description: document.head.querySelector<HTMLMetaElement>('meta[name="description"]')?.content ?? null,
+      keywords: document.head.querySelector<HTMLMetaElement>('meta[name="keywords"]')?.content ?? null,
+    }
+    return () => {
+      const snap = headSnapshotRef.current
+      if (snap) {
+        document.title = snap.title
+        if (snap.description !== null) upsertMeta('name', 'description', snap.description)
+        if (snap.keywords !== null) upsertMeta('name', 'keywords', snap.keywords)
+        headSnapshotRef.current = null
+      }
+      document.getElementById('site-jsonld')?.remove()
+    }
+  }, [])
+
   useEffect(() => {
     if (!preview) return
     const tdk = computeTDK(preview)
@@ -152,6 +189,17 @@ export function SitePreview({
           { '@type': 'ListItem', position: 1, name: site.siteName },
           { '@type': 'ListItem', position: 2, name: c.bookTitle },
           { '@type': 'ListItem', position: 3, name: c.title },
+        ],
+      })
+    }
+    if (v.type === 'toc' && data.book) {
+      const b = data.book
+      ld.push({
+        '@context': 'https://schema.org',
+        '@type': 'BreadcrumbList',
+        itemListElement: [
+          { '@type': 'ListItem', position: 1, name: site.siteName },
+          { '@type': 'ListItem', position: 2, name: `${b.title} 章节目录` },
         ],
       })
     }

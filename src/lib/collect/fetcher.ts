@@ -16,7 +16,6 @@ const UA_LIST = [
   'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0.0.0 Safari/537.36 Edg/123.0.0.0',
   'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.4 Safari/605.1.15',
   'Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:125.0) Gecko/20100101 Firefox/125.0',
-  'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
   'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0.0.0 Safari/537.36',
   'Mozilla/5.0 (iPhone; CPU iPhone OS 17_4 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.4 Mobile/15E148 Safari/604.1',
   'Mozilla/5.0 (Linux; Android 14; Pixel 8) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Mobile Safari/537.36',
@@ -224,6 +223,9 @@ const WAF_SIGNATURES = [
   /ui-captcha-image/i,
   /captcha-form/i,
   /verify yourself/i,
+  // Cloudflare 挑战页（headless 无法通过，但至少给出明确的 WAF 报错而非静默解析为空）
+  /<title>[^<]*just a moment[^<]*<\/title>/i,
+  /challenges\.cloudflare\.com\//i,
 ]
 
 /** 判断 HTML 是否为 WAF/验证码挑战页或硬拒绝页（403 黑名单） */
@@ -282,6 +284,23 @@ function decodeBuffer(buffer: Buffer, charset: string): string {
 // 请求头构建：UA + Client Hints + Sec-Fetch 指纹
 // ============================================================
 
+/** 合并两组 cookie 串：override 中同名键优先，base 中独有键保留（jar 通行 cookie 与显式 cookie 合并） */
+function mergeCookieStrings(base: string, override: string): string {
+  const parse = (s: string): [string, string][] =>
+    s
+      .split(';')
+      .map((c) => c.trim())
+      .filter(Boolean)
+      .map((c) => {
+        const idx = c.indexOf('=')
+        return idx <= 0 ? null : ([c.slice(0, idx).trim(), c.slice(idx + 1).trim()] as [string, string])
+      })
+      .filter((p): p is [string, string] => p !== null)
+  const map = new Map(parse(base))
+  for (const [k, v] of parse(override)) map.set(k, v)
+  return [...map.entries()].map(([k, v]) => `${k}=${v}`).join('; ')
+}
+
 function buildHeaders(cfg: FetchConfig, url: string, uaOverride?: string): Record<string, string> {
   const ua = uaOverride ?? (cfg.rotateUA === false ? FIXED_UA : randomUA())
   const headers: Record<string, string> = {
@@ -308,9 +327,20 @@ function buildHeaders(cfg: FetchConfig, url: string, uaOverride?: string): Recor
             : '"Linux"'
   }
   if (cfg.referer) headers.Referer = cfg.referer
-  if (cfg.cookies) headers.Cookie = cfg.cookies
-  // 会话 cookie 自动附带（用户显式 cookies 优先）
-  if (!cfg.cookies) {
+  else {
+    // 默认 Referer 指纹：真实浏览器站内跳转必带同源 Referer，裸无 Referer 是明显爬虫特征
+    try {
+      headers.Referer = `${new URL(url).origin}/`
+    } catch {
+      /* 非法 URL 已在入口拦 */
+    }
+  }
+  // 显式 cookies 与 jar 会话 cookie 合并（显式优先同名键）：
+  // WAF 解题后新入 jar 的通行 cookie 不再被旧显式 cookie 完全屏蔽
+  if (cfg.cookies) {
+    const jarCookie = cookieJar.header(url)
+    headers.Cookie = jarCookie ? mergeCookieStrings(jarCookie, cfg.cookies) : cfg.cookies
+  } else {
     const jarCookie = cookieJar.header(url)
     if (jarCookie) headers.Cookie = jarCookie
   }
@@ -370,6 +400,8 @@ export async function fetchPage(url: string, cfg: FetchConfig = {}): Promise<Fet
           `WAF 拦截且浏览器策略不可用：${e instanceof Error ? e.message : String(e)}（请安装 Playwright：bun add playwright && bunx playwright install chromium）`
         )
       }
+      // 浏览器策略失败后稍候再试一轮 HTTP：此时 jar 里可能已有解题通行 cookie，直连即可通过
+      await sleep(1500)
     }
   }
   return { html, status, finalUrl, strategy: 'http', elapsedMs: Date.now() - started, wafChallenged: true }
@@ -404,11 +436,16 @@ async function fetchWithRetry(
           break
         }
         if (i < retries) {
-          // 429/5xx：更长退避 + 轮换 UA
+          // 429/5xx：更长退避（尊重 Retry-After 头）+ 轮换 UA
           lastErr = new Error(`HTTP ${res.status}`)
-          await sleep(res.status === 429 ? 1500 + Math.random() * 2000 : 600 + Math.random() * 800)
+          let backoff = res.status === 429 ? 1500 + Math.random() * 2000 : 600 + Math.random() * 800
+          const ra = Number.parseFloat(res.headers.get('retry-after') ?? '')
+          if (Number.isFinite(ra) && ra >= 0) backoff = Math.min(ra * 1000 + 250, 30_000)
+          await sleep(backoff)
           continue
         }
+        // 最后一次重试仍非 2xx：不再把错误页 body 当解析对象（避免 5xx 错误页文本混入正文）
+        throw new Error(`HTTP ${res.status}（${url.slice(0, 120)}）`)
       }
       return res
     } catch (e) {
@@ -600,7 +637,6 @@ async function collectJsPages(
   const snapshots: string[] = [firstPageHtml]
   const CLICK_TIMEOUT = 3000
   try {
-    const items = await page.$$(js.itemsSelector)
     const wait = js.waitAfterClick ?? 1200
     const max = Math.min(js.maxPages ?? 30, 40)
     const startIdx = js.skipFirst ? 1 : 0
@@ -608,7 +644,10 @@ async function collectJsPages(
     if (js.triggerSelector) {
       trigger = await page.$(js.triggerSelector)
     }
-    for (let i = startIdx; i < items.length && snapshots.length < max; i++) {
+    for (let i = startIdx; snapshots.length < max; i++) {
+      // 每轮重新查询分页项：点击翻页后 DOM 常被重建，跨轮持有的 ElementHandle 会失效（stale element）
+      const items = await page.$$(js.itemsSelector)
+      if (i >= items.length) break
       try {
         // 下拉类控件需先展开再选目标项
         if (trigger) {

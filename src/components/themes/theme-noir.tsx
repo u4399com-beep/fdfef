@@ -2,15 +2,8 @@
 
 import { useState } from 'react'
 import type { ReactElement, ReactNode } from 'react'
-import {
-  ArrowDown,
-  ArrowLeft,
-  ArrowRight,
-  ArrowUp,
-  ChevronRight,
-  Hash,
-} from 'lucide-react'
-import type { SiteMeta, SiteView, ThemeProps } from '@/lib/theme-types'
+import { ArrowLeft, ArrowRight, ChevronRight, Hash } from 'lucide-react'
+import type { ChapterItem, SiteMeta, SiteView, ThemeProps } from '@/lib/theme-types'
 
 type Nav = (v: SiteView) => void
 
@@ -111,6 +104,37 @@ function DirectorySkeleton({ rows = 6 }: { rows?: number }) {
   )
 }
 
+/* ================= 章节行（book / toc 复用） ================= */
+
+function ChapterLine({
+  chapter,
+  onNavigate,
+}: {
+  chapter: ChapterItem
+  onNavigate: Nav
+}) {
+  return (
+    <li className="border-b border-zinc-800/60">
+      <button
+        type="button"
+        onClick={() => onNavigate({ type: 'chapter', chapterId: chapter.id })}
+        className="group flex min-h-[44px] w-full items-center gap-5 py-3 text-left"
+      >
+        <span className="w-8 shrink-0 font-mono text-xs text-zinc-700 transition-colors group-hover:text-zinc-400">
+          {String(chapter.order).padStart(3, '0')}
+        </span>
+        <span className="min-w-0 flex-1 truncate text-sm text-zinc-400 transition-colors group-hover:text-zinc-100">
+          {chapter.title}
+        </span>
+        <ChevronRight
+          className="h-3.5 w-3.5 shrink-0 text-zinc-800 transition-colors group-hover:text-zinc-400"
+          aria-hidden="true"
+        />
+      </button>
+    </li>
+  )
+}
+
 /* ================= Home ================= */
 
 function NoirHome({ site, data, loading, onNavigate }: ThemeProps) {
@@ -199,11 +223,7 @@ function NoirHome({ site, data, loading, onNavigate }: ThemeProps) {
 /* ================= Book ================= */
 
 function NoirBook({ site, data, loading, onNavigate }: ThemeProps) {
-  const [asc, setAsc] = useState(true)
   const book = data.book
-  const chapters = book
-    ? [...book.chapters].sort((a, b) => (asc ? a.order - b.order : b.order - a.order))
-    : []
 
   return (
     <Shell site={site} onNavigate={onNavigate}>
@@ -239,6 +259,25 @@ function NoirBook({ site, data, loading, onNavigate }: ThemeProps) {
               {book.author} · {book.category} · {book.status} · {book.totalChapters} chapters
             </p>
             <p className="mt-6 max-w-xl text-sm leading-7 text-zinc-400">{book.intro}</p>
+            <div className="mt-6 flex flex-wrap gap-3">
+              <button
+                type="button"
+                disabled={!book.firstChapterId}
+                onClick={() => {
+                  if (book.firstChapterId) onNavigate({ type: 'chapter', chapterId: book.firstChapterId })
+                }}
+                className="inline-flex min-h-[44px] items-center bg-zinc-100 px-6 font-mono text-xs uppercase tracking-widest text-zinc-950 transition-colors hover:bg-white disabled:cursor-not-allowed disabled:opacity-40"
+              >
+                开始阅读
+              </button>
+              <button
+                type="button"
+                onClick={() => onNavigate({ type: 'toc', bookId: book.id })}
+                className="inline-flex min-h-[44px] items-center border border-zinc-700 px-6 font-mono text-xs uppercase tracking-widest text-zinc-300 transition-colors hover:border-zinc-400 hover:text-white"
+              >
+                查看全部 {book.totalChapters} 章目录
+              </button>
+            </div>
             {book.keywords.length + book.suggestKeywords.length > 0 && (
               <div className="mt-6 flex flex-wrap gap-x-4 gap-y-1">
                 {Array.from(new Set([...book.keywords, ...book.suggestKeywords])).map((kw) => (
@@ -255,51 +294,126 @@ function NoirBook({ site, data, loading, onNavigate }: ThemeProps) {
             )}
           </article>
 
-          <section aria-label="章节目录" className="border-t border-zinc-800 pb-10 pt-5">
-            <div className="flex items-center justify-between">
+          <section aria-label="最新更新" className="border-t border-zinc-800 pb-10 pt-5">
+            <div className="flex items-center justify-between gap-3">
               <h2 className="font-mono text-xs uppercase tracking-[0.3em] text-zinc-500">
-                目录 / Contents
+                最新更新 / Latest
+                <span className="ml-3 tracking-widest text-zinc-600">
+                  最近 {book.chapters.length} 章 / 共 {book.totalChapters} 章
+                </span>
               </h2>
               <button
                 type="button"
-                onClick={() => setAsc((v) => !v)}
-                className="inline-flex min-h-[44px] items-center gap-1.5 font-mono text-xs uppercase tracking-widest text-zinc-500 transition-colors hover:text-zinc-100"
+                onClick={() => onNavigate({ type: 'toc', bookId: book.id })}
+                className="inline-flex min-h-[44px] shrink-0 items-center border border-zinc-800 px-4 font-mono text-xs uppercase tracking-widest text-zinc-500 transition-colors hover:border-zinc-500 hover:text-zinc-100"
               >
-                {asc ? (
-                  <ArrowUp className="h-3.5 w-3.5" aria-hidden="true" />
-                ) : (
-                  <ArrowDown className="h-3.5 w-3.5" aria-hidden="true" />
-                )}
-                {asc ? '正序' : '倒序'}
+                完整目录 →
               </button>
             </div>
-            {chapters.length === 0 ? (
+            {book.chapters.length === 0 ? (
               <p className="py-10 font-mono text-sm text-zinc-600">暂无章节。</p>
             ) : (
-              <ul className="mt-3 max-h-96 divide-y divide-zinc-800/60 overflow-y-auto pr-1">
-                {chapters.map((ch) => (
-                  <li key={ch.id}>
-                    <button
-                      type="button"
-                      onClick={() => onNavigate({ type: 'chapter', chapterId: ch.id })}
-                      className="group flex min-h-[44px] w-full items-center gap-5 py-3 text-left"
-                    >
-                      <span className="w-8 shrink-0 font-mono text-xs text-zinc-700 transition-colors group-hover:text-zinc-400">
-                        {String(ch.order).padStart(3, '0')}
-                      </span>
-                      <span className="min-w-0 flex-1 truncate text-sm text-zinc-400 transition-colors group-hover:text-zinc-100">
-                        {ch.title}
-                      </span>
-                      <ChevronRight
-                        className="h-3.5 w-3.5 shrink-0 text-zinc-800 transition-colors group-hover:text-zinc-400"
-                        aria-hidden="true"
-                      />
-                    </button>
-                  </li>
+              <ul className="mt-3">
+                {book.chapters.map((ch) => (
+                  <ChapterLine key={ch.id} chapter={ch} onNavigate={onNavigate} />
                 ))}
               </ul>
             )}
           </section>
+        </>
+      )}
+    </Shell>
+  )
+}
+
+/* ================= Toc（完整章节目录页） ================= */
+
+const TOC_PAGE_SIZE = 100
+
+function NoirToc({ site, data, loading, onNavigate }: ThemeProps) {
+  const [page, setPage] = useState(1)
+  const book = data.book
+  const chapters = book?.chapters ?? []
+  const totalPages = Math.max(1, Math.ceil(chapters.length / TOC_PAGE_SIZE))
+  const safePage = Math.min(page, totalPages)
+  const visible = chapters.slice((safePage - 1) * TOC_PAGE_SIZE, safePage * TOC_PAGE_SIZE)
+
+  return (
+    <Shell site={site} onNavigate={onNavigate}>
+      <Crumb
+        trail={[
+          { label: 'Home', onSelect: () => onNavigate({ type: 'home' }) },
+          {
+            label: book?.title ?? (loading ? 'Loading' : 'Book'),
+            onSelect: book ? () => onNavigate({ type: 'book', bookId: book.id }) : undefined,
+          },
+          { label: '章节目录' },
+        ]}
+      />
+
+      {loading ? (
+        <div className="py-8" aria-hidden="true">
+          <DirectorySkeleton rows={10} />
+        </div>
+      ) : !book ? (
+        <div className="py-24">
+          <p className="font-mono text-sm text-zinc-500">404 — 未找到该书籍。</p>
+          <button
+            type="button"
+            onClick={() => onNavigate({ type: 'home' })}
+            className="mt-6 inline-flex min-h-[44px] items-center border border-zinc-700 px-5 font-mono text-xs uppercase tracking-widest text-zinc-300 transition-colors hover:border-zinc-400 hover:text-white"
+          >
+            返回首页
+          </button>
+        </div>
+      ) : (
+        <>
+          <div className="flex flex-wrap items-end justify-between gap-3 pt-2">
+            <h1 className="text-3xl font-light tracking-tight text-zinc-50">
+              {book.title}
+              <span className="ml-3 font-mono text-xs uppercase tracking-[0.3em] text-zinc-500">
+                章节目录 / Contents
+              </span>
+            </h1>
+            <p className="font-mono text-xs uppercase tracking-[0.25em] text-zinc-600">
+              {book.author} · 共 {book.totalChapters} 章
+            </p>
+          </div>
+
+          <nav
+            aria-label="目录分页"
+            className="mt-6 flex flex-wrap items-center gap-4 border-b border-zinc-800 pb-4"
+          >
+            <button
+              type="button"
+              disabled={safePage <= 1}
+              onClick={() => setPage((p) => Math.max(1, p - 1))}
+              className="inline-flex min-h-[36px] items-center border border-zinc-800 px-4 font-mono text-xs uppercase tracking-widest text-zinc-400 transition-colors hover:border-zinc-500 hover:text-white disabled:cursor-not-allowed disabled:opacity-40"
+            >
+              ← 上一页
+            </button>
+            <span className="font-mono text-xs tracking-widest text-zinc-600">
+              第 {safePage} / {totalPages} 页
+            </span>
+            <button
+              type="button"
+              disabled={safePage >= totalPages}
+              onClick={() => setPage((p) => Math.min(totalPages, p + 1))}
+              className="inline-flex min-h-[36px] items-center border border-zinc-800 px-4 font-mono text-xs uppercase tracking-widest text-zinc-400 transition-colors hover:border-zinc-500 hover:text-white disabled:cursor-not-allowed disabled:opacity-40"
+            >
+              下一页 →
+            </button>
+          </nav>
+
+          {visible.length === 0 ? (
+            <p className="py-10 font-mono text-sm text-zinc-600">暂无章节。</p>
+          ) : (
+            <ul className="grid grid-cols-1 gap-x-10 pb-10 pt-1 md:grid-cols-2">
+              {visible.map((ch) => (
+                <ChapterLine key={ch.id} chapter={ch} onNavigate={onNavigate} />
+              ))}
+            </ul>
+          )}
         </>
       )}
     </Shell>
@@ -378,7 +492,7 @@ function NoirChapter({ site, data, loading, onNavigate }: ThemeProps) {
             </button>
             <button
               type="button"
-              onClick={() => onNavigate({ type: 'book', bookId: chapter.bookId })}
+              onClick={() => onNavigate({ type: 'toc', bookId: chapter.bookId })}
               className="inline-flex min-h-[44px] items-center font-mono text-xs uppercase tracking-widest text-zinc-500 transition-colors hover:text-white"
             >
               目录
@@ -511,6 +625,8 @@ export function ThemeNoir(props: ThemeProps): ReactElement {
       return <NoirHome {...props} />
     case 'book':
       return <NoirBook {...props} />
+    case 'toc':
+      return <NoirToc {...props} />
     case 'chapter':
       return <NoirChapter {...props} />
     case 'keyword':

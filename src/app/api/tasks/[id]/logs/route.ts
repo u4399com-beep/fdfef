@@ -10,8 +10,11 @@ type Ctx = { params: Promise<{ id: string }> }
 export async function GET(req: NextRequest, { params }: Ctx) {
   const { id } = await params
   const after = req.nextUrl.searchParams.get('after')
+  // 非法 after（非日期字符串）回退为全量拉取，而不是把 Invalid Date 直接丢给 Prisma 报 500
+  const afterDate = after ? new Date(after) : null
+  const validAfter = afterDate && !Number.isNaN(afterDate.valueOf()) ? afterDate : null
   const logs = await db.taskLog.findMany({
-    where: { taskId: id, ...(after ? { createdAt: { gte: new Date(after) } } : {}) },
+    where: { taskId: id, ...(validAfter ? { createdAt: { gte: validAfter } } : {}) },
     orderBy: { createdAt: 'asc' },
     take: 300,
   })

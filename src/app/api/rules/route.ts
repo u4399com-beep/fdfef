@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { db } from '@/lib/db'
+import { badRequest, readJson } from '../_lib/http'
 
 export const runtime = 'nodejs'
 export const dynamic = 'force-dynamic'
@@ -16,17 +17,19 @@ export async function GET(req: NextRequest) {
 
 /** 新建规则 */
 export async function POST(req: NextRequest) {
-  const body = (await req.json()) as { name?: string; type?: string; config?: unknown }
-  if (!body.name?.trim() || !body.type) {
+  const body = await readJson(req)
+  if (!body) return badRequest('请求体必须为 JSON 对象')
+  const name = typeof body.name === 'string' ? body.name.trim() : ''
+  if (!name || !body.type) {
     return NextResponse.json({ error: '名称与类型必填' }, { status: 400 })
   }
-  if (!['list', 'book', 'toc', 'content'].includes(body.type)) {
+  if (!['list', 'book', 'toc', 'content'].includes(String(body.type))) {
     return NextResponse.json({ error: '规则类型不合法' }, { status: 400 })
   }
   const rule = await db.collectRule.create({
     data: {
-      name: body.name.trim(),
-      type: body.type,
+      name,
+      type: String(body.type),
       config: typeof body.config === 'string' ? body.config : JSON.stringify(body.config ?? {}),
     },
   })

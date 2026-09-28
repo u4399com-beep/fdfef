@@ -75,8 +75,9 @@ export async function buildBookTxt(bookId: string, siteName?: string, domain?: s
   const cfgRow = await db.systemConfig.findUnique({ where: { id: 'main' } })
   const cfg = mergeDownload(cfgRow?.download)
 
-  const site = siteName?.trim() || (await db.siteConfig.findFirst())?.siteName || '小说站'
-  const dom = domain?.trim() || (await db.siteConfig.findFirst())?.domain || 'localhost'
+  const fallbackSite = (await db.siteConfig.findFirst()) ?? null
+  const site = siteName?.trim() || fallbackSite?.siteName || '小说站'
+  const dom = domain?.trim() || fallbackSite?.domain || 'localhost'
 
   const parts: string[] = []
   parts.push(`《${book.title}》`)
@@ -115,6 +116,15 @@ export async function buildBookTxt(bookId: string, siteName?: string, domain?: s
   if (cfg.insertSiteInfo) parts.push('\n' + fillTemplate(cfg.siteInfoTemplate, site, dom))
 
   const content = parts.join('\n')
-  const safeName = book.title.replace(/[/\\:*?"<>|]/g, '_').slice(0, 60)
+  // 文件名安全化：控制字符与 Windows 非法字符替换、去结尾点/空格、保留名前缀、空标题回退
+  let safeName = book.title
+    .replace(/[\u0000-\u001f\u007f]/g, '')
+    .replace(/[/\\:*?"<>|]/g, '_')
+    .trim()
+    .replace(/[. ]+$/g, '')
+    .slice(0, 60)
+    .trimEnd()
+  if (/^(CON|PRN|AUX|NUL|COM[1-9]|LPT[1-9])$/i.test(safeName)) safeName = `_${safeName}`
+  if (!safeName) safeName = book.id || 'book'
   return { filename: `${safeName}.txt`, content }
 }

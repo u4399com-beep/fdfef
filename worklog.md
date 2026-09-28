@@ -186,3 +186,129 @@ Work Log:
 
 Stage Summary:
 - 用户三项任务全部交付：①18 轮次迭代（14 类 bug 修复/4 项反反爬增强/3 项整合/2 项性能优化）②代码清理整合优化精简 ③两站各 5 本书完整采集（cunshu 1221 章 + rqwb 319 章 = 1540 章 346 万字，全部 0 错误 0 残留）
+---
+Task ID: R3-theme-b
+Agent: frontend-dev-agent (Z.ai Code)
+Task: magazine+neon 主题 toc 视图改造
+
+Work Log:
+- 通读 worklog 与参考实现 theme-classic.tsx（ChapterLine / ClassicBook 最新更新 section / 开始阅读+查看全部按钮 / ClassicToc 分页 / Chapter 返回目录 / switch case 'toc'），对齐 theme-types.ts 的 BookDetail（chapters=最新12章倒序、firstChapterId、totalChapters）与 SiteView 'toc' 契约
+- theme-magazine.tsx：
+  A. MagazineBook 删除 asc/setAsc 排序状态与排序逻辑；原「章节目录」全量滚动区改为「最新更新」白底卡片 section（Clock 图标 + `最近 N 章 / 共 M 章` + 右侧「完整目录 →」跳 toc；直接 map book.chapters，去掉 max-h-96 overflow-y-auto，行样式 roundex-xl hover:bg-emerald-50 保留）
+  B. 简介后新增「开始阅读」（emerald→teal 渐变实底，disabled={!firstChapterId}）与「查看全部 N 章目录」（描边按钮）跳 toc
+  C. 抽出共享 ChapterRow（章节行，book/toc 复用）；新增 MagazineToc：TOC_PAGE_SIZE=100、useState 翻页、safePage=Math.min(page,totalPages)、totalPages=Math.max(1,ceil(len/100))、翻页 Math.max/Math.min 防越界；面包屑 首页→书名(回 book)→章节目录；标题行 书名+章节目录+作者·共N章；分页导航（上一页/下一页禁用态 + 第X/Y页）；章节网格 grid-cols-1 md:grid-cols-2 白色圆角卡片容器；空态「暂无章节。」、404 态、loading 复用 BookPageSkeleton
+  D. MagazineChapter 返回目录改为 onNavigate({type:'toc'})；主组件 switch 增加 case 'toc'
+- theme-neon.tsx：语义相同改造，视觉保留深灰底紫粉橙渐变风：
+  A. NeonBook 删除排序状态；「最新更新」section（Zap 图标 + 最近N/共M + 完整目录→）；列表改 bg-black/30 ring-1 面板内 1/2/3 列密排网格（去 max-h-96 overflow-y-auto）
+  B. 「开始阅读」GRAD_R 渐变实底（disabled 处理）+「查看全部 N 章目录」白/15 描边按钮
+  C. 抽出共享 ChapterRow（mono 序号 fuchsia、group-hover 变白）；新增 NeonToc：分页逻辑同上；Chapters mono eyebrow + 书名+章节目录+作者·共N章；分页条 bg-white/5 ring-1 容器；网格 grid-cols-1 sm:2 lg:3；空态/404/loading 复用 BookSkeleton
+  D. NeonChapter 返回目录改 toc；switch 增加 case 'toc'
+- import 清理与新增：两文件引入 ChapterItem 类型；neon 新增 BookOpen（开始阅读图标）；两文件均无残留 asc/max-h-96（theme-noir/theme-ink 未在本次范围）
+- 验证：bunx tsc --noEmit 过滤 theme-magazine|theme-neon 零输出（无类型错误）；bun run lint 退出码 0 无错误；仅改动两个目标文件
+
+Stage Summary:
+- magazine/neon 两套主题完成与 classic 语义对齐的 toc 视图改造：Book=最新更新12章区块+开始阅读/完整目录双入口，新增可分页 Toc 页（100/页 防越界），Chapter 返回目录指向 toc，switch 全 case 覆盖
+- 各自视觉风格完整保留：magazine 白底彩色卡片（emerald 主色/圆角胶囊/白卡阴影），neon 深灰炫彩（紫粉橙渐变/mono 序号/黑面板描边）
+- tsc/lint 全绿，未引入依赖，未触碰其他文件
+---
+Task ID: R3-theme-a
+Agent: frontend-dev (Z.ai Code)
+Task: noir+ink 主题 toc 视图改造
+
+Work Log:
+- 通读 worklog 前序记录、theme-types.ts 契约（BookDetail.chapters=最新12章倒序 + firstChapterId + totalChapters、SiteView 已含 toc）与参考实现 theme-classic.tsx（ChapterLine / ClassicBook 最新更新 section / ClassicToc / ClassicChapter 返回目录 / switch case 'toc'）
+- theme-noir.tsx：
+  - NoirBook 删除 asc/setAsc 排序状态与排序逻辑，章节改为顺序渲染 book.chapters
+  - 抽取局部组件 ChapterLine（保留 noir 行样式：mono 三位序号 padStart(3,'0') + zinc 标题 + ChevronRight + border-b hairline），供 Book/Toc 复用
+  - 原全量「目录 / Contents」section 改为「最新更新 / Latest」：计数「最近 N 章 / 共 M 章」+ 右侧「完整目录 →」按钮（onNavigate toc），去掉 max-h-96 overflow-y-auto 滚动
+  - 简介段后新增双按钮：「开始阅读」（zinc-100 实底主色钮，disabled=!firstChapterId）+「查看全部 N 章目录」（zinc 描边钮，跳 toc）
+  - 新增 NoirToc：模块级 TOC_PAGE_SIZE=100、useState 翻页、safePage=Math.min(page,totalPages)/totalPages=Math.max(1,ceil)、面包屑 Home→书名(可点回 book)→章节目录、标题行书名+章节目录/Contents+作者·共N章、分页导航（禁用态 opacity-40 + cursor-not-allowed）、grid-cols-1 md:grid-cols-2 章节网格、空态/404 态/DirectorySkeleton loading 骨架
+  - NoirChapter 中部「目录」按钮 book→toc；switch 增加 case 'toc'；清理不再使用的 ArrowUp/ArrowDown import
+- theme-ink.tsx：
+  - InkBook 删除 asc/setAsc 排序逻辑，直接渲染 book.chapters（保留 grid-cols-2 md:grid-cols-3 gap-px 宣纸密排 + 朱砂两位序号行样式）
+  - 抽取局部组件 ChapterLine（bg-white/85 + 朱砂序号 padStart(2,'0') + hover 朱砂），供 Book/Toc 复用
+  - 「章节目录/凡 N 章」section 改为「最新更新」：计数「最近 N 章 / 共 M 章」+ 右侧「完整目录 →」描边钮，去掉 max-h-96 overflow-y-auto
+  - 简介后新增「开始阅读」（朱砂实底）+「查看全部 N 章目录」（stone 描边 hover 朱砂）
+  - 新增 InkToc：TOC_PAGE_SIZE=100、翻页防越界同规范、面包屑 首页→书名→章节目录、标题行书名+章节目录+作者·共N章、stone 描边分页钮、grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 三列密排、空态/404/InkBookSkeleton 骨架、竖排诗句装饰 poem
+  - InkChapter「返回目录」book→toc；switch 增加 case 'toc'
+- 验证：bunx tsc --noEmit 过滤 theme-noir/theme-ink 零输出（无类型错误）；bun run lint 全绿零报错；rg 确认 asc/setAsc/ArrowUp/ArrowDown 无残留
+
+Stage Summary:
+- noir/ink 两套主题完成与 classic 语义对齐的 toc 视图改造：书籍页=最新12章「最新更新」区块 + 开始阅读/完整目录双入口，新增独立分页完整目录页（100章/页），章节页返回目录指向 toc
+- 视觉风格零迁移：noir 保持 zinc 深色等宽极简（hairline 分隔/mono 大写 tracking），ink 保持宣纸 stone+朱砂（gap-px 密排网格/描边 hover 朱砂）
+- 仅改动 theme-noir.tsx 与 theme-ink.tsx 两个文件，未新增依赖，tsc/lint 全绿
+---
+Task ID: R3-bug-b
+Agent: code-reviewer (Z.ai Code)
+Task: 前端组件+下载器+下拉词 逐行审查与修复
+
+Work Log:
+- 通读 worklog 前序 150 行（R3-theme-a/b 已做 toc 分页改造，不重复报告），逐行审查 admin 7 组件 / preview-shell / page.tsx / download-builder.ts / suggest.ts
+- 【竞态类】books-page load() 加请求序号守卫（快速翻页/搜索旧响应晚到覆盖新结果）；openDetail 加 detailReqRef 守卫（快速切书章节列表串书）；preview-shell load() 同样加 reqRef 守卫（快速导航视图与数据错配）
+- 【性能类】books-page 搜索输入 350ms 防抖（原每键一次 /api/books 请求风暴）
+- [表单类] tasks/rules/sites/settings 四页全部数字输入加 toNumOr NaN 防护（"1e"/"-" 中间态注入 NaN → React value=NaN 警告与脏数据）；settings 的 adEveryNChapters 原 Math.max(1,NaN)=NaN 穿透；tasks save() 保存前统一 clampInt 钳制（页码 1~1e6、线程 1~32、间隔 0~600000ms）并保证 min<=max
+- 【崩溃类】rules-page setSel 中间节点为 null/非对象时自动补建（历史规则数据 fields:null 时编辑选择器直接 TypeError）
+- 【head 污染】preview-shell 卸载时还原宿主页面 title/meta 并移除 site-jsonld 脚本（预览退出后后台页面 SEO 元数据残留）
+- 【下载器】download-builder 文件名安全化加强：控制字符剥离、结尾点/空格去除、Windows 保留名（CON/PRN/AUX/NUL/COM1-9/LPT1-9）加 _ 前缀、空标题回退 book.id（原空标题生成 ".txt"）；siteConfig.findFirst 两次查询合一
+- 【suggest】fetchJson：无 JSON 内容抛清晰"响应不是 JSON"（原 Math.min(...[])=Infinity → JSON.parse('') 晦涩报错）；修复 JSONP 包裹 cb({...}) 必然解析失败（截到最后 }/]，注释宣称兼容 jsonp 实际从未生效）；bun 实测 4 场景 + merge 去重（trim/排除书名自身/cap）全过
+- 【UI 陈旧】tasks-page 日志弹窗状态徽章改用轮询列表最新快照 logsTask（原打开期间永远停留在打开瞬间的状态）
+- 【可访问性】书籍卡片补 role=button/tabIndex/Enter+Space 键盘导航/focus-visible 环/aria-label；tasks/rules/sites 的 icon-only 删除/编辑按钮补 aria-label
+- 【清理】tasks-page 清屏按钮隐藏 <Pencil className="hidden"/> 死代码 + 未用 import；templates-page 主题色卡 idx 数组改 themeId 键控 Record——修复第 6 套主题 uaa idx=5 越界导致色卡无背景；"5 套主题"文案改 THEME_LIST.length 动态（page.tsx 页脚同步 6 套）
+- 【确认无恙】任务日志轮询（alive+id 去重+after 增量，无泄漏）、Dashboard 4s 轮询清理、6 套主题 toc 均 100/页分页 + safePage 防越界 + preview take 5000（5000 章不卡顿成立）、admin-shell/page.tsx 无问题
+- 期间并行 agent 重构 API 路由（_lib/http 迁移）短暂造成 control/route.ts 导入报错，12:03 其自行修复，与本次改动无冲突
+
+Stage Summary:
+- 修复 8 类共 22 处问题：3 处异步竞态（books 列表/详情、preview 导航）、8 处数字输入 NaN 注入+保存钳制、1 处规则编辑崩溃、1 处 head 污染残留、3 处下载器文件名安全、2 处 suggest 解析缺陷（含 JSONP 从未生效的隐藏 bug）、2 处 UI 陈旧/越界渲染、5 处可访问性缺失
+- 验证：bunx tsc --noEmit | rg "^src/" = 0 错误（tests/ 下为范围外预存错误）；bun run lint 0 错误；文件名净化与 suggest 解析用 bun 脚本实测通过
+- 遗留：lookalike 混淆对纯中文正文无效（LOOKALIKE 仅映射 ASCII，扩 CJK 同形字需业务决策）；books-page 分类 chips 基于当前页动态生成（改全局需后端接口）
+---
+Task ID: R3-bug-a
+Agent: api-review-agent (Z.ai Code)
+Task: API 路由逐行审查与修复
+
+Work Log:
+- 逐行审查 src/app/api 全部 21 个 route 文件（tasks、tasks/[id]、control、logs、rules、rules/[id]、rules/test、books、books/[id]、chapters、download、suggest、sites、sites/[id]、settings、stats、covers、preview、clean-test、根健康检查）+ 交叉核对 task-manager/pipeline/storage/download-builder/fetcher/suggest/cleaner 契约
+- 【新增共享助手】src/app/api/_lib/http.ts（Next 私有目录不参与路由）：readJson（非法 JSON/非对象 body → 400 而非裸 500）、toInt（NaN/Infinity/非数字回退默认值并夹取 [min,max]，堵 Number('abc')/Number('1e999') 直达 Prisma Int 的 500）、toBoolOrNull、badRequest
+- 【NaN/类型注入 → Prisma 500】tasks POST/PUT（pageStart/pageEnd/threadMin/threadMax/intervalMin/intervalMax 全部 toInt 夹取，pageStart/pageEnd 下限 1）、books GET 分页、books/[id]/chapters GET 分页、sites POST/PUT offset、tasks ruleId 四字段改 typeof string 守卫、rules PUT enabled 改仅收 boolean（否则 400）
+- 【非法 JSON body 500 → 400】tasks POST/PUT、control POST、rules POST/PUT、sites POST/PUT、settings PUT、clean-test POST 统一走 readJson
+- 【404 一致性】rules PUT（P2025→404，与 GET/DELETE 对齐）、rules DELETE（delete 包 try/catch→404）、books DELETE（先查存在再级联清理，消除 P2025 500）
+- 【并发/竞态】control start：taskManager.has 判断后同步 taskManager.create(id) 占位（has 与 create 间无 await），根除双击/并发 start 双开管线；stop：等待退出后改为仅当任务仍处非终态（pending/running/paused）才兜底写 stopped，且 !rt 分支同样守卫，不再覆盖 pipeline 已写入的 done/failed 最终状态；全程 try/catch 防任务被并发删除时误抛
+- 【stale 检测复核】GET /api/tasks 的「status running/paused && !taskManager.has」逻辑与 start 新占位顺序（先 create 后写 DB running）复核无误杀窗口；DB 仍 pending 期间不会被 stale 误标
+- 【logs】after 参数非法日期（not-a-date 等）回退全量拉取，不再把 Invalid Date 传给 Prisma 抛 500；gte+客户端去重契约不变
+- 【clean-test】cleaning 仅接受纯对象覆盖（防字符串/数字被展开污染配置，同形于 R2 轮17 headers [object Object] 类 bug）；adPatterns/removeTags 非数组回退默认（防 spread 抛 500）；extraPatterns 过滤为字符串数组；html 非字符串 400；cleanContent 包 try/catch 返回 400 明细
+- 【books GET/POST 细节】targetUrls 过滤非字符串项（POST/PUT）；PUT 空名 400；settings PUT 空 body 400
+- 【stats】11 个统计查询合并为单 Promise.all 并行（原拆 3 个串行批次），响应结构不变
+- 【安全复核】covers/[name] 白名单正则无路径穿越、readChapterTxt 已有 NOVELS_DIR 前缀校验、download Content-Disposition encodeURIComponent 无头注入、规则删除引用检查有效 —— 均无需改动
+- 【验证】bun 直连 route handler 冒烟测试 29/29 通过（NaN 分页回退、非法 JSON 400、P2025→404、tasks/sites/clean-test 畸形输入、stats/preview 200、测试数据建删自清理）；bun run lint 0 错误；bunx tsc --noEmit 我的作用域（src/app/api + src/lib）0 错误
+- 【环境观察】src/components/themes/index.ts 存在另一并行任务未提交的 WIP（+import ThemeUaa from './theme-uaa'，但 theme-uaa 文件不存在），导致 rg "^src/" 过滤显示 1 个范围外错误；期间本任务新建的 _lib 文件曾被外部进程清除过一次（已重建并复验），怀疑 workspace 有并行文件同步，建议关注
+
+Stage Summary:
+- API 层加固三件套：畸形输入 500→400（NaN/Infinity/非法 JSON/错误类型）、404 语义对齐（P2025 统一）、并发双开与终态覆盖两个竞态闭环（start 同步占位运行时、stop 尊重 pipeline 终态）
+- 全部改动限于 src/app/api（新增 _lib/http.ts 助手 + 14 个 route 文件），API 契约字段名与成功路径响应完全不变，前端零适配
+- 遗留：①另一并行任务的 theme-uaa 导入导致全项目 tsc 暂红（范围外，等其落地或回滚）②SQLite LIKE 通配符 %/_ 未转义（contains 语义宽松，非安全问题，暂不处理）③start 与 executeTask 首个 await 之间仍存在约一次 DB 往返的 pause 丢失窗口（需改 pipeline 注册时序才能归零，超本次改动边界）
+
+---
+Task ID: R3(iteration)-final
+Agent: orchestrator (Z.ai Code)
+Task: 新迭代 18 轮次：uaa 主题克隆（浅蓝笔趣阁底）+ biqutu.info 规则 + 书籍页改造/目录页 + 深度抓 bug + 清理整合
+
+Work Log:
+- 【轮1 引擎增强】FieldSelector 新增 transform:'base64'（Node Buffer/浏览器 atob 双端解码），支持 17mb 模板家族 JS 段落加密；BookRuleConfig 新增 extraAdPatterns（简介方言清洗），pipeline/testing 同步接线
+- 【轮1 真bug】cleanIntro 签名只有 2 参导致调用方第 3 参被静默忽略 → 修复；cleanIntro 增加模板字面 \r\n 转义还原
+- 【轮2 biqutu.info 规则】站点本机/直连IP/移动UA/ZAI出口全超时（CNAME shilicdn 家族整体不可达）；以同模板活站 bqg70.com 实逆向编写四类规则（列表正则锚定 s3+s4 特征防误抓「最新入库」面板 / og:novel 全家桶 / #list a[rel=chapter]+_N.html 分页安全终止 / 内容 base64 解码），离线 22/22 + 活站规则测试 API 4/4 全过
+- 【轮2 反爬发现】17mb 混淆函数名每次请求随机轮换（llps.rbsz→wvx.jbyhxat）→ 规则改结构通配 document.writeln(\w+.\w+('b64'))
+- 【轮3-4 视图改造】SiteView 新增 toc 视图；BookDetail 新增 firstChapterId，book 视图 chapters 语义改为「最新 12 章倒序」；preview API 双分支；preview-shell TDK/JSON-LD；6 套主题全部完成：书籍页=最新更新12章区块+开始阅读+完整目录入口（不再显示全部目录），新增分页目录页（100/页防越界），章节页返回目录→toc
+- 【轮5-6 uaa 主题】theme-uaa.tsx：克隆 uaa.com/novel/list 版式（白色吸顶导航+站内搜索+分类/状态筛选条+封面卡片流+最近更新榜/热门标签侧栏+页码分页），浅蓝 #e9f2f9 笔趣阁底色 + #1a72c4 主调；THEMES 注册第 6 套
+- 【轮8 fetcher 深审】6 处修复：显式 cookie 与 jar 通行 cookie 合并（WAF 新通行 cookie 不再被旧显式 cookie 屏蔽）、jsPages 每轮重查分页项（stale element）、CF "Just a moment" 挑战页签名、WAF 后 HTTP 恢复间隔、末次重试非 2xx 拒绝错误页混入正文、UA 列表去重
+- 【轮8-10 并行深审】R3-bug-a：API 路由 16 处修复（新增 _lib/http 共享校验：NaN/Infinity 分页、P2025→404、双开任务竞态同步占位、stop 终态覆盖竞态、clean-test 配置注入、stats 并行化）；R3-bug-b：前端 20+ 处（请求乱序守卫×3、数字输入 NaN 防护×13、防抖、键盘可达性、预览卸载 head 还原、日志徽章实时快照、主题色卡越界、下载文件名 Windows 保留名、suggest JSONP 解析修复）
+- 【轮15 清理】删除一次性脚本×2、tool-results/.tmp 临时产物、tests 补 export{} 修复 tsc 全局作用域、死代码 pg import、tsconfig 排除 examples/mini-services/skills → 全项目 tsc 0 错误
+- 【轮16 反爬再增强】默认同源 Referer 指纹（裸无 Referer 是爬虫特征）、429 尊重 Retry-After
+- 【轮17 环境事故与恢复】外部文件同步清除了 theme-uaa.tsx/tests 脚本/_lib/http.ts（dev 编译挂）→ 全部重建恢复；dev server 进程死亡 → 重启恢复
+- 【轮17-18 E2E】Agent Browser：管理后台→主题模板 6 套✓→UAA 预览（搜索栏/筛选/卡片/侧栏）✓→书籍页（TDK/最新12章倒序/开始阅读/完整目录按钮/无全量目录）✓→目录页（TDK/分页禁用态）✓→章节阅读（上/下章/返回目录→toc）✓→完结筛选 6 张✓→搜索"超人"跳 keyword 页✓→390px 移动端✓→console 零报错✓；最终 lint 0 / 全项目 tsc 0 / 冒烟 5 端点 200
+
+Stage Summary:
+- 主题 6 套：新增 UAA 蓝调（uaa.com/novel/list 版式克隆 × 浅蓝笔趣阁底色），含站内搜索与排行侧栏
+- 书籍页契约重构：最新更新 12 章区块 + 独立分页目录页（toc 视图），全 6 主题一致
+- biqutu.info：四类规则就绪且在结构一致的活站上实测 4/4 通过；站点本身当前不可达（宕机/封锁），恢复即用
+- 引擎与反反爬：base64 transform、简介方言清洗、cookie 合并、CF 识别、随机混淆名通配、Referer 指纹、Retry-After
+- 全项目 lint 0 错误、tsc 0 错误（含 tests），浏览器零报错

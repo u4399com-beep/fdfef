@@ -39,3 +39,5 @@ for (const t of TESTS) {
     console.log('  preview:', String(out.data.preview).slice(0, 120).replace(/\n/g, ' '))
   }
 }
+
+export {}

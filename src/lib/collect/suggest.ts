@@ -25,9 +25,18 @@ async function fetchJson(url: string): Promise<unknown> {
   })
   if (!res.ok) throw new Error(`HTTP ${res.status}`)
   const text = await res.text()
-  // 兼容 jsonp / 前缀垃圾
-  const start = Math.min(...['{', '['].map((c) => text.indexOf(c)).filter((i) => i >= 0))
-  return JSON.parse(text.slice(start))
+  // 兼容 jsonp / 前缀垃圾：定位首个 { 或 [
+  const starts = ['{', '['].map((c) => text.indexOf(c)).filter((i) => i >= 0)
+  if (starts.length === 0) throw new Error('响应不是 JSON')
+  const candidate = text.slice(Math.min(...starts))
+  try {
+    return JSON.parse(candidate)
+  } catch {
+    // JSONP 包裹形如 cb({...}) / cb([...])：截到最后一个 } 或 ] 再试一次
+    const last = Math.max(candidate.lastIndexOf('}'), candidate.lastIndexOf(']'))
+    if (last < 0) throw new Error('响应不是 JSON')
+    return JSON.parse(candidate.slice(0, last + 1))
+  }
 }
 
 function asStringArray(v: unknown, max = 20): string[] {

@@ -1,5 +1,5 @@
 // ============================================================
-// 前台主题模板共享契约（5 套主题共用）
+// 前台主题模板共享契约（全部主题共用）
 // ============================================================
 
 export interface SiteMeta {
@@ -35,7 +35,10 @@ export interface ChapterItem {
 }
 
 export interface BookDetail extends BookCard {
+  /** 最新更新章节（最新优先，最多 12 条；完整目录见 toc 视图） */
   chapters: ChapterItem[]
+  /** 第一章 id（开始阅读入口） */
+  firstChapterId: string | null
   updatedAt: string
 }
 
@@ -55,6 +58,7 @@ export type SiteView =
   | { type: 'book'; bookId: string }
   | { type: 'chapter'; chapterId: string }
   | { type: 'keyword'; keyword: string }
+  | { type: 'toc'; bookId: string }
 
 export interface ThemeProps {
   site: SiteMeta

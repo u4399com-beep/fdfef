@@ -21,7 +21,7 @@ import { useToast } from '@/hooks/use-toast'
 import { api, formatDate } from '@/lib/client-api'
 import type { RuleType } from '@/lib/collect-types'
 import {
-  CirclePause, CirclePlay, CircleStop, FileDown, ListChecks, Loader2, Pencil,
+  CirclePause, CirclePlay, CircleStop, FileDown, ListChecks, Loader2,
   Plus, RefreshCw, ScrollText, SquarePen, Trash2,
 } from 'lucide-react'
 
@@ -90,6 +90,17 @@ function parseStats(raw: string): Record<string, number> {
   } catch {
     return {}
   }
+}
+
+/** 数字输入防 NaN 注入（输入中间态如 "1e"/"-" 时 Number() 会得到 NaN） */
+function toNumOr(raw: string, fallback: number): number {
+  const n = Number(raw)
+  return Number.isFinite(n) ? n : fallback
+}
+
+/** 保存前将数字统一钳制到合法区间并保证 min<=max */
+function clampInt(v: number, lo: number, hi: number): number {
+  return Math.min(hi, Math.max(lo, Math.round(Number.isFinite(v) ? v : lo)))
 }
 
 export function TasksPage() {
@@ -176,6 +187,12 @@ export function TasksPage() {
     }
     setSaving(true)
     try {
+      const pStart = clampInt(form.pageStart, 1, 1_000_000)
+      const pEnd = clampInt(form.pageEnd, 1, 1_000_000)
+      const tMin = clampInt(form.threadMin, 1, 32)
+      const tMax = clampInt(form.threadMax, 1, 32)
+      const iMin = clampInt(form.intervalMin, 0, 600_000)
+      const iMax = clampInt(form.intervalMax, 0, 600_000)
       const payload = {
         name: form.name.trim(),
         targetType: form.targetType,
@@ -185,10 +202,10 @@ export function TasksPage() {
         contentRuleId: form.contentRuleId || null,
         targetUrls: form.urlsText.split('\n').map((s) => s.trim()).filter(Boolean),
         urlTemplate: form.urlTemplate,
-        pageStart: form.pageStart, pageEnd: form.pageEnd,
+        pageStart: Math.min(pStart, pEnd), pageEnd: Math.max(pStart, pEnd),
         mode: form.mode, storageMode: form.storageMode,
-        threadMin: form.threadMin, threadMax: form.threadMax,
-        intervalMin: form.intervalMin, intervalMax: form.intervalMax,
+        threadMin: Math.min(tMin, tMax), threadMax: Math.max(tMin, tMax),
+        intervalMin: Math.min(iMin, iMax), intervalMax: Math.max(iMin, iMax),
       }
       if (editingId) {
         await api(`/api/tasks/${editingId}`, { method: 'PUT', body: JSON.stringify(payload) })
@@ -259,6 +276,8 @@ export function TasksPage() {
   }, [logs])
 
   const runningCount = tasks.filter((t) => t.status === 'running' || t.status === 'paused').length
+  // 日志弹窗中的状态徽章用轮询列表里的最新任务快照，避免打开期间状态永远停留在旧值
+  const logsTask = logsFor ? (tasks.find((t) => t.id === logsFor.id) ?? logsFor) : null
 
   return (
     <div className="space-y-4">
@@ -330,7 +349,7 @@ export function TasksPage() {
                     <Button size="sm" variant="ghost" onClick={() => { setLogs([]); setLogsFor(task) }}>
                       <ScrollText className="h-4 w-4" /> 日志
                     </Button>
-                    <Button size="sm" variant="ghost" className="text-red-600 hover:text-red-700" disabled={active} onClick={() => void remove(task)}>
+                    <Button size="sm" variant="ghost" className="text-red-600 hover:text-red-700" disabled={active} onClick={() => void remove(task)} aria-label={`删除任务「${task.name}」`}>
                       <Trash2 className="h-4 w-4" />
                     </Button>
                   </div>
@@ -416,12 +435,12 @@ export function TasksPage() {
                 <div className="space-y-1.5">
                   <Label className="text-xs">起始页</Label>
                   <Input className="h-8" type="number" min={1} value={form.pageStart}
-                    onChange={(e) => setForm({ ...form, pageStart: Number(e.target.value) })} />
+                    onChange={(e) => setForm({ ...form, pageStart: toNumOr(e.target.value, 1) })} />
                 </div>
                 <div className="space-y-1.5">
                   <Label className="text-xs">结束页</Label>
                   <Input className="h-8" type="number" min={1} value={form.pageEnd}
-                    onChange={(e) => setForm({ ...form, pageEnd: Number(e.target.value) })} />
+                    onChange={(e) => setForm({ ...form, pageEnd: toNumOr(e.target.value, 1) })} />
                 </div>
               </div>
             )}
@@ -455,20 +474,20 @@ export function TasksPage() {
                 <Label className="text-xs">线程数范围（随机）</Label>
                 <div className="flex items-center gap-2">
                   <Input className="h-8" type="number" min={1} max={32} value={form.threadMin}
-                    onChange={(e) => setForm({ ...form, threadMin: Number(e.target.value) })} />
+                    onChange={(e) => setForm({ ...form, threadMin: toNumOr(e.target.value, 1) })} />
                   <span className="text-muted-foreground">~</span>
                   <Input className="h-8" type="number" min={1} max={32} value={form.threadMax}
-                    onChange={(e) => setForm({ ...form, threadMax: Number(e.target.value) })} />
+                    onChange={(e) => setForm({ ...form, threadMax: toNumOr(e.target.value, 1) })} />
                 </div>
               </div>
               <div className="space-y-1.5">
                 <Label className="text-xs">间隔时间范围 ms（随机）</Label>
                 <div className="flex items-center gap-2">
                   <Input className="h-8" type="number" min={0} value={form.intervalMin}
-                    onChange={(e) => setForm({ ...form, intervalMin: Number(e.target.value) })} />
+                    onChange={(e) => setForm({ ...form, intervalMin: toNumOr(e.target.value, 0) })} />
                   <span className="text-muted-foreground">~</span>
                   <Input className="h-8" type="number" min={0} value={form.intervalMax}
-                    onChange={(e) => setForm({ ...form, intervalMax: Number(e.target.value) })} />
+                    onChange={(e) => setForm({ ...form, intervalMax: toNumOr(e.target.value, 0) })} />
                 </div>
               </div>
             </div>
@@ -488,7 +507,7 @@ export function TasksPage() {
           <DialogHeader>
             <DialogTitle className="flex items-center gap-2">
               <ScrollText className="h-4 w-4" /> 任务日志：{logsFor?.name}
-              {logsFor && <Badge className={STATUS_META[logsFor.status]?.cls}>{STATUS_META[logsFor.status]?.label}</Badge>}
+              {logsTask && <Badge className={STATUS_META[logsTask.status]?.cls}>{STATUS_META[logsTask.status]?.label}</Badge>}
             </DialogTitle>
             <DialogDescription>实时滚动（每 2 秒增量拉取），最多保留最近 500 条。</DialogDescription>
           </DialogHeader>
@@ -506,7 +525,7 @@ export function TasksPage() {
               <FileDown className="h-3.5 w-3.5" /> 完整日志可在数据库 task_logs 表中查询
             </span>
             <Button size="sm" variant="outline" onClick={() => setLogs([])}>
-              <Pencil className="hidden" /> 清屏
+              清屏
             </Button>
           </div>
         </DialogContent>

@@ -73,7 +73,7 @@ async function testBook(cfg: BookRuleConfig, url: string, started: number): Prom
   const title = parsed.title?.trim()
   if (!title) return { ok: false, message: '书名解析为空，请检查书名选择器', elapsedMs: Date.now() - started }
 
-  const intro = parsed.intro ? cleanIntro(parsed.intro, mergeCleaning()) : ''
+  const intro = parsed.intro ? cleanIntro(parsed.intro, mergeCleaning(), cfg.extraAdPatterns ?? []) : ''
   const keywords = (parsed.keywords ?? '').split(/[,，、|\s]+/).filter(Boolean).slice(0, 12).join(',')
   const match = smartMatchCategory({
     title,

@@ -50,3 +50,5 @@ const raw = parseContentHtml(contentHtml, { mode: 'css', expr: 'div.content', at
 console.log('CONTENT raw lines:', raw.split('\n').filter(Boolean).length, '| head:', raw.slice(0, 80).replace(/\n/g, ' '))
 const next = selectValue(contentHtml, { mode: 'regex', expr: 'href="(/book/[A-Za-z0-9]+-\\d+-\\d+\\.html)"[^>]*>\\s*下一页', multiple: false }, { baseUrl: `${base}/book/G0AIH0-1.html` })
 console.log('NEXT LINK:', next)
+
+export {}

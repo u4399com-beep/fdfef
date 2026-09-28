@@ -44,6 +44,12 @@ function emptySelector(): FieldSelector {
   return { mode: 'css', expr: '', attr: 'text' }
 }
 
+/** 数字输入防 NaN 注入（输入中间态如 "1e"/"-" 时 Number() 会得到 NaN） */
+function toNumOr(raw: string, fallback: number): number {
+  const n = Number(raw)
+  return Number.isFinite(n) ? n : fallback
+}
+
 function defaultConfig(type: RuleType): Record<string, unknown> {
   const base = { strategy: 'http', encoding: 'auto', timeout: 20000 }
   switch (type) {
@@ -190,7 +196,7 @@ function SelectorRow({
             type="number" min={0}
             placeholder="组"
             value={value.group ?? 1}
-            onChange={(e) => update({ group: Number(e.target.value) })}
+            onChange={(e) => update({ group: toNumOr(e.target.value, 1) })}
           />
         )}
         <label className="flex items-center gap-1 text-[11px] text-muted-foreground">
@@ -250,7 +256,7 @@ function FetchFields({ cfg, onChange }: { cfg: Record<string, unknown>; onChange
         <div className="space-y-1">
           <Label className="text-xs">超时(ms)</Label>
           <Input className="h-8 text-xs" type="number" value={Number(cfg.timeout ?? 20000)}
-            onChange={(e) => onChange({ timeout: Number(e.target.value) })} />
+            onChange={(e) => onChange({ timeout: toNumOr(e.target.value, 20000) })} />
         </div>
         <div className="space-y-1">
           <Label className="text-xs">Referer</Label>
@@ -298,7 +304,7 @@ function PaginationFields({ cfg, onChange }: { cfg: Record<string, unknown>; onC
             <div className="space-y-1">
               <Label className="text-xs">最大页数</Label>
               <Input className="h-8 text-xs" type="number" min={1} value={Number(pg.maxPages ?? 10)}
-                onChange={(e) => setPg({ maxPages: Number(e.target.value) })} />
+                onChange={(e) => setPg({ maxPages: toNumOr(e.target.value, 10) })} />
             </div>
           </div>
           {pg.mode === 'template' && (
@@ -311,12 +317,12 @@ function PaginationFields({ cfg, onChange }: { cfg: Record<string, unknown>; onC
               <div className="space-y-1">
                 <Label className="text-xs">起始页</Label>
                 <Input className="h-8 text-xs" type="number" value={Number(pg.startPage ?? 1)}
-                  onChange={(e) => setPg({ startPage: Number(e.target.value) })} />
+                  onChange={(e) => setPg({ startPage: toNumOr(e.target.value, 1) })} />
               </div>
               <div className="space-y-1">
                 <Label className="text-xs">结束页</Label>
                 <Input className="h-8 text-xs" type="number" value={Number(pg.endPage ?? 5)}
-                  onChange={(e) => setPg({ endPage: Number(e.target.value) })} />
+                  onChange={(e) => setPg({ endPage: toNumOr(e.target.value, 5) })} />
               </div>
             </div>
           )}
@@ -445,6 +451,9 @@ function RuleEditor({
     const clone = structuredClone(config) as Record<string, unknown>
     let node: Record<string, unknown> = clone
     for (let i = 0; i < path.length - 1; i++) {
+      // 中间节点缺失/非对象时（历史规则数据可能存了 null）自动补建，避免 TypeError
+      const next = node[path[i]]
+      if (!next || typeof next !== 'object') node[path[i]] = {}
       node = node[path[i]] as Record<string, unknown>
     }
     node[path[path.length - 1]] = sel
@@ -688,7 +697,7 @@ export function RulesPage() {
                 <Button size="sm" variant="outline" className="flex-1" onClick={() => openEdit(rule)}>
                   <Pencil className="h-3.5 w-3.5" /> 编辑
                 </Button>
-                <Button size="sm" variant="outline" className="text-red-600 hover:text-red-700" onClick={() => void remove(rule)}>
+                <Button size="sm" variant="outline" className="text-red-600 hover:text-red-700" onClick={() => void remove(rule)} aria-label={`删除规则「${rule.name}」`}>
                   <Trash2 className="h-3.5 w-3.5" />
                 </Button>
               </div>

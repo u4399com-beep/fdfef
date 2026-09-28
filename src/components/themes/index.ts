@@ -4,6 +4,7 @@ import { ThemeInk } from './theme-ink'
 import { ThemeMagazine } from './theme-magazine'
 import { ThemeNeon } from './theme-neon'
 import { ThemeNoir } from './theme-noir'
+import { ThemeUaa } from './theme-uaa'
 
 export interface ThemeEntry {
   meta: ThemeMeta
@@ -59,6 +60,15 @@ export const THEMES: Record<string, ThemeEntry> = {
       preview: '深灰底 / 紫粉橙渐变 / 描边卡片 / 粗黑标题',
     },
     Component: ThemeNeon,
+  },
+  uaa: {
+    meta: {
+      id: 'uaa',
+      name: 'UAA 蓝调',
+      description: '克隆 uaa.com/novel/list 版式：白色吸顶导航（站内搜索）、分类/状态筛选条、封面卡片流 + 右侧最近更新榜与热门标签侧栏、页码分页；配浅蓝笔趣阁底色与蓝色主调，清爽现代。',
+      preview: '浅蓝底 / 筛选条 / 封面卡片流 / 排行侧栏 / 站内搜索',
+    },
+    Component: ThemeUaa,
   },
 }
 

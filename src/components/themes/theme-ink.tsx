@@ -3,7 +3,7 @@
 import { useState } from 'react'
 import type { CSSProperties, ReactElement, ReactNode } from 'react'
 import { ArrowLeft, ArrowRight, BookOpen, Brush, Scroll } from 'lucide-react'
-import type { BookCard, SiteMeta, SiteView, ThemeProps } from '@/lib/theme-types'
+import type { BookCard, ChapterItem, SiteMeta, SiteView, ThemeProps } from '@/lib/theme-types'
 
 type Nav = (v: SiteView) => void
 
@@ -181,6 +181,31 @@ function InkChapterSkeleton() {
   )
 }
 
+/* ================= 章节行（book / toc 复用） ================= */
+
+function ChapterLine({
+  chapter,
+  onNavigate,
+}: {
+  chapter: ChapterItem
+  onNavigate: Nav
+}) {
+  return (
+    <li className="bg-white/85">
+      <button
+        type="button"
+        onClick={() => onNavigate({ type: 'chapter', chapterId: chapter.id })}
+        className="flex min-h-[44px] w-full items-center gap-2.5 px-3.5 text-left text-sm transition-colors hover:bg-[#9e2b25]/5 hover:text-[#9e2b25]"
+      >
+        <span className="shrink-0 text-xs text-[#9e2b25]">
+          {String(chapter.order).padStart(2, '0')}
+        </span>
+        <span className="min-w-0 flex-1 truncate">{chapter.title}</span>
+      </button>
+    </li>
+  )
+}
+
 /* ================= 横向长卷卡片（home / keyword 复用） ================= */
 
 function ScrollCard({ book, onNavigate }: { book: BookCard; onNavigate: Nav }) {
@@ -286,11 +311,7 @@ function InkHome({ site, data, loading, onNavigate }: ThemeProps) {
 /* ================= Book ================= */
 
 function InkBook({ site, data, loading, onNavigate }: ThemeProps) {
-  const [asc, setAsc] = useState(true)
   const book = data.book
-  const chapters = book
-    ? [...book.chapters].sort((a, b) => (asc ? a.order - b.order : b.order - a.order))
-    : []
   const keywords = book
     ? Array.from(new Set([...book.keywords, ...book.suggestKeywords]))
     : []
@@ -353,6 +374,25 @@ function InkBook({ site, data, loading, onNavigate }: ThemeProps) {
               </p>
               <InkRule className="my-5" />
               <p className="leading-loose text-stone-600">{book.intro}</p>
+              <div className="mt-6 flex flex-wrap gap-3">
+                <button
+                  type="button"
+                  disabled={!book.firstChapterId}
+                  onClick={() => {
+                    if (book.firstChapterId) onNavigate({ type: 'chapter', chapterId: book.firstChapterId })
+                  }}
+                  className="inline-flex min-h-[44px] items-center bg-[#9e2b25] px-6 text-sm tracking-widest text-stone-50 transition-colors hover:bg-[#7f221d] disabled:cursor-not-allowed disabled:opacity-40"
+                >
+                  开始阅读
+                </button>
+                <button
+                  type="button"
+                  onClick={() => onNavigate({ type: 'toc', bookId: book.id })}
+                  className="inline-flex min-h-[44px] items-center border border-stone-300 bg-white/80 px-6 text-sm tracking-widest text-stone-600 transition-colors hover:border-[#9e2b25] hover:text-[#9e2b25]"
+                >
+                  查看全部 {book.totalChapters} 章目录
+                </button>
+              </div>
               {keywords.length > 0 && (
                 <div className="mt-5 flex flex-wrap gap-2">
                   {keywords.map((kw) => (
@@ -370,44 +410,129 @@ function InkBook({ site, data, loading, onNavigate }: ThemeProps) {
             </div>
           </article>
 
-          <section aria-label="章节目录" className="mt-8 pb-4">
+          <section aria-label="最新更新" className="mt-8 pb-4">
             <div className="flex items-center justify-between gap-3">
               <h2 className="flex items-center gap-2 text-xl font-bold tracking-widest text-stone-900">
                 <Scroll className="h-5 w-5 text-[#9e2b25]" aria-hidden="true" />
-                章节目录
-                <span className="text-sm font-normal text-stone-400">凡 {book.chapters.length} 章</span>
+                最新更新
+                <span className="text-sm font-normal text-stone-400">
+                  最近 {book.chapters.length} 章 / 共 {book.totalChapters} 章
+                </span>
               </h2>
               <button
                 type="button"
-                onClick={() => setAsc((v) => !v)}
-                className="min-h-[44px] border border-stone-300 bg-white/70 px-4 text-sm tracking-widest text-stone-600 transition-colors hover:border-[#9e2b25] hover:text-[#9e2b25]"
+                onClick={() => onNavigate({ type: 'toc', bookId: book.id })}
+                className="min-h-[44px] shrink-0 border border-stone-300 bg-white/70 px-4 text-sm tracking-widest text-stone-600 transition-colors hover:border-[#9e2b25] hover:text-[#9e2b25]"
               >
-                {asc ? '正序' : '倒序'}
+                完整目录 →
               </button>
             </div>
-            {chapters.length === 0 ? (
+            {book.chapters.length === 0 ? (
               <p className="py-10 text-center text-stone-400">尚无章节。</p>
             ) : (
-              <ul className="mt-4 grid max-h-96 grid-cols-2 gap-px overflow-y-auto border border-stone-300/80 bg-stone-200/70 md:grid-cols-3">
-                {chapters.map((ch) => (
-                  <li key={ch.id} className="bg-white/85">
-                    <button
-                      type="button"
-                      onClick={() => onNavigate({ type: 'chapter', chapterId: ch.id })}
-                      className="flex min-h-[44px] w-full items-center gap-2.5 px-3.5 text-left text-sm transition-colors hover:bg-[#9e2b25]/5 hover:text-[#9e2b25]"
-                    >
-                      <span className="shrink-0 text-xs text-[#9e2b25]">
-                        {String(ch.order).padStart(2, '0')}
-                      </span>
-                      <span className="min-w-0 flex-1 truncate">{ch.title}</span>
-                    </button>
-                  </li>
+              <ul className="mt-4 grid grid-cols-2 gap-px border border-stone-300/80 bg-stone-200/70 md:grid-cols-3">
+                {book.chapters.map((ch) => (
+                  <ChapterLine key={ch.id} chapter={ch} onNavigate={onNavigate} />
                 ))}
               </ul>
             )}
           </section>
         </>
       )}
+    </Shell>
+  )
+}
+
+/* ================= Toc（完整章节目录页） ================= */
+
+const TOC_PAGE_SIZE = 100
+
+function InkToc({ site, data, loading, onNavigate }: ThemeProps) {
+  const [page, setPage] = useState(1)
+  const book = data.book
+  const chapters = book?.chapters ?? []
+  const totalPages = Math.max(1, Math.ceil(chapters.length / TOC_PAGE_SIZE))
+  const safePage = Math.min(page, totalPages)
+  const visible = chapters.slice((safePage - 1) * TOC_PAGE_SIZE, safePage * TOC_PAGE_SIZE)
+
+  return (
+    <Shell site={site} poem="千章罗列 · 纲举目张" onNavigate={onNavigate}>
+      <div className="mx-auto max-w-4xl">
+        <Crumbs
+          trail={[
+            { label: '首页', onSelect: () => onNavigate({ type: 'home' }) },
+            {
+              label: book?.title ?? (loading ? '加载中' : '书籍'),
+              onSelect: book ? () => onNavigate({ type: 'book', bookId: book.id }) : undefined,
+            },
+            { label: '章节目录' },
+          ]}
+        />
+
+        {loading ? (
+          <div className="mt-2">
+            <InkBookSkeleton />
+          </div>
+        ) : !book ? (
+          <div className="py-24 text-center">
+            <p className="text-stone-500">未寻得此书，或已散佚。</p>
+            <button
+              type="button"
+              onClick={() => onNavigate({ type: 'home' })}
+              className="mt-6 min-h-[44px] bg-[#9e2b25] px-6 text-sm tracking-widest text-stone-50 transition-colors hover:bg-[#7f221d]"
+            >
+              返回首页
+            </button>
+          </div>
+        ) : (
+          <>
+            <div className="flex flex-wrap items-end justify-between gap-3">
+              <h1 className="text-2xl font-bold tracking-widest text-stone-900">
+                {book.title}
+                <span className="ml-3 text-base font-normal text-stone-400">章节目录</span>
+              </h1>
+              <p className="text-sm text-stone-500">
+                {book.author} · 共 {book.totalChapters} 章
+              </p>
+            </div>
+
+            <nav
+              aria-label="目录分页"
+              className="mt-4 flex flex-wrap items-center gap-3 border-b border-stone-300/70 pb-4"
+            >
+              <button
+                type="button"
+                disabled={safePage <= 1}
+                onClick={() => setPage((p) => Math.max(1, p - 1))}
+                className="inline-flex min-h-[36px] items-center border border-stone-300 bg-white/80 px-4 text-sm tracking-widest text-stone-600 transition-colors hover:border-[#9e2b25] hover:text-[#9e2b25] disabled:cursor-not-allowed disabled:opacity-40"
+              >
+                上一页
+              </button>
+              <span className="text-sm text-stone-500">
+                第 {safePage} / {totalPages} 页
+              </span>
+              <button
+                type="button"
+                disabled={safePage >= totalPages}
+                onClick={() => setPage((p) => Math.min(totalPages, p + 1))}
+                className="inline-flex min-h-[36px] items-center border border-stone-300 bg-white/80 px-4 text-sm tracking-widest text-stone-600 transition-colors hover:border-[#9e2b25] hover:text-[#9e2b25] disabled:cursor-not-allowed disabled:opacity-40"
+              >
+                下一页
+              </button>
+            </nav>
+
+            {visible.length === 0 ? (
+              <p className="py-10 text-center text-stone-400">暂无章节。</p>
+            ) : (
+              <ul className="mb-10 mt-4 grid grid-cols-1 gap-px border border-stone-300/80 bg-stone-200/70 sm:grid-cols-2 lg:grid-cols-3">
+                {visible.map((ch) => (
+                  <ChapterLine key={ch.id} chapter={ch} onNavigate={onNavigate} />
+                ))}
+              </ul>
+            )}
+          </>
+        )}
+      </div>
     </Shell>
   )
 }
@@ -486,7 +611,7 @@ function InkChapter({ site, data, loading, onNavigate }: ThemeProps) {
               </button>
               <button
                 type="button"
-                onClick={() => onNavigate({ type: 'book', bookId: chapter.bookId })}
+                onClick={() => onNavigate({ type: 'toc', bookId: chapter.bookId })}
                 className="inline-flex min-h-[44px] items-center justify-center gap-2 bg-[#9e2b25] px-6 text-sm tracking-widest text-stone-50 transition-colors hover:bg-[#7f221d]"
               >
                 返回目录
@@ -600,6 +725,8 @@ export function ThemeInk(props: ThemeProps): ReactElement {
       return <InkHome {...props} />
     case 'book':
       return <InkBook {...props} />
+    case 'toc':
+      return <InkToc {...props} />
     case 'chapter':
       return <InkChapter {...props} />
     case 'keyword':

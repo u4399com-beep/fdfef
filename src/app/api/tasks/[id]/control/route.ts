@@ -2,16 +2,22 @@ import { NextRequest, NextResponse } from 'next/server'
 import { db } from '@/lib/db'
 import { taskManager, taskLog } from '@/lib/collect/task-manager'
 import { executeTask } from '@/lib/collect/pipeline'
+import { badRequest, readJson } from '../../../_lib/http'
 
 export const runtime = 'nodejs'
 export const dynamic = 'force-dynamic'
 
 type Ctx = { params: Promise<{ id: string }> }
 
+/** 终态集合：停止指令不得回写覆盖已完成的最终状态（done/failed 由 pipeline 写入） */
+const TERMINAL_STATUSES = ['done', 'failed', 'stopped']
+
 /** 任务控制：start 立即执行 / pause 暂停 / resume 继续 / stop 停止 */
 export async function POST(req: NextRequest, { params }: Ctx) {
   const { id } = await params
-  const { action } = (await req.json()) as { action?: string }
+  const body = await readJson(req)
+  if (!body) return badRequest('请求体必须为 JSON 对象')
+  const { action } = body as { action?: string }
   const task = await db.collectTask.findUnique({ where: { id } })
   if (!task) return NextResponse.json({ error: '任务不存在' }, { status: 404 })
 
@@ -23,8 +29,11 @@ export async function POST(req: NextRequest, { params }: Ctx) {
       if (task.status === 'running' || task.status === 'paused') {
         return NextResponse.json({ error: '任务状态异常，请先停止' }, { status: 400 })
       }
-      await taskLog(id, 'info', '收到执行指令')
+      // 同步占位运行时（has 判断与 create 之间无 await，天然防并发双开；
+      // executeTask 内部的 create 为幂等覆盖；若任务恰好此刻被删除则残留一条死 id 记录，无副作用）
+      taskManager.create(id)
       void executeTask(id).catch(() => undefined)
+      await taskLog(id, 'info', '收到执行指令')
       return NextResponse.json({ ok: true, status: 'running' })
     }
     case 'pause': {
@@ -44,10 +53,13 @@ export async function POST(req: NextRequest, { params }: Ctx) {
     case 'stop': {
       const rt = taskManager.get(id)
       if (!rt) {
-        await db.collectTask.update({
-          where: { id },
-          data: { status: 'stopped', stage: '已停止' },
-        })
+        // 无运行时：仅当 DB 仍处于非终态（如服务重启残留的 running/paused）才纠正为 stopped
+        if (!TERMINAL_STATUSES.includes(task.status)) {
+          await db.collectTask.update({
+            where: { id },
+            data: { status: 'stopped', stage: '已停止' },
+          })
+        }
         return NextResponse.json({ ok: true, status: 'stopped' })
       }
       taskManager.stop(id)
@@ -57,10 +69,19 @@ export async function POST(req: NextRequest, { params }: Ctx) {
         if (!taskManager.has(id)) break
         await new Promise((r) => setTimeout(r, 500))
       }
-      await db.collectTask.update({
-        where: { id },
-        data: { status: 'stopped', stage: '已停止' },
-      })
+      // 运行时已退出时 pipeline 会自行写入最终状态（done/failed/stopped），
+      // 仅当任务仍卡在非终态（如 8 秒超时仍在收尾）才兜底写 stopped，避免覆盖 completed 结果
+      try {
+        const cur = await db.collectTask.findUnique({ where: { id }, select: { status: true } })
+        if (cur && !TERMINAL_STATUSES.includes(cur.status)) {
+          await db.collectTask.update({
+            where: { id },
+            data: { status: 'stopped', stage: '已停止' },
+          })
+        }
+      } catch {
+        /* 任务可能已被并发删除 */
+      }
       await taskLog(id, 'warn', '任务已停止')
       return NextResponse.json({ ok: true, status: 'stopped' })
     }

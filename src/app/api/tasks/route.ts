@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { db } from '@/lib/db'
 import { taskManager } from '@/lib/collect/task-manager'
+import { badRequest, readJson, toInt } from '../_lib/http'
 
 export const runtime = 'nodejs'
 export const dynamic = 'force-dynamic'
@@ -22,7 +23,8 @@ export async function GET() {
 
 /** 新建任务 */
 export async function POST(req: NextRequest) {
-  const body = (await req.json()) as Record<string, unknown>
+  const body = await readJson(req)
+  if (!body) return badRequest('请求体必须为 JSON 对象')
   const name = String(body.name ?? '').trim()
   if (!name) return NextResponse.json({ error: '任务名称必填' }, { status: 400 })
 
@@ -30,20 +32,20 @@ export async function POST(req: NextRequest) {
     data: {
       name,
       targetType: body.targetType === 'range' ? 'range' : 'single',
-      listRuleId: (body.listRuleId as string) || null,
-      bookRuleId: (body.bookRuleId as string) || null,
-      tocRuleId: (body.tocRuleId as string) || null,
-      contentRuleId: (body.contentRuleId as string) || null,
-      targetUrls: JSON.stringify(Array.isArray(body.targetUrls) ? body.targetUrls : []),
+      listRuleId: typeof body.listRuleId === 'string' && body.listRuleId ? body.listRuleId : null,
+      bookRuleId: typeof body.bookRuleId === 'string' && body.bookRuleId ? body.bookRuleId : null,
+      tocRuleId: typeof body.tocRuleId === 'string' && body.tocRuleId ? body.tocRuleId : null,
+      contentRuleId: typeof body.contentRuleId === 'string' && body.contentRuleId ? body.contentRuleId : null,
+      targetUrls: JSON.stringify(Array.isArray(body.targetUrls) ? body.targetUrls.filter((u): u is string => typeof u === 'string') : []),
       urlTemplate: String(body.urlTemplate ?? ''),
-      pageStart: Number(body.pageStart ?? 1),
-      pageEnd: Number(body.pageEnd ?? 1),
+      pageStart: toInt(body.pageStart, 1, 1),
+      pageEnd: toInt(body.pageEnd, 1, 1),
       mode: body.mode === 'full' ? 'full' : 'incremental',
       storageMode: ['db', 'txt', 'both'].includes(String(body.storageMode)) ? String(body.storageMode) : 'db',
-      threadMin: Math.max(1, Number(body.threadMin ?? 1)),
-      threadMax: Math.max(1, Number(body.threadMax ?? 3)),
-      intervalMin: Math.max(0, Number(body.intervalMin ?? 500)),
-      intervalMax: Math.max(0, Number(body.intervalMax ?? 2000)),
+      threadMin: toInt(body.threadMin, 1, 1),
+      threadMax: toInt(body.threadMax, 3, 1),
+      intervalMin: toInt(body.intervalMin, 500, 0),
+      intervalMax: toInt(body.intervalMax, 2000, 0),
     },
   })
   return NextResponse.json({ task })

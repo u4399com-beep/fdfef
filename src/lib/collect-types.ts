@@ -14,6 +14,13 @@ export interface FieldSelector {
   group?: number // regex 捕获组序号（0=整体匹配）
   multiple?: boolean // 返回全部匹配
   trim?: boolean // 默认 true
+  /**
+   * 值后处理（反反爬增强）：'base64' 将匹配值按 UTF-8 解码。
+   * 适用于把正文段落 base64 加密进 <script> 的模板家族
+   * （如 17mb 系笔趣阁：llps.rbsz('PHA+...')），解码产物 <p>段落</p>
+   * 交由清洗器转行。无此需求的字段不填即无副作用。
+   */
+  transform?: 'base64'
 }
 
 /** 列表项内相对子选择器 */
@@ -88,6 +95,7 @@ export interface BookRuleConfig extends FetchConfig {
   smartCompletion?: boolean // 智能判断完结
   fetchSuggest?: boolean // 抓取多搜索引擎下拉词
   downloadCover?: boolean // 下载封面为 webp
+  extraAdPatterns?: string[] // 简介附加广告正则（模板方言：转义残留、推广句等）
 }
 
 /** 章节目录页规则 */

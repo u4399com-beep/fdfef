@@ -73,6 +73,23 @@ function collapseWs(s: string): string {
   return s.replace(/[ \t\r\n\f\v]+/g, ' ').trim()
 }
 
+/**
+ * 字段级后处理（反反爬增强）：base64 → UTF-8 文本。
+ * Node 用 Buffer，浏览器环境回退 atob + TextDecoder，两端皆安全。
+ */
+function applyTransform(value: string, transform: FieldSelector['transform']): string {
+  if (transform !== 'base64' || !value) return value
+  try {
+    const b64 = value.replace(/\s+/g, '')
+    if (typeof Buffer !== 'undefined') return Buffer.from(b64, 'base64').toString('utf8')
+    const bin = atob(b64)
+    const bytes = Uint8Array.from(bin, (c) => c.charCodeAt(0))
+    return new TextDecoder('utf-8').decode(bytes)
+  } catch {
+    return '' // 非法 base64 视为无值，交由上层过滤
+  }
+}
+
 function cleanText(s: string): string {
   return collapseWs(s.replace(/\u00a0/g, ' '))
 }
@@ -129,6 +146,7 @@ export function selectValue(html: string, sel: FieldSelector, opts: SelectorOpts
   const urlSemantics = sel.attr !== undefined && URL_ATTRS.has(sel.attr)
   const finish = (v: string) => {
     let out = trim ? v.trim() : v
+    out = applyTransform(out, sel.transform)
     if (opts.baseUrl && out) {
       const looksUrl = /^(https?:\/\/|\/\/|\/)/i.test(out)
       if (urlSemantics) {

@@ -68,3 +68,5 @@ async function main() {
   await db.$disconnect()
 }
 void main()
+
+export {}

@@ -3,7 +3,6 @@
  * 1. 列表页  2. 书籍信息页（og:novel 元数据）  3. 章节目录页（playwright + JS 下拉翻页）
  * 4. 章节内容页（多页合并 + 广告清洗）
  */
-import { Pool } from 'pg'
 
 const BASE = 'http://localhost:3000'
 
@@ -112,3 +111,5 @@ async function main() {
   }
 }
 void main()
+
+export {}

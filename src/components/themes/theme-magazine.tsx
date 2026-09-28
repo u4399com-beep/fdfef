@@ -13,7 +13,7 @@ import {
   Sparkles,
   User,
 } from 'lucide-react'
-import type { BookCard, SiteMeta, SiteView, ThemeProps } from '@/lib/theme-types'
+import type { BookCard, ChapterItem, SiteMeta, SiteView, ThemeProps } from '@/lib/theme-types'
 
 type Nav = (v: SiteView) => void
 
@@ -213,6 +213,26 @@ function BookCard({ book, onNavigate }: { book: BookCard; onNavigate: Nav }) {
   )
 }
 
+/* ================= 章节行（book 最新更新 / toc 复用） ================= */
+
+function ChapterRow({ chapter, onNavigate }: { chapter: ChapterItem; onNavigate: Nav }) {
+  return (
+    <li>
+      <button
+        type="button"
+        onClick={() => onNavigate({ type: 'chapter', chapterId: chapter.id })}
+        className="flex min-h-[44px] w-full items-center gap-3 rounded-xl px-3 text-left transition-colors hover:bg-emerald-50"
+      >
+        <span className="w-8 shrink-0 text-xs font-bold text-stone-300">
+          {String(chapter.order).padStart(2, '0')}
+        </span>
+        <span className="min-w-0 flex-1 truncate text-sm text-stone-700">{chapter.title}</span>
+        <ChevronRight className="h-4 w-4 shrink-0 text-stone-300" aria-hidden="true" />
+      </button>
+    </li>
+  )
+}
+
 /* ================= Home ================= */
 
 function MagazineHome({ site, data, loading, onNavigate }: ThemeProps) {
@@ -293,11 +313,7 @@ function MagazineHome({ site, data, loading, onNavigate }: ThemeProps) {
 /* ================= Book ================= */
 
 function MagazineBook({ site, data, loading, onNavigate }: ThemeProps) {
-  const [asc, setAsc] = useState(true)
   const book = data.book
-  const chapters = book
-    ? [...book.chapters].sort((a, b) => (asc ? a.order - b.order : b.order - a.order))
-    : []
   const keywords = book
     ? Array.from(new Set([...book.keywords, ...book.suggestKeywords]))
     : []
@@ -371,6 +387,27 @@ function MagazineBook({ site, data, loading, onNavigate }: ThemeProps) {
                     </span>
                   </div>
                   <p className="mt-4 leading-relaxed text-stone-600">{book.intro}</p>
+                  <div className="mt-6 flex flex-wrap gap-3">
+                    <button
+                      type="button"
+                      disabled={!book.firstChapterId}
+                      onClick={() => {
+                        if (book.firstChapterId) onNavigate({ type: 'chapter', chapterId: book.firstChapterId })
+                      }}
+                      className="inline-flex min-h-[44px] items-center gap-2 rounded-full bg-gradient-to-r from-emerald-500 to-teal-500 px-6 text-sm font-bold text-white shadow-md shadow-emerald-500/25 transition-all hover:shadow-lg disabled:cursor-not-allowed disabled:opacity-40 disabled:shadow-none"
+                    >
+                      <BookOpen className="h-4 w-4" aria-hidden="true" />
+                      开始阅读
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => onNavigate({ type: 'toc', bookId: book.id })}
+                      className="inline-flex min-h-[44px] items-center gap-2 rounded-full border border-stone-300 bg-white px-6 text-sm font-semibold text-stone-700 transition-colors hover:border-emerald-400 hover:text-emerald-700"
+                    >
+                      <List className="h-4 w-4" aria-hidden="true" />
+                      查看全部 {book.totalChapters} 章目录
+                    </button>
+                  </div>
                   {keywords.length > 0 && (
                     <div className="mt-5 flex flex-wrap gap-2">
                       {keywords.map((kw) => (
@@ -390,44 +427,31 @@ function MagazineBook({ site, data, loading, onNavigate }: ThemeProps) {
             </article>
 
             <section
-              aria-label="章节目录"
+              aria-label="最新更新"
               className="mt-6 rounded-3xl bg-white p-6 shadow-sm ring-1 ring-stone-200/70 sm:p-8"
             >
               <div className="flex flex-wrap items-center justify-between gap-3">
-                <h2 className="text-lg font-extrabold text-stone-900">
-                  章节目录
-                  <span className="ml-2 text-sm font-medium text-stone-400">
-                    共 {book.chapters.length} 章
+                <h2 className="flex items-center gap-2 text-lg font-extrabold text-stone-900">
+                  <Clock className="h-5 w-5 text-emerald-600" aria-hidden="true" />
+                  最新更新
+                  <span className="text-sm font-medium text-stone-400">
+                    最近 {book.chapters.length} 章 / 共 {book.totalChapters} 章
                   </span>
                 </h2>
                 <button
                   type="button"
-                  onClick={() => setAsc((v) => !v)}
+                  onClick={() => onNavigate({ type: 'toc', bookId: book.id })}
                   className="min-h-[44px] rounded-full bg-stone-100 px-4 text-sm font-semibold text-stone-600 transition-colors hover:bg-stone-200"
                 >
-                  {asc ? '正序 ↑' : '倒序 ↓'}
+                  完整目录 →
                 </button>
               </div>
-              {chapters.length === 0 ? (
+              {book.chapters.length === 0 ? (
                 <p className="py-10 text-center text-sm text-stone-400">暂无章节。</p>
               ) : (
-                <ul className="mt-4 grid max-h-96 grid-cols-1 gap-1 overflow-y-auto pr-1 sm:grid-cols-2">
-                  {chapters.map((ch) => (
-                    <li key={ch.id}>
-                      <button
-                        type="button"
-                        onClick={() => onNavigate({ type: 'chapter', chapterId: ch.id })}
-                        className="flex min-h-[44px] w-full items-center gap-3 rounded-xl px-3 text-left transition-colors hover:bg-emerald-50"
-                      >
-                        <span className="w-8 shrink-0 text-xs font-bold text-stone-300">
-                          {String(ch.order).padStart(2, '0')}
-                        </span>
-                        <span className="min-w-0 flex-1 truncate text-sm text-stone-700">
-                          {ch.title}
-                        </span>
-                        <ChevronRight className="h-4 w-4 shrink-0 text-stone-300" aria-hidden="true" />
-                      </button>
-                    </li>
+                <ul className="mt-4 grid grid-cols-1 gap-1 sm:grid-cols-2">
+                  {book.chapters.map((ch) => (
+                    <ChapterRow key={ch.id} chapter={ch} onNavigate={onNavigate} />
                   ))}
                 </ul>
               )}
@@ -518,7 +542,7 @@ function MagazineChapter({ site, data, loading, onNavigate }: ThemeProps) {
               </button>
               <button
                 type="button"
-                onClick={() => onNavigate({ type: 'book', bookId: chapter.bookId })}
+                onClick={() => onNavigate({ type: 'toc', bookId: chapter.bookId })}
                 className="inline-flex min-h-[44px] items-center justify-center rounded-full bg-stone-900 px-6 text-sm font-semibold text-white shadow-sm transition-colors hover:bg-stone-700"
               >
                 返回目录
@@ -535,6 +559,103 @@ function MagazineChapter({ site, data, loading, onNavigate }: ThemeProps) {
                 <ArrowRight className="h-4 w-4" aria-hidden="true" />
               </button>
             </nav>
+          </>
+        )}
+      </main>
+      <Footer site={site} />
+    </div>
+  )
+}
+
+/* ================= Toc（完整章节目录页） ================= */
+
+const TOC_PAGE_SIZE = 100
+
+function MagazineToc({ site, data, loading, onNavigate }: ThemeProps) {
+  const [page, setPage] = useState(1)
+  const book = data.book
+  const chapters = book?.chapters ?? []
+  const totalPages = Math.max(1, Math.ceil(chapters.length / TOC_PAGE_SIZE))
+  const safePage = Math.min(page, totalPages)
+  const visible = chapters.slice((safePage - 1) * TOC_PAGE_SIZE, safePage * TOC_PAGE_SIZE)
+
+  return (
+    <div className="flex min-h-screen flex-col bg-stone-50 text-stone-900">
+      <Header site={site} onNavigate={onNavigate} />
+      <main className="mx-auto w-full max-w-5xl flex-1 px-4">
+        <Crumbs
+          trail={[
+            { label: '首页', onSelect: () => onNavigate({ type: 'home' }) },
+            {
+              label: book?.title ?? '书籍',
+              onSelect: book ? () => onNavigate({ type: 'book', bookId: book.id }) : undefined,
+            },
+            { label: '章节目录' },
+          ]}
+        />
+
+        {loading ? (
+          <BookPageSkeleton />
+        ) : !book ? (
+          <div className="py-24 text-center">
+            <BookOpen className="mx-auto h-10 w-10 text-stone-300" aria-hidden="true" />
+            <p className="mt-4 text-sm text-stone-500">未找到该书籍，可能已被移除。</p>
+            <button
+              type="button"
+              onClick={() => onNavigate({ type: 'home' })}
+              className="mt-6 min-h-[44px] rounded-full bg-stone-900 px-6 text-sm font-semibold text-white transition-colors hover:bg-stone-700"
+            >
+              返回首页
+            </button>
+          </div>
+        ) : (
+          <>
+            <div className="flex flex-wrap items-end justify-between gap-3">
+              <h1 className="text-2xl font-black tracking-tight text-stone-900 sm:text-3xl">
+                {book.title}
+                <span className="ml-3 text-base font-medium text-stone-400">章节目录</span>
+              </h1>
+              <p className="text-sm text-stone-500">
+                {book.author} · 共 {book.totalChapters} 章
+              </p>
+            </div>
+
+            <nav
+              aria-label="目录分页"
+              className="mt-4 flex flex-wrap items-center gap-2 border-y border-stone-200 py-3"
+            >
+              <button
+                type="button"
+                disabled={safePage <= 1}
+                onClick={() => setPage((p) => Math.max(1, p - 1))}
+                className="min-h-[36px] rounded-full border border-stone-300 bg-white px-4 text-sm font-semibold text-stone-600 transition-colors hover:bg-stone-100 disabled:cursor-not-allowed disabled:opacity-40"
+              >
+                上一页
+              </button>
+              <span className="text-sm text-stone-500">
+                第 {safePage} / {totalPages} 页
+              </span>
+              <button
+                type="button"
+                disabled={safePage >= totalPages}
+                onClick={() => setPage((p) => Math.min(totalPages, p + 1))}
+                className="min-h-[36px] rounded-full border border-stone-300 bg-white px-4 text-sm font-semibold text-stone-600 transition-colors hover:bg-stone-100 disabled:cursor-not-allowed disabled:opacity-40"
+              >
+                下一页
+              </button>
+            </nav>
+
+            {visible.length === 0 ? (
+              <p className="py-10 text-center text-sm text-stone-400">暂无章节。</p>
+            ) : (
+              <div className="mb-2 mt-4 rounded-3xl bg-white p-4 shadow-sm ring-1 ring-stone-200/70 sm:p-6">
+                <ul className="grid grid-cols-1 gap-1 md:grid-cols-2">
+                  {visible.map((ch) => (
+                    <ChapterRow key={ch.id} chapter={ch} onNavigate={onNavigate} />
+                  ))}
+                </ul>
+              </div>
+            )}
           </>
         )}
       </main>
@@ -647,6 +768,8 @@ export function ThemeMagazine(props: ThemeProps): ReactElement {
       return <MagazineHome {...props} />
     case 'book':
       return <MagazineBook {...props} />
+    case 'toc':
+      return <MagazineToc {...props} />
     case 'chapter':
       return <MagazineChapter {...props} />
     case 'keyword':

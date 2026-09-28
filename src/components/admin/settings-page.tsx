@@ -14,6 +14,12 @@ import { useToast } from '@/hooks/use-toast'
 import { api } from '@/lib/client-api'
 import { Beaker, Loader2, Save } from 'lucide-react'
 
+/** 数字输入防 NaN 注入 */
+function toNumOr(raw: string, fallback: number): number {
+  const n = Number(raw)
+  return Number.isFinite(n) ? n : fallback
+}
+
 interface CleaningCfg {
   removeTags: string[]
   adPatterns: string[]
@@ -123,7 +129,7 @@ export function SettingsPage() {
           <div className="space-y-1.5">
             <Label className="text-xs">最短段落字数（0 = 不过滤）</Label>
             <Input className="h-8" type="number" min={0} value={cleaning.minParagraphLength}
-              onChange={(e) => setCleaning({ ...cleaning, minParagraphLength: Number(e.target.value) })} />
+              onChange={(e) => setCleaning({ ...cleaning, minParagraphLength: Math.max(0, toNumOr(e.target.value, 0)) })} />
           </div>
 
           <Separator />
@@ -182,7 +188,7 @@ export function SettingsPage() {
               <div className="space-y-1.5">
                 <Label className="text-xs">每 N 章插入一条</Label>
                 <Input className="h-8" type="number" min={1} value={download.adEveryNChapters}
-                  onChange={(e) => setDownload({ ...download, adEveryNChapters: Math.max(1, Number(e.target.value)) })} />
+                  onChange={(e) => setDownload({ ...download, adEveryNChapters: Math.max(1, toNumOr(e.target.value, 1)) })} />
               </div>
             </>
           )}

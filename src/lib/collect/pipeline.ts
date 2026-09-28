@@ -118,7 +118,7 @@ async function collectBookInfo(
 
   const cleaningCfg = mergeCleaning()
   const { cleanIntro } = await import('./cleaner')
-  const intro = parsed.intro ? cleanIntro(parsed.intro, cleaningCfg) : ''
+  const intro = parsed.intro ? cleanIntro(parsed.intro, cleaningCfg, rule.extraAdPatterns ?? []) : ''
 
   // 关键词规范化
   const keywords = (parsed.keywords ?? '')

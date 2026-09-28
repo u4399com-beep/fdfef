@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { db } from '@/lib/db'
+import { badRequest, readJson, toInt } from '../../_lib/http'
 
 export const runtime = 'nodejs'
 export const dynamic = 'force-dynamic'
@@ -8,7 +9,8 @@ type Ctx = { params: Promise<{ id: string }> }
 
 export async function PUT(req: NextRequest, { params }: Ctx) {
   const { id } = await params
-  const body = (await req.json()) as Record<string, unknown>
+  const body = await readJson(req)
+  if (!body) return badRequest('请求体必须为 JSON 对象')
   try {
     const site = await db.siteConfig.update({
       where: { id },
@@ -19,7 +21,7 @@ export async function PUT(req: NextRequest, { params }: Ctx) {
         ...(body.title !== undefined ? { title: String(body.title) } : {}),
         ...(body.description !== undefined ? { description: String(body.description) } : {}),
         ...(body.keywords !== undefined ? { keywords: String(body.keywords) } : {}),
-        ...(body.offset !== undefined ? { offset: Math.max(0, Number(body.offset)) } : {}),
+        ...(body.offset !== undefined ? { offset: toInt(body.offset, 0, 0) } : {}),
         ...(body.mainBookId !== undefined ? { mainBookId: String(body.mainBookId) } : {}),
         ...(body.footerText !== undefined ? { footerText: String(body.footerText) } : {}),
       },

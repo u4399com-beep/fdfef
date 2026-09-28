@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { db } from '@/lib/db'
+import { badRequest, readJson, toInt } from '../_lib/http'
 
 export const runtime = 'nodejs'
 export const dynamic = 'force-dynamic'
@@ -12,7 +13,8 @@ export async function GET() {
 
 /** 新建站点（站群：一套后台/数据库/文件，多站派生） */
 export async function POST(req: NextRequest) {
-  const body = (await req.json()) as Record<string, unknown>
+  const body = await readJson(req)
+  if (!body) return badRequest('请求体必须为 JSON 对象')
   const siteName = String(body.siteName ?? '').trim()
   if (!siteName) return NextResponse.json({ error: '站点名称必填' }, { status: 400 })
   const site = await db.siteConfig.create({
@@ -23,7 +25,7 @@ export async function POST(req: NextRequest) {
       title: String(body.title ?? ''),
       description: String(body.description ?? ''),
       keywords: String(body.keywords ?? ''),
-      offset: Math.max(0, Number(body.offset ?? 0)),
+      offset: toInt(body.offset, 0, 0),
       mainBookId: String(body.mainBookId ?? ''),
       footerText: String(body.footerText ?? ''),
     },

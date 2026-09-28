@@ -13,3 +13,5 @@ for (const rule of rules.rules.filter((r) => r.name.includes('可乐小说'))) {
   })
   console.log(res.ok ? `✓ ${rule.name}` : `✗ ${rule.name}`)
 }
+
+export {}

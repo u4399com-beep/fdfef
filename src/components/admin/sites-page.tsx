@@ -35,6 +35,12 @@ const emptyForm = {
   offset: 0, mainBookId: '', footerText: '',
 }
 
+/** 数字输入防 NaN 注入 */
+function toNumOr(raw: string, fallback: number): number {
+  const n = Number(raw)
+  return Number.isFinite(n) ? n : fallback
+}
+
 export function SitesPage({ onPreview }: { onPreview: (siteId: string) => void }) {
   const { toast } = useToast()
   const [sites, setSites] = useState<SiteRow[]>([])
@@ -144,10 +150,10 @@ export function SitesPage({ onPreview }: { onPreview: (siteId: string) => void }
                   <Button size="sm" variant="outline" className="flex-1" onClick={() => onPreview(site.id)}>
                     <ExternalLink className="h-3.5 w-3.5" /> 预览前台
                   </Button>
-                  <Button size="sm" variant="outline" onClick={() => openEdit(site)}>
+                  <Button size="sm" variant="outline" onClick={() => openEdit(site)} aria-label={`编辑站点「${site.siteName}」`}>
                     <Pencil className="h-3.5 w-3.5" />
                   </Button>
-                  <Button size="sm" variant="outline" className="text-red-600 hover:text-red-700" onClick={() => void remove(site)}>
+                  <Button size="sm" variant="outline" className="text-red-600 hover:text-red-700" onClick={() => void remove(site)} aria-label={`删除站点「${site.siteName}」`}>
                     <Trash2 className="h-3.5 w-3.5" />
                   </Button>
                 </div>
@@ -197,7 +203,7 @@ export function SitesPage({ onPreview }: { onPreview: (siteId: string) => void }
             </div>
             <div className="space-y-1.5">
               <Label className="text-xs">列表偏移量</Label>
-              <Input className="h-8" type="number" min={0} value={form.offset} onChange={(e) => setForm({ ...form, offset: Number(e.target.value) })} />
+              <Input className="h-8" type="number" min={0} value={form.offset} onChange={(e) => setForm({ ...form, offset: Math.max(0, toNumOr(e.target.value, 0)) })} />
             </div>
             <div className="space-y-1.5">
               <Label className="text-xs">绑定主书籍（主关键词）</Label>

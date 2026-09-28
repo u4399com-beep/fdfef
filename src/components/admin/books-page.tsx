@@ -1,6 +1,6 @@
 'use client'
 
-import { useCallback, useEffect, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent } from '@/components/ui/card'
@@ -58,29 +58,45 @@ export function BooksPage() {
   const [chapterContent, setChapterContent] = useState<{ title: string; content: string } | null>(null)
   const pageSize = 12
 
+  // 请求序号：防止快速翻页/搜索时旧响应晚到覆盖新结果（乱序竞态）
+  const listReqRef = useRef(0)
+  const detailReqRef = useRef('')
+
   const load = useCallback(async () => {
+    const reqId = ++listReqRef.current
     setLoading(true)
     try {
       const params = new URLSearchParams({ page: String(page), pageSize: String(pageSize) })
       if (q.trim()) params.set('q', q.trim())
       if (category) params.set('category', category)
       const r = await api<{ books: BookRow[]; total: number }>(`/api/books?${params}`)
+      if (reqId !== listReqRef.current) return
       setBooks(r.books)
       setTotal(r.total)
     } catch (e) {
+      if (reqId !== listReqRef.current) return
       toast({ title: '加载失败', description: e instanceof Error ? e.message : String(e), variant: 'destructive' })
     } finally {
-      setLoading(false)
+      if (reqId === listReqRef.current) setLoading(false)
     }
   }, [page, q, category, toast])
 
   useEffect(() => { void load() }, [load])
 
+  // 搜索防抖：输入每键都直接请求会造成请求风暴，350ms 内停顿才真正触发查询
+  const [qInput, setQInput] = useState('')
+  useEffect(() => {
+    const t = setTimeout(() => { setQ(qInput); setPage(1) }, 350)
+    return () => clearTimeout(t)
+  }, [qInput])
+
   const openDetail = async (book: BookRow) => {
+    detailReqRef.current = book.id
     setDetail(book)
     setChapters([])
     try {
       const r = await api<{ chapters: ChapterRow[] }>(`/api/books/${book.id}/chapters?pageSize=500`)
+      if (detailReqRef.current !== book.id) return
       setChapters(r.chapters)
     } catch { /* ignore */ }
   }
@@ -125,7 +141,9 @@ export function BooksPage() {
     try {
       const r = await api<{ chapter: { title: string; content: string } }>(`/api/chapters/${chapterId}`)
       setChapterContent({ title: r.chapter.title, content: r.chapter.content || '（正文未采集或为空）' })
-    } catch { /* ignore */ }
+    } catch (e) {
+      toast({ title: '正文加载失败', description: e instanceof Error ? e.message : String(e), variant: 'destructive' })
+    }
   }
 
   const categories = [...new Set(books.map((b) => b.category).filter(Boolean))]
@@ -137,8 +155,8 @@ export function BooksPage() {
       <div className="flex flex-wrap items-center gap-2">
         <div className="relative flex-1 min-w-[200px]">
           <Search className="absolute left-2.5 top-2.5 h-4 w-4 text-muted-foreground" />
-          <Input className="pl-8" placeholder="搜索书名 / 作者 / 关键词" value={q}
-            onChange={(e) => { setQ(e.target.value); setPage(1) }} />
+          <Input className="pl-8" placeholder="搜索书名 / 作者 / 关键词" value={qInput}
+            onChange={(e) => setQInput(e.target.value)} />
         </div>
         <div className="flex flex-wrap gap-1.5">
           <button
@@ -170,7 +188,20 @@ export function BooksPage() {
       ) : (
         <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-3">
           {books.map((b) => (
-            <Card key={b.id} className="cursor-pointer transition-shadow hover:shadow-md" onClick={() => void openDetail(b)}>
+            <Card
+              key={b.id}
+              role="button"
+              tabIndex={0}
+              aria-label={`查看《${b.title}》详情`}
+              className="cursor-pointer transition-shadow hover:shadow-md focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+              onClick={() => void openDetail(b)}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter' || e.key === ' ') {
+                  e.preventDefault()
+                  void openDetail(b)
+                }
+              }}
+            >
               <CardContent className="flex gap-3 p-4">
                 <div className="h-24 w-[68px] shrink-0 overflow-hidden rounded-md border bg-muted">
                   {coverSrc(b) ? (
@@ -208,7 +239,7 @@ export function BooksPage() {
       )}
 
       {/* 书籍详情 */}
-      <Dialog open={!!detail} onOpenChange={(open) => !open && setDetail(null)}>
+      <Dialog open={!!detail} onOpenChange={(open) => { if (!open) { detailReqRef.current = ''; setDetail(null) } }}>
         <DialogContent className="max-h-[88vh] overflow-y-auto sm:max-w-2xl">
           {detail && (
             <>

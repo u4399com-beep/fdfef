@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { db } from '@/lib/db'
 import { DEFAULT_CLEANING, DEFAULT_DOWNLOAD } from '@/lib/collect-types'
+import { badRequest, readJson } from '../_lib/http'
 
 export const runtime = 'nodejs'
 export const dynamic = 'force-dynamic'
@@ -21,11 +22,13 @@ export async function GET() {
 
 /** 保存系统配置 */
 export async function PUT(req: NextRequest) {
-  const body = (await req.json()) as { cleaning?: unknown; download?: unknown }
+  const body = await readJson(req)
+  if (!body) return badRequest('请求体必须为 JSON 对象')
   const data = {
     ...(body.cleaning !== undefined ? { cleaning: JSON.stringify(body.cleaning) } : {}),
     ...(body.download !== undefined ? { download: JSON.stringify(body.download) } : {}),
   }
+  if (Object.keys(data).length === 0) return badRequest('请提供 cleaning 或 download 配置')
   await db.systemConfig.upsert({
     where: { id: 'main' },
     create: { id: 'main', ...data },

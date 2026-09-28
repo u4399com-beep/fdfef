@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { db } from '@/lib/db'
 import { taskManager } from '@/lib/collect/task-manager'
+import { badRequest, readJson, toInt } from '../../_lib/http'
 
 export const runtime = 'nodejs'
 export const dynamic = 'force-dynamic'
@@ -23,30 +24,46 @@ export async function PUT(req: NextRequest, { params }: Ctx) {
   if (existing.status === 'running' || existing.status === 'paused') {
     return NextResponse.json({ error: '任务正在运行，请先暂停或停止后再编辑' }, { status: 400 })
   }
-  const body = (await req.json()) as Record<string, unknown>
+  const body = await readJson(req)
+  if (!body) return badRequest('请求体必须为 JSON 对象')
+  if (body.name !== undefined && !String(body.name).trim()) {
+    return badRequest('任务名称不能为空')
+  }
   const task = await db.collectTask.update({
     where: { id },
     data: {
-      ...(body.name !== undefined ? { name: String(body.name) } : {}),
+      ...(body.name !== undefined ? { name: String(body.name).trim() } : {}),
       ...(body.targetType !== undefined ? { targetType: body.targetType === 'range' ? 'range' : 'single' } : {}),
-      ...(body.listRuleId !== undefined ? { listRuleId: (body.listRuleId as string) || null } : {}),
-      ...(body.bookRuleId !== undefined ? { bookRuleId: (body.bookRuleId as string) || null } : {}),
-      ...(body.tocRuleId !== undefined ? { tocRuleId: (body.tocRuleId as string) || null } : {}),
-      ...(body.contentRuleId !== undefined ? { contentRuleId: (body.contentRuleId as string) || null } : {}),
+      ...(body.listRuleId !== undefined
+        ? { listRuleId: typeof body.listRuleId === 'string' && body.listRuleId ? body.listRuleId : null }
+        : {}),
+      ...(body.bookRuleId !== undefined
+        ? { bookRuleId: typeof body.bookRuleId === 'string' && body.bookRuleId ? body.bookRuleId : null }
+        : {}),
+      ...(body.tocRuleId !== undefined
+        ? { tocRuleId: typeof body.tocRuleId === 'string' && body.tocRuleId ? body.tocRuleId : null }
+        : {}),
+      ...(body.contentRuleId !== undefined
+        ? { contentRuleId: typeof body.contentRuleId === 'string' && body.contentRuleId ? body.contentRuleId : null }
+        : {}),
       ...(body.targetUrls !== undefined
-        ? { targetUrls: JSON.stringify(Array.isArray(body.targetUrls) ? body.targetUrls : []) }
+        ? {
+            targetUrls: JSON.stringify(
+              Array.isArray(body.targetUrls) ? body.targetUrls.filter((u): u is string => typeof u === 'string') : []
+            ),
+          }
         : {}),
       ...(body.urlTemplate !== undefined ? { urlTemplate: String(body.urlTemplate) } : {}),
-      ...(body.pageStart !== undefined ? { pageStart: Number(body.pageStart) } : {}),
-      ...(body.pageEnd !== undefined ? { pageEnd: Number(body.pageEnd) } : {}),
+      ...(body.pageStart !== undefined ? { pageStart: toInt(body.pageStart, 1, 1) } : {}),
+      ...(body.pageEnd !== undefined ? { pageEnd: toInt(body.pageEnd, 1, 1) } : {}),
       ...(body.mode !== undefined ? { mode: body.mode === 'full' ? 'full' : 'incremental' } : {}),
       ...(body.storageMode !== undefined && ['db', 'txt', 'both'].includes(String(body.storageMode))
         ? { storageMode: String(body.storageMode) }
         : {}),
-      ...(body.threadMin !== undefined ? { threadMin: Math.max(1, Number(body.threadMin)) } : {}),
-      ...(body.threadMax !== undefined ? { threadMax: Math.max(1, Number(body.threadMax)) } : {}),
-      ...(body.intervalMin !== undefined ? { intervalMin: Math.max(0, Number(body.intervalMin)) } : {}),
-      ...(body.intervalMax !== undefined ? { intervalMax: Math.max(0, Number(body.intervalMax)) } : {}),
+      ...(body.threadMin !== undefined ? { threadMin: toInt(body.threadMin, 1, 1) } : {}),
+      ...(body.threadMax !== undefined ? { threadMax: toInt(body.threadMax, 3, 1) } : {}),
+      ...(body.intervalMin !== undefined ? { intervalMin: toInt(body.intervalMin, 500, 0) } : {}),
+      ...(body.intervalMax !== undefined ? { intervalMax: toInt(body.intervalMax, 2000, 0) } : {}),
       status: 'pending',
       progress: 0,
       stage: '',

@@ -68,7 +68,7 @@ export default function Page() {
 
       <footer className="mt-auto border-t bg-card">
         <div className="mx-auto flex w-full max-w-7xl flex-wrap items-center justify-between gap-2 px-4 py-3 text-[11px] text-muted-foreground">
-          <span>小说管理系统 · Next.js + SQLite · 支持多线程采集 / 反反爬 / 站群 / 5 套主题</span>
+          <span>小说管理系统 · Next.js + SQLite · 支持多线程采集 / 反反爬 / 站群 / 6 套主题</span>
           <span className="flex items-center gap-3">
             <span>Docker 一键部署</span>
             <span aria-hidden>·</span>

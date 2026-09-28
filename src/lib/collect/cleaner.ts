@@ -128,8 +128,10 @@ export function cleanContent(
   return { text, wordCount: text.replace(/\s/g, '').length, removedLines: removed }
 }
 
-/** 简介清洗（保留换行，宽松清洗） */
-export function cleanIntro(rawHtml: string, cfg: CleaningConfig): string {
-  const result = cleanContent(rawHtml, { ...cfg, minParagraphLength: 0 })
+/** 简介清洗（保留换行，宽松清洗；extraAdPatterns 用于站点方言：转义残留、推广句等） */
+export function cleanIntro(rawHtml: string, cfg: CleaningConfig, extraAdPatterns: string[] = []): string {
+  // 模板转义残留（如 17mb 系简介字段把换行写成字面 \r\n）：还原为真实换行再按行清洗
+  const normalized = rawHtml.replace(/\\r\\n|\\n|\\r/g, '\n')
+  const result = cleanContent(normalized, { ...cfg, minParagraphLength: 0 }, extraAdPatterns)
   return result.text.slice(0, 3000)
 }

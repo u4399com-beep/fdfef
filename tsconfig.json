@@ -37,6 +37,10 @@
     ".next/dev/types/**/*.ts"
   ],
   "exclude": [
-    "node_modules"
+    "node_modules",
+    // 参考示例 / 独立运行时 / 外部技能包：非主应用编译范围（bun 独立运行）
+    "examples",
+    "mini-services",
+    "skills"
   ]
 }

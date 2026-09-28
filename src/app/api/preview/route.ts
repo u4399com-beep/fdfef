@@ -40,7 +40,8 @@ function toCard(b: {
 /**
  * 前台预览数据（站群主题渲染数据源）
  * type=home 书单（offset 偏移派生不同站点内容序列）
- * type=book 书籍详情（主关键词落地页）
+ * type=book 书籍详情（主关键词落地页；chapters 仅返回最新 12 章，完整目录见 toc）
+ * type=toc 书籍完整章节目录页
  * type=chapter 章节正文
  * type=keyword 关键词落地页（均指向主书籍信息页）
  */
@@ -71,20 +72,38 @@ export async function GET(req: NextRequest) {
     return NextResponse.json({ site: siteMeta, view: { type: 'home' }, data: { books, categories } })
   }
 
-  if (type === 'book') {
+  if (type === 'book' || type === 'toc') {
     const bookId = sp.get('bookId') ?? siteMeta.mainBookId
     const book = bookId ? await db.book.findUnique({ where: { id: bookId } }) : null
     if (!book) return NextResponse.json({ error: '书籍不存在' }, { status: 404 })
-    const chapters = await db.chapter.findMany({
-      where: { bookId: book.id },
-      orderBy: { order: 'asc' },
-      select: { id: true, title: true, order: true },
-      take: 5000,
-    })
+
+    if (type === 'toc') {
+      const chapters = await db.chapter.findMany({
+        where: { bookId: book.id },
+        orderBy: { order: 'asc' },
+        select: { id: true, title: true, order: true },
+        take: 5000,
+      })
+      return NextResponse.json({
+        site: siteMeta,
+        view: { type: 'toc', bookId: book.id },
+        data: { book: { ...toCard(book), chapters, firstChapterId: chapters[0]?.id ?? null, updatedAt: book.updatedAt.toISOString() } },
+      })
+    }
+
+    const [latest, first] = await Promise.all([
+      db.chapter.findMany({
+        where: { bookId: book.id },
+        orderBy: { order: 'desc' },
+        select: { id: true, title: true, order: true },
+        take: 12,
+      }),
+      db.chapter.findFirst({ where: { bookId: book.id }, orderBy: { order: 'asc' }, select: { id: true } }),
+    ])
     return NextResponse.json({
       site: siteMeta,
       view: { type: 'book', bookId: book.id },
-      data: { book: { ...toCard(book), chapters, updatedAt: book.updatedAt.toISOString() } },
+      data: { book: { ...toCard(book), chapters: latest, firstChapterId: first?.id ?? null, updatedAt: book.updatedAt.toISOString() } },
     })
   }
 
