@@ -34,6 +34,9 @@ export function randomUA(): string {
   return UA_LIST[Math.floor(Math.random() * UA_LIST.length)]
 }
 
+/** 固定 UA（rotateUA=false 时全局使用；WAF 通行 cookie 与 UA 绑定的站点必须用同一 UA） */
+export const FIXED_UA = UA_LIST[0]
+
 export function randomInt(min: number, max: number): number {
   if (!Number.isFinite(min) || !Number.isFinite(max)) return min
   const lo = Math.max(0, Math.ceil(min))
@@ -280,7 +283,7 @@ function decodeBuffer(buffer: Buffer, charset: string): string {
 // ============================================================
 
 function buildHeaders(cfg: FetchConfig, url: string, uaOverride?: string): Record<string, string> {
-  const ua = uaOverride ?? (cfg.rotateUA === false ? UA_LIST[0] : randomUA())
+  const ua = uaOverride ?? (cfg.rotateUA === false ? FIXED_UA : randomUA())
   const headers: Record<string, string> = {
     'User-Agent': ua,
     Accept: 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8',
@@ -311,7 +314,18 @@ function buildHeaders(cfg: FetchConfig, url: string, uaOverride?: string): Recor
     const jarCookie = cookieJar.header(url)
     if (jarCookie) headers.Cookie = jarCookie
   }
-  if (cfg.headers) Object.assign(headers, cfg.headers)
+  if (cfg.headers) {
+    // 兼容 UI 保存的 JSON 字符串形式（对象按原样合并，字符串则解析后再合并）
+    let extra = cfg.headers as unknown
+    if (typeof extra === 'string') {
+      try {
+        extra = JSON.parse(extra)
+      } catch {
+        extra = null
+      }
+    }
+    if (extra && typeof extra === 'object') Object.assign(headers, extra)
+  }
   return headers
 }
 
@@ -331,7 +345,7 @@ export async function fetchPage(url: string, cfg: FetchConfig = {}): Promise<Fet
   let status = 0
   let finalUrl = url
   for (let attempt = 0; attempt < 2; attempt++) {
-    const res = await fetchWithRetry(url, buildHeaders(cfg, url), timeout)
+    const res = await fetchWithRetry(url, buildHeaders(cfg, url), timeout, 2, cfg.rotateUA === false)
     const buffer = Buffer.from(await res.arrayBuffer())
     cookieJar.absorbFromFetch(new URL(res.url || url).hostname, res.headers)
     const charset = detectCharset(buffer, res.headers.get('content-type') ?? '', cfg.encoding ?? 'auto')
@@ -361,13 +375,19 @@ export async function fetchPage(url: string, cfg: FetchConfig = {}): Promise<Fet
   return { html, status, finalUrl, strategy: 'http', elapsedMs: Date.now() - started, wafChallenged: true }
 }
 
-async function fetchWithRetry(url: string, headers: Record<string, string>, timeout: number, retries = 2): Promise<Response> {
+async function fetchWithRetry(
+  url: string,
+  headers: Record<string, string>,
+  timeout: number,
+  retries = 2,
+  keepUA = false
+): Promise<Response> {
   let lastErr: unknown = null
   for (let i = 0; i <= retries; i++) {
     try {
-      // 每次重试轮换 UA（模拟多用户）
+      // 每次重试轮换 UA（模拟多用户）；keepUA=true 时固定 UA（WAF 通行 cookie 与 UA 绑定，换 UA 即失效）
       const res = await fetch(url, {
-        headers: i === 0 ? headers : { ...headers, 'User-Agent': randomUA() },
+        headers: i === 0 || keepUA ? headers : { ...headers, 'User-Agent': randomUA() },
         redirect: 'follow',
         signal: AbortSignal.timeout(timeout),
         cache: 'no-store',
@@ -762,16 +782,16 @@ async function fetchWithHyperbrowser(url: string, cfg: FetchConfig, timeout: num
 // 图片抓取（封面下载）：带会话 cookie + Referer 伪装
 // ============================================================
 
-export async function fetchImage(url: string, referer?: string, timeout = 20000, ua?: string): Promise<Buffer> {
+export async function fetchImage(url: string, referer?: string, timeout = 20000, ua?: string, cookies?: string): Promise<Buffer> {
   await domainThrottle.wait(url)
   const headers: Record<string, string> = {
     'User-Agent': ua ?? randomUA(),
     Referer: referer || new URL(url).origin,
     Accept: 'image/avif,image/webp,image/apng,image/*,*/*;q=0.8',
   }
-  const jarCookie = cookieJar.header(url)
+  const jarCookie = cookies || cookieJar.header(url)
   if (jarCookie) headers.Cookie = jarCookie
-  const res = await fetchWithRetry(url, headers, timeout, 1)
+  const res = await fetchWithRetry(url, headers, timeout, 1, Boolean(ua))
   const buf = Buffer.from(await res.arrayBuffer())
   if (!res.ok || buf.length === 0) {
     throw new Error(`图片下载失败：HTTP ${res.status}（${url.slice(0, 120)}）`)

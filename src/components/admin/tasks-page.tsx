@@ -104,6 +104,7 @@ export function TasksPage() {
   const [busyId, setBusyId] = useState<string | null>(null)
   const logsRef = useRef<HTMLDivElement>(null)
   const lastLogAt = useRef<string>('')
+  const seenLogIds = useRef<Set<string>>(new Set())
 
   // 编辑器表单
   const [form, setForm] = useState({
@@ -233,14 +234,18 @@ export function TasksPage() {
     if (!logsFor) return
     let alive = true
     lastLogAt.current = ''
+    seenLogIds.current = new Set()
     const pull = async () => {
       try {
         const qs = lastLogAt.current ? `?after=${encodeURIComponent(lastLogAt.current)}` : ''
         const r = await api<{ logs: LogRow[] }>(`/api/tasks/${logsFor.id}/logs${qs}`)
         if (!alive) return
-        if (r.logs.length > 0) {
-          lastLogAt.current = r.logs[r.logs.length - 1].createdAt
-          setLogs((prev) => [...prev, ...r.logs].slice(-500))
+        // gte 会带回同毫秒重复，按 id 去重（避免 gt 严格大于导致同毫秒日志永久丢失）
+        const fresh = r.logs.filter((l) => !seenLogIds.current.has(l.id))
+        if (fresh.length > 0) {
+          for (const l of fresh) seenLogIds.current.add(l.id)
+          lastLogAt.current = fresh[fresh.length - 1].createdAt
+          setLogs((prev) => [...prev, ...fresh].slice(-500))
         }
       } catch { /* ignore */ }
     }

@@ -66,9 +66,10 @@ export function cleanContent(
   const $ = cheerio.load(rawHtml)
   for (const tag of cfg.removeTags) $(tag).remove()
 
-  // 块级结构 → 换行
+  // 块级结构 → 换行（前后都断开，避免块前游离文本与块内文本粘连）
   const $clone = $.root().clone()
   $clone.find('br').replaceWith('\n')
+  $clone.find('p, div, li, dd, dt, section, article').before('\n')
   $clone.find('p, div, li, dd, dt, section, article').after('\n')
 
   let raw = $clone.text()
@@ -77,6 +78,11 @@ export function cleanContent(
   const adRegexes = [...cfg.adPatterns, ...extraAdPatterns]
     .map(safeRegex)
     .filter((r): r is RegExp => r !== null)
+  // 预编译全局版（避免逐行替换时每行×每规则重复编译正则：千行章节×15规则曾达3万次/章）
+  const adRegexSources = adRegexes.map((re) => ({
+    test: re,
+    global: new RegExp(re.source, re.flags.includes('g') ? re.flags : re.flags + 'g'),
+  }))
 
   let removed = 0
   const lines = raw
@@ -89,9 +95,9 @@ export function cleanContent(
     // 广告清洗：循环应用全部命中规则（先剔除 URL，再剔除站点话术，直至整行清除）
     let cleaned = line
     let matched = false
-    for (const re of adRegexes) {
-      if (re.test(cleaned)) {
-        cleaned = cleaned.replace(new RegExp(re.source, 'g'), '').trim()
+    for (const { test, global } of adRegexSources) {
+      if (test.test(cleaned)) {
+        cleaned = cleaned.replace(global, '').trim()
         matched = true
       }
     }
@@ -101,6 +107,11 @@ export function cleanContent(
       if (isContentLine(cleaned) && cleaned.length >= 4) {
         kept.push(cleaned)
       }
+      continue
+    }
+    // 纯标点/符号行（如“，”“……”分隔噪声）直接丢弃
+    if (!isContentLine(line)) {
+      removed++
       continue
     }
     if (cfg.minParagraphLength > 0 && line.length < cfg.minParagraphLength) {

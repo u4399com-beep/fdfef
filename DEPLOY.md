@@ -249,3 +249,38 @@ docker compose restart
 
 **Q7：如何为下载的 txt 注入广告/混淆？**
 「系统设置 → 小说文件下载系统」中开启并配置，随后在书籍详情点「下载 TXT」即时生效。
+
+## 附录：GoEdge WAF 站点采集实战指南（kelexs / 存书啦 / 人气完本 均为此类）
+
+### 症状与识别
+- 访问任意页返回小体积"Verify Yourself"页（`/WAF/VERIFY/CAPTCHA`）→ 触发验证码挑战
+- 页面返回 `403 Forbidden` → IP 已被临时拉黑（约 3 分钟自动冷却）
+- 分页参数加密或点击后 URL 不变 → 需要 JS 渲染翻页
+
+### 系统自动应对链路
+HTTP 直连 → WAF 检测 → 自动升级 Playwright（stealth 注入）→ 截图验证码 → VLM 自动识别求解 → 通行 cookie 回写全局 CookieJar 复用 → 同域节流（throttleGap）+ 封禁冷却（reportBlock）
+
+### 手动解题（推荐用于规则配置阶段）
+```bash
+# 1. 通用验证码求解器（任意 GoEdge 站点，第 2~3 次尝试即可通过）
+bash tests/solve-captcha-generic.sh www.example.com "https://www.example.com/target.html"
+# 输出 JAR_FILE 与通行 cookie（ge_wc_20=...）
+
+# 2. 将通行 cookie 填入规则配置的 cookies 字段，并设置 rotateUA: false
+#    （GoEdge 通行 cookie 与 UA 绑定，换 UA 即失效）
+```
+
+### 规则要点
+- `rotateUA: false` + `cookies: "ge_wc_20=..."`（固定 UA 与通行 cookie 配套）
+- `throttleGap: 1500`（同域全局最小间隔，防触发 WAF）
+- 任务线程数建议 1~2、间隔 2000~5000ms
+- 目录/内容优先 `http` 策略（部分站点对浏览器指纹反而不友好）
+
+### 特殊反爬：藏字保护（data-cp）
+部分站点（如存书啦）把真实字符以十六进制码点写入 `data-cp` 属性、浏览器端 JS 回填，
+直接抓 HTML 会丢字。解析器 `decodeProtectedChars` 已自动解码，无需额外配置。
+
+### 清洗规则升级后的存量数据再清洗
+```bash
+bun tests/reclean-db.ts rqwb.com   # 按域名过滤，可省略参数清洗全部书籍
+```

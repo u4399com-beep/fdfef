@@ -15,10 +15,9 @@ export async function GET(_req: NextRequest, { params }: Ctx) {
 
 export async function DELETE(_req: NextRequest, { params }: Ctx) {
   const { id } = await params
-  const usedBy = await db.siteConfig.findFirst({ where: { mainBookId: id } })
-  if (usedBy) {
-    await db.siteConfig.update({ where: { id: usedBy.id }, data: { mainBookId: '' } })
-  }
+  // 站群可能多处引用该书作为主书籍：全部清空 dangling 引用后再删除
+  await db.siteConfig.updateMany({ where: { mainBookId: id }, data: { mainBookId: '' } })
+  await db.chapter.deleteMany({ where: { bookId: id } })
   await db.book.delete({ where: { id } })
   return NextResponse.json({ ok: true })
 }

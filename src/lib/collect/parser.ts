@@ -87,6 +87,29 @@ function cssSelectScope($: cheerio.CheerioAPI, scope: AnyNode | null, expr: stri
   return found
 }
 
+/**
+ * 反反爬增强：解码藏字保护元素（如存书啦 kw-protect）。
+ * 站点把真实字符以十六进制 Unicode 码点写入 data-cp 属性、
+ * 浏览器端再由 JS 回填，直接抓 HTML 会丢失这些字符。
+ * 对无 data-cp 的纯 HTML 完全无副作用（no-op）。
+ */
+export function decodeProtectedChars($: cheerio.CheerioAPI): void {
+  const nodes = $('i.cr[data-cp], [data-cp]').toArray()
+  for (const el of nodes) {
+    const cp = Number.parseInt($(el).attr('data-cp') ?? '', 16)
+    if (Number.isFinite(cp) && cp > 0 && cp < 0x10ffff) {
+      $(el).replaceWith(String.fromCodePoint(cp))
+    } else {
+      $(el).remove()
+    }
+  }
+  // 解包裹保护容器，避免残留空 span 影响字段结构
+  const wraps = $('span.kw-protect').toArray()
+  for (const el of wraps) {
+    $(el).replaceWith($(el).contents())
+  }
+}
+
 interface SelectorOpts {
   scopeNode?: AnyNode
   $?: cheerio.CheerioAPI
@@ -207,6 +230,7 @@ export function parseFields(
   baseUrl?: string
 ): Record<string, string> {
   const $ = cheerio.load(html)
+  decodeProtectedChars($)
   const out: Record<string, string> = {}
   for (const [key, sel] of Object.entries(fields)) {
     if (!sel || !sel.expr) continue
@@ -264,6 +288,7 @@ export function parseListEntries(html: string, items: ListItemSelectors, baseUrl
 
   // ---------- CSS ----------
   const $ = cheerio.load(html)
+  decodeProtectedChars($)
   const nodes = cssSelectScope($, null, itemSel.expr)
   for (const el of nodes) {
     const $el = $(el)
@@ -312,6 +337,7 @@ export function parseContentHtml(html: string, sel: FieldSelector): string {
   if (!sel?.expr) return ''
   if (sel.mode === 'css') {
     const $ = cheerio.load(html)
+    decodeProtectedChars($)
     if (sel.multiple) {
       const parts = $(sel.expr)
         .toArray()
@@ -349,9 +375,10 @@ export function parseContentHtml(html: string, sel: FieldSelector): string {
 function nodeToText($: cheerio.CheerioAPI, el: AnyNode): string {
   const $el = $(el)
   $el.find('script, style, iframe, ins, noscript').remove()
-  // 保留块级结构：p/div/br 转换行
+  // 保留块级结构：p/div/br 转换行（前后都断开，避免块前文本与块内文本粘连成一行）
   const $clone = $el.clone()
   $clone.find('br').replaceWith('\n')
+  $clone.find('p, div').before('\n')
   $clone.find('p, div').after('\n')
   const text = $clone.text()
   return text

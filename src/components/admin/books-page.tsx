@@ -80,7 +80,7 @@ export function BooksPage() {
     setDetail(book)
     setChapters([])
     try {
-      const r = await api<{ chapters: ChapterRow[] }>(`/api/books/${book.id}/chapters?pageSize=200`)
+      const r = await api<{ chapters: ChapterRow[] }>(`/api/books/${book.id}/chapters?pageSize=500`)
       setChapters(r.chapters)
     } catch { /* ignore */ }
   }

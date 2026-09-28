@@ -1,8 +1,8 @@
 import type { BookRuleConfig, ContentRuleConfig, FieldSelector, ListRuleConfig, RuleType, TocRuleConfig } from '../collect-types'
 import { mergeCleaning } from '../collect-types'
 import { fetchPage } from './fetcher'
-import { parseContentHtml, parseFields, parseListEntries, resolveUrl, selectValue } from './parser'
-import { cleanContent, cleanIntro } from './cleaner'
+import { parseFields, parseListEntries, resolveUrl, selectValue } from './parser'
+import { cleanIntro } from './cleaner'
 import { detectCompletion, extractChapterNumber, smartMatchCategory } from './matcher'
 
 // ============================================================
@@ -170,31 +170,15 @@ function firstPageUrl(pages: { url: string }[]): string {
 async function testContent(cfg: ContentRuleConfig, url: string, started: number): Promise<TestResponse> {
   if (!cfg?.content?.expr) return { ok: false, message: '正文选择器不能为空' }
   const cleaning = mergeCleaning()
-  const parts: string[] = []
-  let pageUrl = url
-  let pageCount = 1
-  const maxPages = cfg.pagination?.enabled ? Math.min(cfg.pagination.maxConcat ?? 5, 5) : 1
-  for (let i = 0; i < maxPages; i++) {
-    const res = await fetchPage(pageUrl, cfg)
-    const raw = parseContentHtml(res.html, cfg.content)
-    if (raw) {
-      const cleaned = cleanContent(raw, cleaning, cfg.extraAdPatterns ?? [])
-      parts.push(cleaned.text)
-    }
-    if (!cfg.pagination?.enabled || !cfg.pagination.nextLink?.expr) break
-    const next = String(selectValue(res.html, { ...cfg.pagination.nextLink, multiple: false }, { baseUrl: res.finalUrl }) || '')
-    if (!next || !/^https?:\/\//.test(next) || next === res.finalUrl) break
-    pageUrl = next
-    pageCount++
-  }
-  const text = parts.filter(Boolean).join('\n')
+  const { fetchCleanedContent } = await import('./paginated')
+  const { text, pages } = await fetchCleanedContent(url, cfg, cleaning)
   if (!text) return { ok: false, message: '正文解析为空，请检查正文选择器', elapsedMs: Date.now() - started }
   return {
     ok: true,
-    message: `正文解析成功：${text.replace(/\s/g, '').length} 字，共 ${pageCount} 页`,
+    message: `正文解析成功：${text.replace(/\s/g, '').length} 字，共 ${pages} 页`,
     elapsedMs: Date.now() - started,
     data: {
-      pagesFetched: pageCount,
+      pagesFetched: pages,
       wordCount: text.replace(/\s/g, '').length,
       paragraphCount: text.split('\n').filter(Boolean).length,
       preview: text.slice(0, 500),

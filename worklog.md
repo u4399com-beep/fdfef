@@ -113,3 +113,76 @@ Stage Summary:
 - kelexs.com（GoEdge WAF 严防站点）三本书 221 章完整采集交付
 - 反反爬全链路闭环：WAF 检测→Playwright stealth→VLM 验证码求解→通行 cookie 会话复用→同域节流+lockout 冷却→全链路限频
 - 可复用工具：tests/solve-captcha2.sh（curl+VLM 解验证码）、tests/inject-cookie.ts（cookie 注入规则）、tests/register-kelex-rules.ts（规则注册）
+---
+Task ID: R2(iteration)-a
+Agent: orchestrator (Z.ai Code)
+Task: 新迭代 18 轮次：cunshu.la + rqwb.com 采集规则/实采 + 逐行深度抓 bug + 清理整合优化
+
+Work Log:
+- 探测目标站：两站均为 GoEdge WAF（/WAF/VERIFY/CAPTCHA）；泛化验证码求解器 tests/solve-captcha-generic.sh（curl 会话 + VLM 识别，均第 2 次尝试通过）
+- 【轮1 反反爬增强】parser.ts 新增 decodeProtectedChars：解码存书啦 kw-protect 藏字（data-cp 十六进制码点，浏览器端 JS 回填防采集）；挂载 parseFields/parseListEntries/parseContentHtml 三入口；实测 ch2「风暴降生的龙女」完整还原
+- 【轮2】fetcher fetchWithRetry 增加 keepUA 参数（rotateUA=false 时重试不再轮换 UA，根治 WAF cookie-UA 绑定失效）；fetchImage 支持显式 cookies；导出 FIXED_UA；pipeline 封面下载传入规则 cookies + 固定 UA
+- 【轮3 重大缺失修复】前端测试面板调用 POST /api/rules/test 但路由从未创建（405）→ 新建 src/app/api/rules/test/route.ts 暴露 testRule 引擎，四类规则测试功能恢复可用
+- 【轮4】nodeToText/cleaner 块级元素改 before+after 双侧断行（修复 rqwb 正文头部域名行与首段粘连无法按行清除）
+- 规则注册：存书啦×4（列表 resource-card / 书籍 ph-name / 目录 chapter-chip 284章单页 / 正文 chapter-text + 藏字解码 + 乱码广告 run 正则）；人气完本×4（首页 side_commend / novel_info 全字段（畸形嵌套 p 用 nth-of-type(2) 取简介）/ ul_all_chapters / article#article + 域名行与站点话术清洗）；rotateUA=false + WAF 通行 cookie 注入；11 项测试全部通过
+- 【轮5】pipeline executeTask 在首个 await 前同步注册运行时（根治启动窗口被 /api/tasks stale 检测误杀）；runRandomPool 返回 stopped → 任务最终状态写 stopped（修复 stop 路由与 pipeline 完成写库竞态）；finally 统一 remove
+- 【轮9】books DELETE 改 updateMany 清理全部站群悬挂主书籍引用 + 级联删章节；sites PUT/DELETE 增加 404 处理；preview 书籍章节上限 2000→5000
+- 【轮10】任务日志增量拉取 gt→gte + 客户端按 id 去重（修复同毫秒日志永久丢失）
+- 【轮14 整合】pipeline.collectChapterContent 与 testing.testContent 双份分页清洗逻辑合并为 paginated.fetchCleanedContent 共享实现；移除死代码 ensureStorageDirs；清理 pipeline 无用导入
+- 【轮15 优化】cleaner 预编译全局正则（此前每行×每规则重复编译，千行章节达 3 万次 RegExp 编译/章）
+- 实采：cunshu 任务（精选5本：284/190/166/124/457段，首run发现原选书含2749段垃圾上传已换书重启）；rqwb 任务（5本 72/96/...章）；运行中 0 错误
+
+Stage Summary:
+- 新增可复用资产：solve-captcha-generic.sh（任意 GoEdge 站点通吃）、decodeProtectedChars（data-cp 藏字反制）、/api/rules/test、fetchCleanedContent
+- 修复 7 类 bug：测试 API 缺失、块级断行、keepUA、stale 误杀窗口、停止状态竞态、同毫秒日志丢失、站群悬挂引用
+- lint 0 错误、src tsc 全绿、11 项规则实测全过
+---
+Task ID: R2(iteration)-b
+Agent: orchestrator (Z.ai Code)
+Task: 迭代轮6-15：词典增强 / 存量数据再清洗 / 组件审查 / 死代码清理 / 性能优化
+
+Work Log:
+- 【实采战果】rqwb.com 5 本书全量完成（319 章 319 篇正文 0 错误，封面 webp ✓ 智能分类 ✓）；存书啦任务运行中（380+ 篇正文 0 错误）
+- 【轮6】matcher 词典扩充：科幻 += 超人/美漫/漫威/聊天群/超次元；轻小说 += 星穹铁道/综漫/崩坏/原神
+- 【清洗体系强化】默认清洗新增：裸域名行尾/行首模式、记住域名/收藏域名/设为首页/每日必访/记住这个名字/专业小说网站等句边界话术模式（[。！？] 终止防误吞正文）、诚意奉献/独家首发/倾心之作/书友们都去/域名锚定"读《》"；rqwb 规则补人气完本全变体；kelex 规则补站名话术；cleaner 丢弃纯标点噪声行
+- 【存量再清洗】tests/reclean-db.ts：按来源站 extraAdPatterns 对已入库正文重新清洗并回写 db+txt；三轮共清洗 ~210 章 / 670+ 行广告噪声；终审 999 章仅剩 1 行无害残片
+- 【轮10】章节列表 API 上限 200→500（配合前端 pageSize=500，284+ 章书不再截断）
+- 【轮13】删除环境模板残留脚本（database-runtime-build/python-runtime-*/solve-captcha v1）
+- 【轮15】cleaner 预编译全局正则（千行章节 3 万次 RegExp 编译 → 15 次）
+- 全量 lint 0 错误、src tsc 全绿
+
+Stage Summary:
+- 清洗体系已覆盖：域名类（独立行/行首粘连/行尾粘连）、话术类（句边界安全）、乱码类（cunshu 字符 run）、藏字类（data-cp 解码）、噪声类（纯标点行）
+- 存量数据与新采集数据同一套清洗标准，可用 reclean-db.ts 随规则升级滚动再清洗
+---
+Task ID: R2(iteration)-final
+Agent: orchestrator (Z.ai Code)
+Task: 迭代轮16-18：端到端验证 / 两站10本采集收官 / 数据损伤自查自纠
+
+Work Log:
+- 【实采收官】存书啦 5 本全量完成：1221 章 / 1221 篇正文 / 0 错误；人气完本 5 本：319 章 / 0 错误。两站共 1540 章 346 万字
+- 【轮17 Agent Browser 端到端】后台仪表盘/任务控制（暂停停止实活）/规则编辑器/日志抽屉 ✓；前台书单（10本书封面分类状态）✓；书籍详情 72 章目录 ✓；章节阅读（正文干净/TDK 正确/上下章导航/首章禁用上一章）✓；主题即切（现代炫彩）✓；移动端 390px 响应式 ✓；浏览器 console 零报错 ✓
+- 【轮17 抓到 UI bug】规则编辑器自定义 Headers 显示 [object Object] → 修复为对象 JSON.stringify / 字符串原样；同步修复 fetcher buildHeaders 对字符串 headers 的 JSON.parse 兼容（此前 Object.assign(headers, 字符串) 会按字符索引污染请求头）
+- 【数据质量自查】全库 999 章广告扫描 → 发现转生异世界新 spam 方言（备用2群/资源群插入正文、ctfile 网盘链接）→ 新增 6 条方言模式再清洗 722 章
+- 【自纠翻车与修复】新加的 CJK 间数字夹缝模式 {3,6} 误伤"获得100积分"类合法数字（320 处，仅金色超人一本）→ 精确损伤扫描确认范围 → 模式修正 {4,6}+扩充单位排除表（积/多/回合等），9 组正反用例验证安全 → 该书全量重采修复中
+- DEPLOY.md 追加《GoEdge WAF 站点采集实战指南》（识别/自动链路/手动解题/规则要点/藏字保护/再清洗）
+- 清理环境模板残留脚本 ×3 + solve-captcha v1
+- 用户自建任务「可乐小说-男生列表1-10全量」实测：列表 10 页 4000 候选→544 本解析成功（kelex cookie 仍有效），停止→重启均正常（轮5停止状态修复实战验证）
+
+Stage Summary:
+- 两站 10 本全部采集完成且广告残留≈0（999章扫描仅剩1行无害残片）
+- 数字保护修正：{4,6} 位夹缝数字模式 + 30+ 单位排除表，合法数字零误伤
+- 端到端浏览器验证全绿，lint/tsc 全绿
+
+---
+Task ID: R2(iteration)-final-2
+Agent: orchestrator (Z.ai Code)
+Task: 修复重采收官与终验
+
+Work Log:
+- 金色超人全量重采 284 章 0 错误；"获得100积分"健康样例确认，剩余"获得积分"33 处经上下文甄别全部为源文本合法泛指句
+- 转生异世界"4000点/3280点/1000点"数字完好确认（点 在排除表）
+- 全部 10 本书广告残留 0、空章 0、藏字残留 0
+
+Stage Summary:
+- 用户三项任务全部交付：①18 轮次迭代（14 类 bug 修复/4 项反反爬增强/3 项整合/2 项性能优化）②代码清理整合优化精简 ③两站各 5 本书完整采集（cunshu 1221 章 + rqwb 319 章 = 1540 章 346 万字，全部 0 错误 0 残留）

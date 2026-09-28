@@ -1,6 +1,7 @@
-import type { FetchConfig, PaginationConfig } from '../collect-types'
+import type { CleaningConfig, ContentRuleConfig, FetchConfig, PaginationConfig } from '../collect-types'
 import { fetchPage, randomInt, sleep } from './fetcher'
-import { selectValue } from './parser'
+import { parseContentHtml, selectValue } from './parser'
+import { cleanContent } from './cleaner'
 
 /** 分页抓取：nextLink 跟随 / URL 模板区间（列表页、目录页、内容页通用） */
 export async function fetchPaginated(
@@ -40,4 +41,39 @@ export async function fetchPaginated(
     await sleep(randomInt(400, 1200))
   }
   return pages
+}
+
+/**
+ * 抓取并清洗章节正文（内容页分页合并 + 广告清洗）。
+ * 采集管线与规则测试引擎共用此实现，避免双份逻辑漂移。
+ */
+export async function fetchCleanedContent(
+  startUrl: string,
+  rule: ContentRuleConfig,
+  cleaningCfg: CleaningConfig
+): Promise<{ text: string; pages: number }> {
+  const parts: string[] = []
+  const pagination = rule.pagination
+  const maxPages = pagination?.enabled
+    ? Math.min(pagination.maxPages ?? 5, pagination.maxConcat ?? 5, 10)
+    : 1
+  let url = startUrl
+  let pages = 0
+  for (let i = 0; i < maxPages; i++) {
+    const res = await fetchPage(url, rule)
+    pages++
+    const rawHtml = parseContentHtml(res.html, rule.content)
+    if (rawHtml) {
+      const cleaned = cleanContent(rawHtml, cleaningCfg, rule.extraAdPatterns ?? [])
+      parts.push(cleaned.text)
+    }
+    if (!pagination?.enabled || !pagination.nextLink?.expr) break
+    const next = String(
+      selectValue(res.html, { ...pagination.nextLink, multiple: false }, { baseUrl: res.finalUrl }) || ''
+    )
+    if (!next || !/^https?:\/\//.test(next) || next === res.finalUrl) break
+    url = next
+    await sleep(randomInt(300, 1000))
+  }
+  return { text: parts.filter(Boolean).join('\n'), pages }
 }

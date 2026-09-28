@@ -79,7 +79,7 @@ export async function GET(req: NextRequest) {
       where: { bookId: book.id },
       orderBy: { order: 'asc' },
       select: { id: true, title: true, order: true },
-      take: 2000,
+      take: 5000,
     })
     return NextResponse.json({
       site: siteMeta,

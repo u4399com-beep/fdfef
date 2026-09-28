@@ -2,21 +2,18 @@ import { db } from '@/lib/db'
 import type {
   BookRuleConfig,
   ContentRuleConfig,
-  FetchConfig,
   ListRuleConfig,
-  PaginationConfig,
   TocRuleConfig,
 } from '../collect-types'
 import type { FieldSelector } from '../collect-types'
 import { mergeCleaning } from '../collect-types'
-import { fetchPage, randomInt, sleep } from './fetcher'
-import { parseContentHtml, parseFields, parseListEntries, resolveUrl, selectValue } from './parser'
-import { cleanContent } from './cleaner'
+import { fetchPage, FIXED_UA, randomInt, sleep } from './fetcher'
+import { parseFields, parseListEntries, resolveUrl, selectValue } from './parser'
 import { detectCompletion, extractChapterNumber, smartMatchCategory } from './matcher'
 import { fetchSuggestKeywords, mergeSuggestKeywords } from './suggest'
 import { downloadCoverAsWebp, hashText, saveChapterTxt } from './storage'
-import { runRandomPool, taskLog } from './task-manager'
-import { fetchPaginated } from './paginated'
+import { runRandomPool, taskLog, taskManager } from './task-manager'
+import { fetchCleanedContent, fetchPaginated } from './paginated'
 
 // ============================================================
 // 采集管线：列表页 → 书籍信息页 → 章节目录页 → 章节内容页
@@ -38,33 +35,6 @@ function parseRuleConfig<T>(configJson: string): T | null {
   } catch {
     return null
   }
-}
-
-/** 采集章节内容（含内容页分页合并） */
-async function collectChapterContent(
-  chapterUrl: string,
-  rule: ContentRuleConfig,
-  cleaningCfg: ReturnType<typeof mergeCleaning>
-): Promise<string> {
-  const parts: string[] = []
-  const pagination = rule.pagination
-  const maxPages = pagination?.enabled ? Math.min(pagination.maxPages ?? 5, pagination.maxConcat ?? 5, 10) : 1
-
-  let url = chapterUrl
-  for (let i = 0; i < maxPages; i++) {
-    const res = await fetchPage(url, rule)
-    const rawHtml = parseContentHtml(res.html, rule.content)
-    if (rawHtml) {
-      const cleaned = cleanContent(rawHtml, cleaningCfg, rule.extraAdPatterns ?? [])
-      parts.push(cleaned.text)
-    }
-    if (!pagination?.enabled || !pagination.nextLink?.expr) break
-    const next = String(selectValue(res.html, { ...pagination.nextLink, multiple: false }, { baseUrl: res.finalUrl }) || '')
-    if (!next || !/^https?:\/\//.test(next) || next === res.finalUrl) break
-    url = next
-    await sleep(randomInt(300, 1000))
-  }
-  return parts.filter(Boolean).join('\n')
 }
 
 /** 目录采集 + 乱序重排 + 去重 */
@@ -221,6 +191,8 @@ async function collectBookInfo(
 export async function executeTask(taskId: string): Promise<void> {
   const task = await db.collectTask.findUnique({ where: { id: taskId } })
   if (!task) return
+  // 同步注册运行时（在首个 await 之前）：避免启动窗口内被 /api/tasks 的 stale 检测误杀
+  taskManager.create(taskId)
 
   const stats: TaskStats = { books: 0, booksNew: 0, chapters: 0, chaptersNew: 0, contents: 0, errors: 0 }
   const writeStats = async (stage: string, progress: number) => {
@@ -289,7 +261,7 @@ export async function executeTask(taskId: string): Promise<void> {
     let doneBooks = 0
 
     // ---------- 阶段 2~4：书籍 → 目录 → 内容（随机线程池） ----------
-    await runRandomPool({
+    const poolResult = await runRandomPool({
       items: bookUrls,
       taskId,
       threadMin: task.threadMin,
@@ -387,7 +359,8 @@ export async function executeTask(taskId: string): Promise<void> {
           await sleep(randomInt(task.intervalMin, task.intervalMax))
           if ((bookCfg.downloadCover ?? true) && info.coverUrl) {
             try {
-              const fileName = await downloadCoverAsWebp(info.coverUrl, bookId, info.finalUrl, bookCfg.headers?.['User-Agent'])
+              const coverUA = bookCfg.rotateUA === false ? (bookCfg.headers?.['User-Agent'] ?? FIXED_UA) : undefined
+              const fileName = await downloadCoverAsWebp(info.coverUrl, bookId, info.finalUrl, coverUA, bookCfg.cookies)
               await db.book.update({ where: { id: bookId }, data: { coverLocal: fileName } })
             } catch (e) {
               await taskLog(taskId, 'warn', `封面下载失败《${info.title}》：${e instanceof Error ? e.message : String(e)}`)
@@ -462,7 +435,7 @@ export async function executeTask(taskId: string): Promise<void> {
             intervalMax: task.intervalMax,
             process: async (chapter) => {
               try {
-                const text = await collectChapterContent(chapter.url, contentCfg, cleaningCfg)
+                const { text } = await fetchCleanedContent(chapter.url, contentCfg, cleaningCfg)
                 if (!text) {
                   await taskLog(taskId, 'warn', `正文为空《${info.title}》${chapter.title}`)
                   stats.errors++
@@ -500,27 +473,34 @@ export async function executeTask(taskId: string): Promise<void> {
       },
     })
 
-    const finalStatus = stats.books === 0 && stats.errors > 0 ? 'failed' : 'done'
+    const stopped = poolResult.stopped
+    const finalStatus = stopped ? 'stopped' : stats.books === 0 && stats.errors > 0 ? 'failed' : 'done'
     await db.collectTask.update({
       where: { id: taskId },
       data: {
         status: finalStatus,
-        stage: '完成',
-        progress: 100,
+        stage: stopped ? '已停止' : '完成',
+        progress: stopped ? undefined : 100,
         stats: JSON.stringify(stats),
       },
     })
-    await taskLog(
-      taskId,
-      'success',
-      `任务完成：书籍 ${stats.books}（新增 ${stats.booksNew}），目录章节 ${stats.chapters}（新增 ${stats.chaptersNew}），正文 ${stats.contents} 篇，错误 ${stats.errors}`
-    )
+    if (stopped) {
+      await taskLog(taskId, 'warn', `任务已停止：书籍 ${stats.books}，正文 ${stats.contents} 篇，错误 ${stats.errors}`)
+    } else {
+      await taskLog(
+        taskId,
+        'success',
+        `任务完成：书籍 ${stats.books}（新增 ${stats.booksNew}），目录章节 ${stats.chapters}（新增 ${stats.chaptersNew}），正文 ${stats.contents} 篇，错误 ${stats.errors}`
+      )
+    }
   } catch (e) {
     await db.collectTask.update({
       where: { id: taskId },
       data: { status: 'failed', stage: '失败', stats: JSON.stringify(stats) },
     })
     await taskLog(taskId, 'error', `任务失败：${e instanceof Error ? e.message : String(e)}`)
+  } finally {
+    taskManager.remove(taskId)
   }
 }
 

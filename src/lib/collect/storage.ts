@@ -9,11 +9,6 @@ export const STORAGE_ROOT = path.join(process.cwd(), 'storage')
 export const NOVELS_DIR = path.join(STORAGE_ROOT, 'novels')
 export const COVERS_DIR = path.join(STORAGE_ROOT, 'covers')
 
-export async function ensureStorageDirs(): Promise<void> {
-  await fs.mkdir(NOVELS_DIR, { recursive: true })
-  await fs.mkdir(COVERS_DIR, { recursive: true })
-}
-
 /** 文件名安全化 */
 export function safeFileName(name: string): string {
   return name
@@ -50,11 +45,12 @@ export async function downloadCoverAsWebp(
   coverUrl: string,
   bookId: string,
   referer?: string,
-  ua?: string
+  ua?: string,
+  cookies?: string
 ): Promise<string> {
   const { fetchImage } = await import('./fetcher')
   const sharp = (await import('sharp')).default
-  const buffer = await fetchImage(coverUrl, referer, 20000, ua)
+  const buffer = await fetchImage(coverUrl, referer, 20000, ua, cookies)
   const fileName = `${bookId}.webp`
   await fs.mkdir(COVERS_DIR, { recursive: true })
   await sharp(buffer)

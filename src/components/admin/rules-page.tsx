@@ -265,7 +265,8 @@ function FetchFields({ cfg, onChange }: { cfg: Record<string, unknown>; onChange
       </div>
       <div className="space-y-1">
         <Label className="text-xs">自定义 Headers（JSON）</Label>
-        <Textarea className="h-16 font-mono text-xs" placeholder='{"X-Token": "xxx"}' value={String(cfg.headers ?? '')}
+        <Textarea className="h-16 font-mono text-xs" placeholder='{"X-Token": "xxx"}'
+          value={typeof cfg.headers === 'string' ? (cfg.headers as string) : cfg.headers ? JSON.stringify(cfg.headers, null, 2) : ''}
           onChange={(e) => onChange({ headers: e.target.value })} />
       </div>
     </SubSection>
