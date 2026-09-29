@@ -102,8 +102,12 @@ HYPERBROWSER_API_KEY=你的key
 | 宿主机路径 | 容器路径 | 内容 |
 |---|---|---|
 | `./db` | `/app/db` | SQLite 数据库（书籍/章节/规则/任务/站点配置） |
-| `./storage` | `/app/storage` | 封面 webp（covers/）、章节 txt（novels/） |
+| `./storage` | `/app/storage` | 封面 webp（covers/）、章节 txt（novels/）、**WAF 通行 cookie（waf-cookies.json）** |
 | `./download` | `/app/download` | 生成下载文件 |
+
+> **waf-cookies.json 说明**：VLM 验证码解题后的 WAF 通行 cookie 会自动持久化到此文件（2 秒防抖写盘，7 天 TTL）。
+> 容器/进程重启后直接复用通行会话，无需重新解验证码——这是 GoEdge 类 WAF 站点"稳定长期采集"的关键一环。
+> 该文件已加入 .gitignore（会话凭据不入 git），迁移/备份时随 `storage/` 目录整体拷贝即可。
 
 ---
 
@@ -258,7 +262,13 @@ docker compose restart
 - 分页参数加密或点击后 URL 不变 → 需要 JS 渲染翻页
 
 ### 系统自动应对链路
-HTTP 直连 → WAF 检测 → 自动升级 Playwright（stealth 注入）→ 截图验证码 → VLM 自动识别求解 → 通行 cookie 回写全局 CookieJar 复用 → 同域节流（throttleGap）+ 封禁冷却（reportBlock）
+HTTP 直连 → WAF 检测 → 自动升级 Playwright（stealth 注入）→ 截图验证码 → VLM 自动识别求解 → 通行 cookie 回写全局 CookieJar 复用（**并持久化到 storage/waf-cookies.json，重启不丢**）→ 同域节流（throttleGap）+ 封禁冷却（reportBlock）
+
+### 长期稳定性机制（自动生效，无需配置）
+- **通行 cookie 持久化**：解题成果跨进程重启保留（7 天 TTL，过期自动放弃）
+- **镜像域名轮换**：规则配置 `mirrorUrls` 后，主域网络级不可达（DNS/超时/连接失败）自动按序切换镜像并记忆 10 分钟
+- **硬 403 冷却**：IP 拉黑时全局冷却 3 分钟，冷却后自动恢复，期间任务暂停等待而非报错中断
+- **select 下拉分页**：`pagination.mode: "select"` 枚举全部分页选项，免疫"末页下一页指向书籍页"蜜罐
 
 ### 手动解题（推荐用于规则配置阶段）
 ```bash

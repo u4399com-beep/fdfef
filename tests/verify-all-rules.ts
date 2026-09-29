@@ -61,6 +61,8 @@ async function verifySite(plan: SitePlan): Promise<{ ok: boolean; detail: string
       summary.push(`${step}:跳过(无URL)`)
       continue
     }
+    // 环节间停顿：同一站点的 list→book→toc→content 连环请求放缓节奏
+    if (summary.length > 0) await new Promise((r) => setTimeout(r, 2000))
     const res = await testRule(step as 'list' | 'book' | 'toc' | 'content', JSON.parse(rule.config), url)
     if (!res.ok) {
       return { ok: false, detail: `${summary.join(' → ')} → ${step}:❌ ${res.message.slice(0, 120)}` }
@@ -91,6 +93,8 @@ async function main() {
   let fail = 0
   for (const plan of PLANS) {
     if (only.length && !only.some((o) => plan.label.includes(o) || plan.prefix.includes(o))) continue
+    // 站点间停顿：连续验证多站时避免高频请求触发 WAF（验证脚本自身也要做“礼貌爬虫”）
+    if (pass + fail > 0) await new Promise((r) => setTimeout(r, 5000))
     process.stdout.write(`${plan.label.padEnd(30)} `)
     try {
       const r = await verifySite(plan)
