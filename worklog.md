@@ -341,3 +341,82 @@ Stage Summary:
 - 任务2 深审修复：fetcher 6 处 + pipeline 3 处 + 测试引擎 1 处，共 10 处 bug/缺陷全修；反反爬新增镜像轮换/select 分页/防跨章/WebGL 指纹四层能力
 - 任务3 精简：死代码清除，规则配置与类型契约同步演进（mirrorUrls/select/sameChapterOnly）
 - 数据：18 书 / 1991 章 / 447 万字，sourceName 全量回填
+---
+Task ID: R2-engine-c
+Agent: utils-reviewer
+Task: cleaner/matcher/storage/suggest/download-builder/http 逐行深审与修复
+
+Work Log:
+- 【matcher·完结误判】detectCompletion「未完结/尚未完本/没有完结」含"完结/完本"字样被 FINISHED_WORDS 先行命中 → 误判完结 0.95；新增否定前缀守卫 /(未|没|尚|不)[^，。,、.!！?？\s]{0,3}完/ 先于 FINISHED_WORDS 判定（已完结/完本/全本/连载中等正常状态 12 用例回归全过，无误伤）
+- 【cleaner·实体解码边界】decodeEntities 原 cp<0x10ffff 把合法上界 U+10FFFF 排除（差一错误）→ 改为闭区间 ≤；新增代理区(D800-DFFF) → U+FFFD（HTML 规范行为，原实现产出孤立代理项会污染 UTF-16 串，后续 encodeURIComponent/写 txt 抛错或乱码）；两分支合并为 codePointToChar 消重
+- 【cleaner·CR 归一】实体解码可产生 CR（&#13;），原逻辑仅靠行尾 trim 兜底、行中 CR 残留 → 解码后统一 \r\n?→\n 再按行处理
+- 【cleaner·选择器容错】cfg.removeTags 由规则配置注入，非法 CSS 选择器（如 "div["）原样抛 SyntaxError → 整章清洗失败→整本书采集失败；逐个 try/catch 跳过非法选择器（clean-test 路由已有兜底，管线此前无）
+- 【cleaner·简介截断】cleanIntro slice(0,3000) 按 UTF-16 码元截断可把增补平面字符切成孤立代理项 → 改 Array.from 按码点截断
+- 【storage·safeFileName 加固】补 Windows 结尾点/空格剥离（截断前后各一次，顺带消化 "."/".." 目录名拼进 NOVELS_DIR 的边界）、保留设备名（CON/PRN/AUX/NUL/COM1-9/LPT1-9，大小写不敏感）加 _ 前缀；签名与 'untitled' 兜底语义不变，存量 contentLocal 路径不受影响
+- 【storage·webp 降级链确认+加固】转换失败降级链已健全：fetchImage 非 200/空 body 抛错 → sharp 无效图抛错 → pipeline try/catch warn+无封面，符合降级语义（未改）；新增 >20MB 输入拒绝（正常封面 <2MB，防解压炸弹/OOM），拒绝走同一 warn 降级路径
+- 【storage·确认无恙】readChapterTxt 路径穿越拦截（NOVELS_DIR 前缀校验）复核有效、saveChapterTxt 目录/文件名经 safeFileName 无穿越、hashText djb2 正确
+- 【download-builder·空章节边界】正文仅空白（纯换行/空格，normalizeParagraphs=false 配置路径可产出）原被判"非空"跳过本地 txt 回退并输出空章 → 改 !body.trim() 判空：先回退 contentLocal 再占位"（本章内容缺失）"
+- 【download-builder·广告模板容错】cfg.adTemplates 来自 DB JSON mergeDownload spread，被手改成字符串时 length>0 成立 → 逐字符"广告"注入下载文件；Array.isArray 守卫
+- 【download-builder·文件名代理项】safeName slice(0,60) 码元截断可将增补平面书名切出孤立代理项 → encodeURIComponent 抛 URIError → 下载接口 500；改 Array.from 按码点截断（保留名/结尾点/空回退逻辑不变）
+- 【download-builder·混淆边界确认】obfuscateText 空文本原样返回、rate 钳制 [0,0.2]、for...of 按码点迭代增补平面字符不拆散、RARE_CHARS 全 BMP 无代理风险、junk-line 仅注入 body 不污染章节标题/广告位置计算（(i+1)%N 定点无偏移）——均确认无恙未改
+- 【suggest·JSON 解析健壮性】JSONP 截取后二次 JSON.parse 仍失败时抛裸 SyntaxError（"Unexpected token..."晦涩难排查）→ 包裹后统一抛"响应不是 JSON"；确认五引擎各自 AbortSignal.timeout(4500) 超时闭环、BOM/前缀垃圾定位首 {/[ 逻辑、asStringArray 对象字段探测与 cap 正常，未改
+- 【http.ts·确认无恙】readJson（非法 JSON/数组/原始类型→null）、toInt（NaN/Infinity 回退默认+夹取，min>max 确定性返回 max）、toBoolOrNull 逐项复核无缺陷，零改动
+- 【验证】bun 功能回归 34 用例全过（完结判断 12/实体边界 4/选择器容错/广告剔除/safeFileName 7/路径穿越拦截/混淆 7）；bunx tsc --noEmit src/ 零错误、全项目 0 错误；bun run lint 0 错误
+- 【遗留备忘】①广告正则的灾难性回溯无法静态根治（默认词典全为有界量词线性安全，自定义 extraAdPatterns 依赖规则作者自律，行级处理天然限制输入长度）②matcher 词典词如"日常/新书"存在业务层弱信号（设计取舍非缺陷）③lookalike 混淆对纯中文正文无效（R3-bug-b 已备忘，需 CJK 同形字表业务决策）
+
+Stage Summary:
+- 修复 6 类共 11 处：matcher 完结否定误判（未完结→完结的正确性 bug）、cleaner 实体解码 3 处边界（U+10FFFF 差一/孤立代理/CR 残留）+选择器容错+码点截断、storage safeFileName Windows 加固+封面 20MB 防炸弹、download-builder 空白正文回退+adTemplates 类型守卫+文件名码点截断（消除下载 500）、suggest 二次解析错误信息
+- webp 失败降级链（fetch→sharp→pipeline warn）、readChapterTxt 穿越拦截、obfuscateText 全部边界、http.ts 三助手复核确认无恙
+- 全部改动限于 5 个目标文件，导出签名与 API 契约零变更；34 用例回归 + tsc 0 + lint 0
+---
+Task ID: R2-engine-b
+Agent: pipeline-reviewer
+Task: pipeline + task-manager + testing + paginated 逐行深审与修复
+
+Work Log:
+- 【竞态·停止丢失】executeTask 在首个 await（任务查询）返回后才 taskManager.create，会把该窗口内到达的 pause/stop 信号重置回 running（R3-bug-a 遗留问题③）→ 改用 taskManager.ensure 复用 control start 已占位的运行时，信号零丢失
+- 【竞态·死占位】任务在 start 占位后、执行前被删除时，control route 遗留的 running runtime 永驻 globalThis Map → executeTask 任务不存在分支补 remove 清理
+- 【停止传播】范围采集列表阶段（可达数分钟）此前完全不响应暂停/停止，停止后还可能以 failed 收尾 → 列表循环逐页 waitWhilePaused；新增 TaskStoppedError 哨兵，外层 catch 据此写 stopped（stage=已停止）而非 failed
+- 【脏数据】single 模式 targetUrls 误存 JSON 字符串时 [...new Set("abc")] 会按字符拆成伪地址逐个报错 → Array.isArray + ^https?:// 过滤（与 range 分支同标准）
+- 【并发竞态】同一本书经不同入口 URL 被两个线程同时处理时双双 findUnique 未命中 → 竞相 create 抛 P2002，整本书被误标失败且目录/正文全跳过 → P2002 捕获后复用已存在记录继续采集
+- 【批量性能】章节目录逐条 findUnique+create/update（1221 章书 ≈2400+ 次串行 DB 往返）→ 1 次 findMany 内存比对 + createMany 批量建 + 仅差量 update；注：本项目 Prisma 6.11 生成类型不含 createMany skipDuplicates（类型为 never），批量失败回退逐条插入跳冲突行，语义等同
+- 【数据损伤】目录瞬时解析为空（反爬拦截/超时）会把 totalChapters 覆盖为 0（全书前台显示 0 章）→ 仅 order>0 时覆盖 totalChapters，latestChapter 同理
+- 【断点续采】local:（无源地址）章节每次全量/重采都进 todo 并必然抓取失败刷 error 日志 → todo 过滤 local: 章节
+- 【内存】内容阶段 findMany 默认携带全部章节正文（千章书数十 MB 无谓驻留于整书采集期）→ select 只取 id/url/title/order/collected
+- 【内存】collectTocEntries 最多持有 50 页 MB 级 HTML 直至函数结束（× 并发线程数）→ 逐页解析后立即置空释放
+- 【去重·URL 归一化】目录去重键忽略 hash/默认端口(:80/:443)/末尾斜杠差异（仅用于比较，不改入库 URL，兼容存量章节数据）；normalizeTocUrlKey bun 实测 7 用例全过
+- 【清理】doneBooks 只写不读死代码删除
+- 【task-manager】shouldStop 读闭包持有的 rt 对象而非共享 store（条目被替换/热重载场景可能漏停止信号）→ 改从 runtimes map 读取（缺失时回退 rt 自身，保留原语义）
+- 【testing 与管线漂移 1】testToc 乱序判定缺 numbers>=5 样本阈值（小样本 2 次下降即报乱序，管线不报）→ 对齐
+- 【testing 与管线漂移 2】testToc 仅在 scrambled 时模拟重排，管线是 reorder.enabled 即重排（编号升序+无编号移尾），测试面板 sample/tail 无法预测管线实际顺序 → 对齐
+- 【testing】testToc 返回 data.strategy 键装的实为首页 URL（键名误标，前端未消费该键零风险）→ 改名 firstPageUrl
+- 【paginated】template 模式 endPage<startPage 或 startPage<1 返回空页集，上游误判"目录为空/未解析到书籍" → start 下限钳 1、end 夹至 ≥start
+- 【paginated】nextLink 目录/列表分页与内容分页均无环检测（末页"下一页"指回前页时空转到 maxPages 上限、正文重复拼接）→ visited Set 成环即终止
+- 【确认无恙】runRandomPool 边界（0 条目即返/idx 越界退出/stop 在途项完成后生效/thread·interval min>max 兜底/嵌套池 owned 复用语义）、waitWhilePaused 暂停自旋与暂停中停止、writeStats 容错、taskLog 1000 字截断、globalThis 跨热重载缓存、任务删除级联清日志、控制路由 stop 终态保护——逐项复核无需改动
+
+Stage Summary:
+- 四文件共修复 16 处问题：控制信号传播 3（首 await 窗口 pause/stop 重置、列表阶段不可停、死占位清理）、并发竞态 1（同书双 URL P2002 整书误败）、数据损伤/续采 2（目录空清零 totalChapters、local 章节刷错）、性能 2（章节写入由 ~2N 次 DB 往返降为 1 读+1 批量写+差量、内容阶段瘦列）、内存 2（分页 HTML 及时释放、正文列裁剪）、去重 URL 归一化 1、分页边界与环检测 3、测试引擎与管线行为对齐 3
+- 验证：bunx tsc --noEmit 过滤 ^src/ 零错误；bun run lint 零错误；normalizeTocUrlKey 与页码钳制 bun 实测通过；改动仅限 pipeline.ts / task-manager.ts / testing.ts / paginated.ts 四文件，未新增依赖，未改任何导出签名与 API 契约
+---
+Task ID: R2-engine-a
+Agent: engine-reviewer
+Task: fetcher.ts + parser.ts 逐行深审与修复
+
+Work Log:
+- 【fetcher·cookie 泄漏】CookieJar.header() 域匹配无点边界，kelexs.com 的通行 cookie 会发给 notkelexs.com 等无关域（既漏 Cookie 又污染 WAF 判定）→ 改 host===base || host.endsWith('.'+base)，同时同名 cookie 去重（按 key 长度升序、更具体子域覆盖父域）与过期 cookie 下发前过滤（absorbFromBrowser 存的 expires 此前从不生效）
+- 【fetcher·cookie 生命周期】absorbFromFetch 只认 expires= 删除、忽略 Max-Age<=0（GoEdge 等 WAF 常用其注销 cookie）→ 补 max-age 解析，<=0 视为删除
+- 【fetcher·WAF 升级断链】挑战页若以 HTTP 403 状态下发（常见），fetchWithRetry 直接 break 抛『请求失败: HTTP 403』，isWafChallengeHtml 升级浏览器链路被整体绕过 → 403 且 body 命中挑战签名时用 new Response(body) 原样交回调用方（剥 content-encoding/length），由 fetchPageInner 识别升级；本地起真实 403-challenge 服务实测确认修复前抛 403、修复后进入 playwright 升级（真 chromium 走通）
+- 【fetcher·资源释放】fetchWithRetry 429/5xx 重试与最终失败路径未读 body 直接弃置（连接无法归还连接池）→ continue/throw 前 res.body.cancel()
+- 【fetcher·context 泄漏】fetchWithPlaywright 的 try 从 newPage 才开始，addInitScript/addCookies 抛错时 context（含页面进程）永不关闭 → try 上移覆盖 newContext 后全部步骤
+- 【fetcher·stale element】collectJsPages 每轮先查 items 再点 trigger 展开，而展开会重建列表 DOM，items[i] 必 stale → 调整为先展开再查 items（bounds 检查保留在 try 外，$$ 异常仍走外层兜底）
+- 【fetcher·指纹增强】buildHeaders 补 Sec-Fetch-Dest/Mode/Site/User 导航指纹（现代浏览器必带，缺失同样是爬虫特征），Sec-Fetch-Site 按 Referer 与目标域同源/跨源推导，与同源 Referer 指纹自洽；cfg.headers 为数组时 Object.assign 按索引注入 '0'/'1' 非法头名 → 加 Array 守卫
+- 【parser·base64 transform 谎话】applyTransform 注释称「非法 base64 视为无值」，但 Node Buffer 路径从不抛错，非法输入静默产出乱码正文 → 前置格式校验（字符集 + 长度%4≠1）不过返回 ''，另支持 URL-safe 变体（-/_ 归一化 +/）
+- 【parser·孤立代理】decodeProtectedChars 对 0xD800-0xDFFF 代理区码点 String.fromCodePoint 产出孤立代理串损坏 HTML → 代理区一律按非法走 remove
+- 【确认无恙】浏览器单例并发去重/finally 清理、DomainThrottle 队列链、镜像轮换（swapOrigin/markMirrorAlive/冷却复检）、isNetworkUnreachableError 判定、recognizeCaptcha 竞态（race 双挂 handler 无 unhandled rejection）、parser 三模式分组/matchAll 零长匹配/节点快照迭代/字段共享 $ 等逐行复核无需改动
+- 【验证】bun 实测 18/18 通过（jar 域边界/去重/过期/Max-Age、403-challenge 真 chromium 升级、硬 403 语义不变、Response 重包裹 set-cookie 保真、data-cp 代理区、Sec-Fetch/Referer/ClientHints 指纹、数组 headers 守卫）；临时测试脚本已清理；bunx tsc --noEmit 过滤 "^src/" 零输出、bun run lint 零错误；API 契约/导出签名零变更（fetchPage/fetchImage/isWafChallengeHtml/isNetworkUnreachableError/swapOrigin/cookieJar/domainThrottle/selectValue/parseFields/parseListEntries/parseContentHtml/decodeProtectedChars/resolveUrl 原样）
+- 【边界说明】镜像轮换仅对主域网络级不可达触发（设计使然）；biqutu 等 403 封禁页不匹配 WAF 签名、维持硬 403 冷却语义，未误伤
+
+Stage Summary:
+- fetcher 7 处修复/增强（cookie 跨域泄漏、Max-Age 生命周期、403-challenge 升级断链、body 连接释放、context 泄漏、jsPages stale element、Sec-Fetch+数组头指纹）+ parser 2 处（base64 校验、代理区码点），共 9 处，改动 139 行、零依赖、零契约变更
+- 反反爬实质提升：无关域不再收到本域通行 cookie；403 状态下发的 WAF 挑战页首次进入自动解题链路；HTTP 指纹与真实浏览器导航对齐（Sec-Fetch 全家桶 + 同源推导）
+- 全部修复经本地真服务/真 chromium 冒烟验证，tsc/lint 全绿

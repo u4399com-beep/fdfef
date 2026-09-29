@@ -93,7 +93,9 @@ export class TaskManagerImpl {
   }
 
   shouldStop(rt: TaskRuntime): boolean {
-    return rt.status === 'stopping'
+    // 从共享 store 读取而非闭包持有的 rt：与 pause/stop 写入同一来源，
+    // 避免热重载重建实例/条目被替换后读到孤立对象漏掉停止信号
+    return (this.runtimes.get(rt.taskId) ?? rt).status === 'stopping'
   }
 }
 

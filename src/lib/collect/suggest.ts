@@ -35,7 +35,12 @@ async function fetchJson(url: string): Promise<unknown> {
     // JSONP 包裹形如 cb({...}) / cb([...])：截到最后一个 } 或 ] 再试一次
     const last = Math.max(candidate.lastIndexOf('}'), candidate.lastIndexOf(']'))
     if (last < 0) throw new Error('响应不是 JSON')
-    return JSON.parse(candidate.slice(0, last + 1))
+    try {
+      return JSON.parse(candidate.slice(0, last + 1))
+    } catch {
+      // 二次解析仍失败：抛统一可读错误（而非裸 SyntaxError）
+      throw new Error('响应不是 JSON')
+    }
   }
 }
 

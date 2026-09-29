@@ -1,9 +1,11 @@
+import fs from 'node:fs'
+import path from 'node:path'
 import type { FetchConfig } from '../collect-types'
 
 // ============================================================
 // 抓取器：多策略（http / playwright / hyperbrowser）
 // 反反爬增强层：
-//   1. CookieJar 会话保持（WAF 通过后 cookie 全局复用）
+//   1. CookieJar 会话保持（WAF 通过后 cookie 全局复用，磁盘持久化跨重启保留）
 //   2. UA 轮换 + Client Hints / Sec-Fetch 真实浏览器指纹
 //   3. Playwright stealth 注入（移除 webdriver 特征）
 //   4. WAF 挑战页自动检测 + VLM 验证码求解
@@ -89,7 +91,14 @@ class CookieJar {
       const name = pair.slice(0, idx).trim()
       const value = pair.slice(idx + 1).trim()
       const lower = attrs.map((a) => a.trim().toLowerCase())
-      const expired = lower.some((a) => a.startsWith('expires=') && new Date(a.slice(8)).getTime() < Date.now())
+      const expired =
+        lower.some((a) => a.startsWith('expires=') && new Date(a.slice(8)).getTime() < Date.now()) ||
+        // Max-Age<=0 同样表示删除该 cookie（GoEdge 等 WAF 常用）
+        lower.some((a) => {
+          if (!a.startsWith('max-age=')) return false
+          const sec = Number.parseFloat(a.slice(8))
+          return Number.isFinite(sec) && sec <= 0
+        })
       const pos = list.findIndex((c) => c.name === name)
       if (expired) {
         if (pos >= 0) list.splice(pos, 1)
@@ -99,6 +108,7 @@ class CookieJar {
       list.push({ name, value })
     }
     this.store.set(host, list)
+    scheduleJarPersist()
   }
 
   /** Playwright context.cookies() 结果并入 jar */
@@ -112,6 +122,7 @@ class CookieJar {
       list.push({ name: c.name, value: c.value, expires: c.expires })
     }
     this.store.set(originHost, list)
+    scheduleJarPersist()
   }
 
   /** 取指定 URL 的 Cookie 请求头 */
@@ -122,13 +133,25 @@ class CookieJar {
     } catch {
       return ''
     }
-    // 允许父子域共享（.kelexs.com 场景）：精确 host + 以点开头的域后缀
-    const list: JarCookie[] = []
+    // 允许父子域共享（.kelexs.com 场景）：精确 host + 点边界域后缀。
+    // 必须带点边界，否则 kelexs.com 的 cookie 会泄漏给 notkelexs.com 等无关域
+    const matched: { key: string; cookies: JarCookie[] }[] = []
     for (const [key, cookies] of this.store) {
-      if (key === host || host.endsWith(key.replace(/^\./, ''))) list.push(...cookies)
+      const base = key.replace(/^\./, '')
+      if (host === base || host.endsWith('.' + base)) matched.push({ key, cookies })
     }
-    if (!list.length) return ''
-    return list.map((c) => `${c.name}=${c.value}`).join('; ')
+    if (!matched.length) return ''
+    // 同名 cookie 去重（更具体的子域键覆盖父域键），已过期的不再下发
+    const byName = new Map<string, JarCookie>()
+    const now = Date.now()
+    for (const { key, cookies } of matched.sort((a, b) => a.key.length - b.key.length)) {
+      for (const c of cookies) {
+        if (c.expires && c.expires > 0 && c.expires * 1000 < now) continue
+        byName.set(c.name, c)
+      }
+    }
+    if (!byName.size) return ''
+    return [...byName.values()].map((c) => `${c.name}=${c.value}`).join('; ')
   }
 
   count(): number {
@@ -147,6 +170,56 @@ const globalForJar = globalThis as unknown as { [JAR_STATE_KEY]?: JarState }
 const jarState: JarState = globalForJar[JAR_STATE_KEY] ?? { store: new Map() }
 globalForJar[JAR_STATE_KEY] = jarState
 export const cookieJar = new CookieJar(jarState.store)
+
+// ------------------------------------------------------------
+// Cookie 磁盘持久化：WAF 通行 cookie（VLM 解题成果）跨进程重启保留。
+// 通行 cookie 通常有效数小时～数天；不持久化则每次重启都要重新解验证码，
+// 这是“稳定长期获取”的关键一环。
+// ------------------------------------------------------------
+const COOKIE_PERSIST_PATH = path.join(process.cwd(), 'storage', 'waf-cookies.json')
+const globalForJarPersist = globalThis as unknown as { __novelJarPersistTimer?: ReturnType<typeof setTimeout> | null }
+
+function scheduleJarPersist(): void {
+  if (globalForJarPersist.__novelJarPersistTimer) return
+  const timer = setTimeout(() => {
+    globalForJarPersist.__novelJarPersistTimer = null
+    try {
+      const now = Date.now()
+      const hosts: Record<string, { name: string; value: string; expires?: number }[]> = {}
+      for (const [host, cookies] of jarState.store) {
+        const valid = cookies.filter((c) => !c.expires || c.expires <= 0 || c.expires * 1000 > now)
+        if (valid.length) hosts[host] = valid
+      }
+      fs.mkdirSync(path.dirname(COOKIE_PERSIST_PATH), { recursive: true })
+      fs.writeFileSync(COOKIE_PERSIST_PATH, JSON.stringify({ savedAt: now, hosts }))
+    } catch {
+      /* 磁盘写入失败不影响采集主链路 */
+    }
+  }, 2000)
+  timer.unref?.()
+  globalForJarPersist.__novelJarPersistTimer = timer
+}
+
+function loadPersistedJar(): void {
+  try {
+    const raw = fs.readFileSync(COOKIE_PERSIST_PATH, 'utf8')
+    const parsed = JSON.parse(raw) as {
+      savedAt?: number
+      hosts?: Record<string, { name: string; value: string; expires?: number }[]>
+    }
+    // 超过 7 天的存档整体放弃（陈旧通行 cookie 是脏数据）
+    if (!parsed?.hosts || (parsed.savedAt && Date.now() - parsed.savedAt > 7 * 86_400_000)) return
+    const now = Date.now()
+    for (const [host, cookies] of Object.entries(parsed.hosts)) {
+      if (!Array.isArray(cookies)) continue
+      const valid = cookies.filter((c) => c?.name && (!c.expires || c.expires <= 0 || c.expires * 1000 > now))
+      if (valid.length) jarState.store.set(host, valid)
+    }
+  } catch {
+    /* 文件不存在/损坏：空 jar 启动 */
+  }
+}
+loadPersistedJar()
 
 // ============================================================
 // 全局同域节流器：无论任务线程数如何，同一域名的请求间隔不小于最小值，
@@ -364,6 +437,24 @@ function buildHeaders(cfg: FetchConfig, url: string, uaOverride?: string): Recor
       /* 非法 URL 已在入口拦 */
     }
   }
+  // Sec-Fetch 导航指纹（现代浏览器导航请求必带，缺失同样是爬虫特征）；
+  // Sec-Fetch-Site 与 Referer 的同源/跨源关系保持一致，避免自相矛盾
+  {
+    let refHost = ''
+    try {
+      refHost = new URL(headers.Referer).hostname
+    } catch {
+      /* Referer 缺失时按跨源处理 */
+    }
+    try {
+      headers['Sec-Fetch-Dest'] = 'document'
+      headers['Sec-Fetch-Mode'] = 'navigate'
+      headers['Sec-Fetch-Site'] = refHost && refHost === new URL(url).hostname ? 'same-origin' : 'cross-site'
+      headers['Sec-Fetch-User'] = '?1'
+    } catch {
+      /* 非法 URL 已在入口拦 */
+    }
+  }
   // 显式 cookies 与 jar 会话 cookie 合并：jar 同名键优先。
   // WAF 通行 cookie 与 UA/会话绑定且会滚动更新，规则里保存的只是注册时刻的旧快照——
   // 长期稳定采集必须让解题后新入 jar 的通行 cookie 覆盖旧快照，否则每次都要重新解题
@@ -383,7 +474,8 @@ function buildHeaders(cfg: FetchConfig, url: string, uaOverride?: string): Recor
         extra = null
       }
     }
-    if (extra && typeof extra === 'object') Object.assign(headers, extra)
+    // 数组按索引展开会污染请求头（'0'/'1' 等非法头名），仅接受普通对象
+    if (extra && typeof extra === 'object' && !Array.isArray(extra)) Object.assign(headers, extra)
   }
   return headers
 }
@@ -556,12 +648,21 @@ async function fetchWithRetry(
             domainThrottle.reportBlock(url, 180_000)
             throw new Error(`目标站拒绝访问（IP 临时封禁，HTTP 403）：${url}。已自动冷却 3 分钟`)
           }
+          if (isWafChallengeHtml(body)) {
+            // 挑战页常以 403 状态下发：body 原样交回调用方，由 isWafChallengeHtml
+            // 识别并升级浏览器策略（直接 break 会绕过整条 WAF 升级链路）
+            const h = new Headers(res.headers)
+            h.delete('content-encoding')
+            h.delete('content-length')
+            return new Response(body, { status: 403, headers: h })
+          }
           lastErr = new Error(`HTTP 403`)
           break
         }
         if (i < retries) {
           // 429/5xx：更长退避（尊重 Retry-After 头）+ 轮换 UA
           lastErr = new Error(`HTTP ${res.status}`)
+          await res.body?.cancel().catch(() => undefined) // 释放未读 body，归还连接
           let backoff = res.status === 429 ? 1500 + Math.random() * 2000 : 600 + Math.random() * 800
           const ra = Number.parseFloat(res.headers.get('retry-after') ?? '')
           if (Number.isFinite(ra) && ra >= 0) backoff = Math.min(ra * 1000 + 250, 30_000)
@@ -569,6 +670,7 @@ async function fetchWithRetry(
           continue
         }
         // 最后一次重试仍非 2xx：不再把错误页 body 当解析对象（避免 5xx 错误页文本混入正文）
+        await res.body?.cancel().catch(() => undefined)
         throw new Error(`HTTP ${res.status}（${url.slice(0, 120)}）`)
       }
       return res
@@ -681,35 +783,37 @@ async function fetchWithPlaywright(url: string, cfg: FetchConfig, timeout: numbe
     timezoneId: 'Asia/Shanghai',
     extraHTTPHeaders: extraHeaders,
   })
-  await context.addInitScript(STEALTH_SCRIPT)
-
-  // 显式 cookies + jar 会话 cookies 一并注入
-  const jarCookies: { name: string; value: string; domain?: string }[] = jarCookie
-    ? jarCookie.split(';').map((c) => {
-        const idx = c.indexOf('=')
-        return { name: c.slice(0, idx).trim(), value: c.slice(idx + 1).trim() }
-      })
-    : []
-  const explicitCookies = (cfg.cookies ?? '')
-    .split(';')
-    .map((c) => c.trim())
-    .filter(Boolean)
-    .map((c) => {
-      const idx = c.indexOf('=')
-      if (idx <= 0) return null
-      const u = new URL(url)
-      return { name: c.slice(0, idx).trim(), value: c.slice(idx + 1).trim(), domain: u.hostname, path: '/' }
-    })
-    .filter((c): c is { name: string; value: string; domain: string; path: string } => c !== null)
-  const allCookies = [...explicitCookies, ...jarCookies].map((c) => ({
-    name: c.name,
-    value: c.value,
-    domain: c.domain ?? new URL(url).hostname,
-    path: '/',
-  }))
-  if (allCookies.length) await context.addCookies(allCookies)
-
+  // try 覆盖 newContext 之后的全部步骤：addInitScript/addCookies 抛错时
+  // context 也必须关闭，否则浏览器 context（含页面进程）泄漏
   try {
+    await context.addInitScript(STEALTH_SCRIPT)
+
+    // 显式 cookies + jar 会话 cookies 一并注入
+    const jarCookies: { name: string; value: string; domain?: string }[] = jarCookie
+      ? jarCookie.split(';').map((c) => {
+          const idx = c.indexOf('=')
+          return { name: c.slice(0, idx).trim(), value: c.slice(idx + 1).trim() }
+        })
+      : []
+    const explicitCookies = (cfg.cookies ?? '')
+      .split(';')
+      .map((c) => c.trim())
+      .filter(Boolean)
+      .map((c) => {
+        const idx = c.indexOf('=')
+        if (idx <= 0) return null
+        const u = new URL(url)
+        return { name: c.slice(0, idx).trim(), value: c.slice(idx + 1).trim(), domain: u.hostname, path: '/' }
+      })
+      .filter((c): c is { name: string; value: string; domain: string; path: string } => c !== null)
+    const allCookies = [...explicitCookies, ...jarCookies].map((c) => ({
+      name: c.name,
+      value: c.value,
+      domain: c.domain ?? new URL(url).hostname,
+      path: '/',
+    }))
+    if (allCookies.length) await context.addCookies(allCookies)
+
     const page = await context.newPage()
     // goto 带一次重试（沙箱/网络偶发 ERR_ADDRESS_UNREACHABLE）
     try {
@@ -787,17 +891,18 @@ async function collectJsPages(
     const max = Math.min(js.maxPages ?? 30, 40)
     const startIdx = js.skipFirst ? 1 : 0
     for (let i = startIdx; snapshots.length < max; i++) {
-      // 每轮重新查询分页项与展开控件：点击翻页后 DOM 常被重建，
+      // 下拉类控件需先展开再选目标项：展开会重建列表 DOM，
+      // 因此 items 必须在展开之后（重）查询——先查后展开拿到的是 stale element
+      const trigger = js.triggerSelector ? await page.$(js.triggerSelector) : null
+      if (trigger) {
+        await trigger.click({ timeout: 1500, force: true }).catch(() => undefined)
+        await page.waitForTimeout(200)
+      }
+      // 每轮重新查询分页项：点击翻页后 DOM 常被重建，
       // 跨轮持有的 ElementHandle 会失效（stale element）导致后续翻页静默失败
       const items = await page.$$(js.itemsSelector)
       if (i >= items.length) break
       try {
-        // 下拉类控件需先展开再选目标项
-        const trigger = js.triggerSelector ? await page.$(js.triggerSelector) : null
-        if (trigger) {
-          await trigger.click({ timeout: 1500, force: true }).catch(() => undefined)
-          await page.waitForTimeout(200)
-        }
         await items[i].click({ timeout: CLICK_TIMEOUT, force: true })
         await page.waitForTimeout(wait)
         await page.waitForLoadState('domcontentloaded', { timeout: 5000 }).catch(() => undefined)

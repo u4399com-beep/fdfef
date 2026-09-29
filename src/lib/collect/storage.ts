@@ -11,11 +11,16 @@ export const COVERS_DIR = path.join(STORAGE_ROOT, 'covers')
 
 /** 文件名安全化 */
 export function safeFileName(name: string): string {
-  return name
+  let s = name
     .replace(/[/\\:*?"<>|\u0000-\u001f]/g, '_')
     .replace(/\s+/g, ' ')
     .trim()
-    .slice(0, 120) || 'untitled'
+    .replace(/[. ]+$/g, '') // Windows：结尾点/空格非法（顺带消化 "."/".." 路径拼接风险）
+    .slice(0, 120)
+    .replace(/[. ]+$/g, '') // 截断后可能重新以点/空格结尾
+    .trimEnd()
+  if (/^(CON|PRN|AUX|NUL|COM[1-9]|LPT[1-9])$/i.test(s)) s = `_${s}`
+  return s || 'untitled'
 }
 
 /** 保存单章 txt，返回相对路径（相对 storage/novels） */
@@ -51,6 +56,8 @@ export async function downloadCoverAsWebp(
   const { fetchImage } = await import('./fetcher')
   const sharp = (await import('sharp')).default
   const buffer = await fetchImage(coverUrl, referer, 20000, ua, cookies)
+  // 解压炸弹防护：正常封面 <2MB，超过 20MB 的“图片”拒绝转换（转换失败由调用方降级）
+  if (buffer.length > 20 * 1024 * 1024) throw new Error(`封面体积异常（${Math.round(buffer.length / 1024)}KB），已拒绝处理`)
   const fileName = `${bookId}.webp`
   await fs.mkdir(COVERS_DIR, { recursive: true })
   await sharp(buffer)

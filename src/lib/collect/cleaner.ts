@@ -11,24 +11,17 @@ const ENTITY_MAP: Record<string, string> = {
   ldquo: '\u201c', rdquo: '\u201d', lsquo: '\u2018', rsquo: '\u2019', middot: '·',
 }
 
+function codePointToChar(cp: number): string {
+  // 边界：0x10FFFF 是合法码点（含）；代理区 → U+FFFD（HTML 规范行为，
+  // 孤立代理会污染 UTF-16 字符串，后续 encodeURIComponent/写文件会抛错或产生乱码）
+  if (cp > 0 && cp <= 0x10ffff && !(cp >= 0xd800 && cp <= 0xdfff)) return String.fromCodePoint(cp)
+  return cp >= 0xd800 && cp <= 0xdfff ? '\uFFFD' : ' '
+}
+
 function decodeEntities(text: string): string {
   return text
-    .replace(/&#x([0-9a-fA-F]+);/g, (_, hex) => {
-      try {
-        const cp = parseInt(hex, 16)
-        return cp > 0 && cp < 0x10ffff ? String.fromCodePoint(cp) : ' '
-      } catch {
-        return ' '
-      }
-    })
-    .replace(/&#(\d+);/g, (_, dec) => {
-      try {
-        const cp = parseInt(dec, 10)
-        return cp > 0 && cp < 0x10ffff ? String.fromCodePoint(cp) : ' '
-      } catch {
-        return ' '
-      }
-    })
+    .replace(/&#x([0-9a-fA-F]+);/g, (_, hex) => codePointToChar(parseInt(hex, 16)))
+    .replace(/&#(\d+);/g, (_, dec) => codePointToChar(parseInt(dec, 10)))
     .replace(/&([a-zA-Z][a-zA-Z0-9]*);/g, (m, name: string) => ENTITY_MAP[name] ?? m)
 }
 
@@ -64,7 +57,14 @@ export function cleanContent(
   extraAdPatterns: string[] = []
 ): CleanResult {
   const $ = cheerio.load(rawHtml)
-  for (const tag of cfg.removeTags) $(tag).remove()
+  // 逐个容错：自定义规则里的非法 CSS 选择器不应中止整章清洗
+  for (const tag of cfg.removeTags) {
+    try {
+      $(tag).remove()
+    } catch {
+      /* 非法选择器，跳过 */
+    }
+  }
 
   // 块级结构 → 换行（前后都断开，避免块前游离文本与块内文本粘连）
   const $clone = $.root().clone()
@@ -74,6 +74,8 @@ export function cleanContent(
 
   let raw = $clone.text()
   raw = decodeEntities(raw)
+  // 实体解码可能产生 CR（&#13;），统一归一为 \n 再按行处理
+  raw = raw.replace(/\r\n?/g, '\n')
 
   const adRegexes = [...cfg.adPatterns, ...extraAdPatterns]
     .map(safeRegex)
@@ -133,5 +135,6 @@ export function cleanIntro(rawHtml: string, cfg: CleaningConfig, extraAdPatterns
   // 模板转义残留（如 17mb 系简介字段把换行写成字面 \r\n）：还原为真实换行再按行清洗
   const normalized = rawHtml.replace(/\\r\\n|\\n|\\r/g, '\n')
   const result = cleanContent(normalized, { ...cfg, minParagraphLength: 0 }, extraAdPatterns)
-  return result.text.slice(0, 3000)
+  // 按码点截断，避免把增补平面字符切成孤立代理项进入 JSON 响应
+  return Array.from(result.text).slice(0, 3000).join('')
 }

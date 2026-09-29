@@ -131,10 +131,12 @@ async function testToc(cfg: TocRuleConfig, url: string, started: number): Promis
   const numbers = all.map((e) => e.no).filter((n) => n >= 0)
   let disorderCount = 0
   for (let i = 1; i < numbers.length; i++) if (numbers[i] < numbers[i - 1]) disorderCount++
-  const scrambled = disorderCount >= 2
+  // 与管线 collectTocEntries 同判定：序号样本 < 5 不判乱序（小样本误报率高）
+  const scrambled = numbers.length >= 5 && disorderCount >= 2
 
   let ordered: { title: string; url: string }[] = all.map((e) => ({ title: e.title, url: e.url }))
-  if (cfg.reorder?.enabled && scrambled) {
+  // 与管线对齐：reorder.enabled 即重排（编号升序 + 无编号条目移至尾部），不依赖 scrambled 判定
+  if (cfg.reorder?.enabled) {
     ordered = [...all].sort((a, b) => (a.no >= 0 ? a.no : 1e9) - (b.no >= 0 ? b.no : 1e9)).map((e) => ({ title: e.title, url: e.url }))
   }
   const before = ordered.length
@@ -160,7 +162,7 @@ async function testToc(cfg: TocRuleConfig, url: string, started: number): Promis
     message: `解析成功：共 ${all.length} 章${scrambled ? `（检测到乱序 ${disorderCount} 处${cfg.reorder?.enabled ? '，已重排' : '，建议开启乱序重排'}）` : ''}，去重后 ${ordered.length} 章`,
     elapsedMs: Date.now() - started,
     data: {
-      strategy: firstPageUrl(pages),
+      firstPageUrl: firstPageUrl(pages),
       pagesFetched: pages.length,
       total: all.length,
       dupRemoved: before - ordered.length,

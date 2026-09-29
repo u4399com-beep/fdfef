@@ -100,6 +100,11 @@ export function detectCompletion(input: {
   const { status, latestChapter, intro } = input
   const st = (status ?? '').trim()
   if (st) {
+    // 否定前缀先行：「未完结」「尚未完本」「没有完结」包含"完结/完本"字样，
+    // 必须先于 FINISHED_WORDS 判定，否则误判为完结
+    if (/(未|没|尚|不)[^，。,、.!！?？\s]{0,3}完/.test(st)) {
+      return { status: '连载', confidence: 0.9, source: `状态字段「${st}」含否定完结标记` }
+    }
     if (FINISHED_WORDS.some((w) => st.includes(w))) {
       return { status: '完结', confidence: 0.95, source: `状态字段「${st}」` }
     }

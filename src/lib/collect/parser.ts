@@ -80,7 +80,10 @@ function collapseWs(s: string): string {
 function applyTransform(value: string, transform: FieldSelector['transform']): string {
   if (transform !== 'base64' || !value) return value
   try {
-    const b64 = value.replace(/\s+/g, '')
+    let b64 = value.replace(/\s+/g, '')
+    // Buffer 解码不报错、非法输入会静默产出乱码，先做统一格式校验（与「非法 base64 视为无值」语义一致）
+    if (!/^[A-Za-z0-9+/_-]+={0,2}$/.test(b64) || b64.length % 4 === 1) return ''
+    b64 = b64.replace(/-/g, '+').replace(/_/g, '/') // URL-safe 变体归一化
     if (typeof Buffer !== 'undefined') return Buffer.from(b64, 'base64').toString('utf8')
     const bin = atob(b64)
     const bytes = Uint8Array.from(bin, (c) => c.charCodeAt(0))
@@ -114,7 +117,8 @@ export function decodeProtectedChars($: cheerio.CheerioAPI): void {
   const nodes = $('i.cr[data-cp], [data-cp]').toArray()
   for (const el of nodes) {
     const cp = Number.parseInt($(el).attr('data-cp') ?? '', 16)
-    if (Number.isFinite(cp) && cp > 0 && cp < 0x10ffff) {
+    // 代理区码点（0xD800-0xDFFF）不是合法字符，fromCodePoint 会产出孤立代理串损坏 HTML
+    if (Number.isFinite(cp) && cp > 0 && cp < 0x10ffff && !(cp >= 0xd800 && cp <= 0xdfff)) {
       $(el).replaceWith(String.fromCodePoint(cp))
     } else {
       $(el).remove()

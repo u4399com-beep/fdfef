@@ -1,4 +1,5 @@
 import { db } from '@/lib/db'
+import { Prisma } from '@prisma/client'
 import type {
   BookRuleConfig,
   ContentRuleConfig,
@@ -37,6 +38,22 @@ function parseRuleConfig<T>(configJson: string): T | null {
   }
 }
 
+/** 目录去重键归一化：忽略 hash、默认端口、末尾斜杠差异（仅用于去重比较，不改变入库 URL） */
+function normalizeTocUrlKey(url: string): string {
+  if (!url) return url
+  try {
+    const u = new URL(url)
+    u.hash = ''
+    if ((u.protocol === 'http:' && u.port === '80') || (u.protocol === 'https:' && u.port === '443')) {
+      u.port = ''
+    }
+    if (u.pathname.length > 1 && u.pathname.endsWith('/')) u.pathname = u.pathname.slice(0, -1)
+    return u.href
+  } catch {
+    return url
+  }
+}
+
 /** 目录采集 + 乱序重排 + 去重 */
 async function collectTocEntries(
   tocUrl: string,
@@ -44,8 +61,10 @@ async function collectTocEntries(
 ): Promise<{ entries: { title: string; url: string }[]; scrambled: boolean; dupRemoved: number }> {
   const pages = await fetchPaginated(tocUrl, rule, rule.pagination, 50)
   const all: { title: string; url: string; no: number }[] = []
-  for (const page of pages) {
+  for (let i = 0; i < pages.length; i++) {
+    const page = pages[i]
     const entries = parseListEntries(page.html, rule.items, page.url)
+    pages[i] = { url: page.url, html: '' } // 及时释放已解析页 HTML（50 页上限 × MB 级页面，多线程叠加可观）
     for (const e of entries) {
       if (!e.title && !e.url) continue
       all.push({ title: e.title || e.url, url: e.url, no: extractChapterNumber(e.title, rule.reorder?.numberPattern) })
@@ -73,7 +92,7 @@ async function collectTocEntries(
   let dupRemoved = 0
   const dedup: { title: string; url: string }[] = []
   for (const e of all) {
-    const urlKey = e.url || `local:${hashText(e.title)}`
+    const urlKey = e.url ? normalizeTocUrlKey(e.url) : `local:${hashText(e.title)}`
     if (rule.dedup?.byUrl !== false && seenUrl.has(urlKey)) {
       dupRemoved++
       continue
@@ -187,12 +206,26 @@ async function collectBookInfo(
   }
 }
 
+/** 停止哨兵：列表阶段收到停止信号时中止任务（catch 据此写 stopped 而非 failed） */
+class TaskStoppedError extends Error {
+  constructor() {
+    super('任务已停止')
+    this.name = 'TaskStoppedError'
+  }
+}
+
 /** 主入口：执行采集任务 */
 export async function executeTask(taskId: string): Promise<void> {
   const task = await db.collectTask.findUnique({ where: { id: taskId } })
-  if (!task) return
-  // 同步注册运行时（在首个 await 之前）：避免启动窗口内被 /api/tasks 的 stale 检测误杀
-  taskManager.create(taskId)
+  if (!task) {
+    // 任务在 start 占位后、执行前被删除：清理 control start 遗留的运行时占位
+    taskManager.remove(taskId)
+    return
+  }
+  // 同步注册运行时（在首个 await 之前）：避免启动窗口内被 /api/tasks 的 stale 检测误杀。
+  // 用 ensure 复用 control start 已占位的运行时而非覆盖重建：
+  // create 会把首个 await（任务查询）窗口内到达的 pause/stop 信号重置回 running
+  const { rt } = taskManager.ensure(taskId)
 
   const stats: TaskStats = { books: 0, booksNew: 0, chapters: 0, chaptersNew: 0, contents: 0, errors: 0 }
   const writeStats = async (stage: string, progress: number) => {
@@ -234,6 +267,8 @@ export async function executeTask(taskId: string): Promise<void> {
       await writeStats('列表页解析', 2)
       await taskLog(taskId, 'info', `范围采集：模板 ${task.urlTemplate}，第 ${task.pageStart} ~ ${task.pageEnd} 页`)
       for (let p = task.pageStart; p <= task.pageEnd; p++) {
+        // 列表阶段可能持续数分钟：逐页响应暂停/停止（此前停止信号要等列表全部抓完才生效）
+        if (!(await taskManager.waitWhilePaused(rt))) throw new TaskStoppedError()
         const url = task.urlTemplate.replace('{page}', String(p))
         // 任务模板已定义分页区间，忽略规则自身的 pagination 配置：
         // 否则规则的 template 分页（有自己的 startPage/endPage）会覆盖任务页码，
@@ -248,7 +283,11 @@ export async function executeTask(taskId: string): Promise<void> {
       }
     } else {
       try {
-        bookUrls = JSON.parse(task.targetUrls) as string[]
+        const parsed: unknown = JSON.parse(task.targetUrls)
+        // 防御非数组/非 http(s) 项：误存字符串时 [...new Set("abc")] 会按字符拆成 3 个伪地址
+        bookUrls = Array.isArray(parsed)
+          ? parsed.filter((u): u is string => typeof u === 'string' && /^https?:\/\//.test(u))
+          : []
       } catch {
         bookUrls = []
       }
@@ -269,7 +308,6 @@ export async function executeTask(taskId: string): Promise<void> {
     }
 
     const cleaningCfg = mergeCleaning()
-    let doneBooks = 0
 
     // ---------- 阶段 2~4：书籍 → 目录 → 内容（随机线程池） ----------
     const poolResult = await runRandomPool({
@@ -280,7 +318,6 @@ export async function executeTask(taskId: string): Promise<void> {
       intervalMin: task.intervalMin,
       intervalMax: task.intervalMax,
       onProgress: async (completed, total) => {
-        doneBooks = completed
         await writeStats('书籍采集', Math.round((completed / Math.max(1, total)) * 100))
       },
       process: async (bookUrl) => {
@@ -346,28 +383,43 @@ export async function executeTask(taskId: string): Promise<void> {
             stats.books++
             await taskLog(taskId, 'info', `更新书籍《${info.title}》${info.author ? ` / ${info.author}` : ''}`)
           } else {
-            const created = await db.book.create({
-              data: {
-                title: info.title,
-                author: info.author,
-                category: info.category,
-                categoryScore: info.categoryScore,
-                keywords: info.keywords,
-                suggestKeywords: info.suggestKeywords,
-                intro: info.intro,
-                coverUrl: info.coverUrl,
-                status: info.status,
-                statusConfidence: info.statusConfidence,
-                statusSource: info.statusSource,
-                latestChapter: info.latestChapter,
-                sourceUrl: info.finalUrl,
-                sourceName,
-              },
-            })
-            bookId = created.id
-            stats.books++
-            stats.booksNew++
-            await taskLog(taskId, 'success', `新增书籍《${info.title}》${info.author ? ` / ${info.author}` : ''} [${info.category}]`)
+            try {
+              const created = await db.book.create({
+                data: {
+                  title: info.title,
+                  author: info.author,
+                  category: info.category,
+                  categoryScore: info.categoryScore,
+                  keywords: info.keywords,
+                  suggestKeywords: info.suggestKeywords,
+                  intro: info.intro,
+                  coverUrl: info.coverUrl,
+                  status: info.status,
+                  statusConfidence: info.statusConfidence,
+                  statusSource: info.statusSource,
+                  latestChapter: info.latestChapter,
+                  sourceUrl: info.finalUrl,
+                  sourceName,
+                },
+              })
+              bookId = created.id
+              stats.books++
+              stats.booksNew++
+              await taskLog(taskId, 'success', `新增书籍《${info.title}》${info.author ? ` / ${info.author}` : ''} [${info.category}]`)
+            } catch (e) {
+              // 并发竞态兜底：同一本书经不同入口 URL 被两个线程同时处理时，
+              // 双双 findUnique 未命中后竞相 create 触发唯一约束冲突 → 复用先建记录继续采集
+              const dup =
+                e instanceof Prisma.PrismaClientKnownRequestError && e.code === 'P2002'
+                  ? await db.book.findUnique({
+                      where: { sourceUrl_title: { sourceUrl: info.finalUrl, title: info.title } },
+                    })
+                  : null
+              if (!dup) throw e
+              bookId = dup.id
+              stats.books++
+              await taskLog(taskId, 'info', `书籍并发创建冲突，复用已有《${info.title}》继续采集`)
+            }
           }
 
           // ---- 封面下载 webp（阶段间隔限频） ----
@@ -394,37 +446,73 @@ export async function executeTask(taskId: string): Promise<void> {
               `《${info.title}》目录 ${toc.entries.length} 章${toc.scrambled ? '（检测到乱序，已重排）' : ''}，去重移除 ${toc.dupRemoved} 条`
             )
           }
+          // 批量比对写入：1 次读全量 + createMany 批量建 + 仅差量 update
+          // （原逐条 findUnique+create/update 对千章书是 2400+ 次串行 DB 往返）
+          const existingChapters = await db.chapter.findMany({
+            where: { bookId },
+            select: { id: true, url: true, title: true, order: true },
+          })
+          const byUrl = new Map(existingChapters.map((c) => [c.url, c]))
           let order = 0
+          const toCreate: { bookId: string; title: string; order: number; url: string }[] = []
+          const toUpdate: { id: string; title: string; order: number }[] = []
           for (const entry of toc.entries) {
             order++
             const urlKey = entry.url || `local:${hashText(entry.title)}`
-            const existingChapter = await db.chapter.findUnique({
-              where: { bookId_url: { bookId, url: urlKey } },
-            })
-            if (existingChapter) {
-              if (existingChapter.title !== entry.title || existingChapter.order !== order) {
-                await db.chapter.update({
-                  where: { id: existingChapter.id },
-                  data: { title: entry.title, order },
-                })
+            const ex = byUrl.get(urlKey)
+            if (ex) {
+              if (ex.title !== entry.title || ex.order !== order) {
+                toUpdate.push({ id: ex.id, title: entry.title, order })
               }
               stats.chapters++
             } else {
-              await db.chapter.create({
-                data: { bookId, title: entry.title, order, url: urlKey },
-              })
+              toCreate.push({ bookId, title: entry.title, order, url: urlKey })
               stats.chapters++
               stats.chaptersNew++
             }
           }
+          if (toCreate.length > 0) {
+            try {
+              await db.chapter.createMany({ data: toCreate })
+            } catch (e) {
+              // 极罕见并发同书竞态（两线程同时为同一 bookId 建章）触发唯一约束冲突：
+              // 整批失败时退回逐条插入，冲突行跳过，其余照常入库
+              if (e instanceof Prisma.PrismaClientKnownRequestError && e.code === 'P2002') {
+                for (const c of toCreate) {
+                  try {
+                    await db.chapter.create({ data: c })
+                  } catch {
+                    /* 冲突行跳过 */
+                  }
+                }
+              } else {
+                throw e
+              }
+            }
+          }
+          for (const u of toUpdate) {
+            await db.chapter.update({ where: { id: u.id }, data: { title: u.title, order: u.order } })
+          }
           await db.book.update({
             where: { id: bookId },
-            data: { totalChapters: order, latestChapter: toc.entries.length ? toc.entries[toc.entries.length - 1].title : undefined },
+            data: {
+              // 目录为空（瞬时反爬拦截等）时不清零已有统计，仅在有章节时覆盖
+              totalChapters: order > 0 ? order : undefined,
+              latestChapter: toc.entries.length ? toc.entries[toc.entries.length - 1].title : undefined,
+            },
           })
 
           // ---- 章节内容（增量：只采未完成的；完全：全部重采） ----
-          const chapters = await db.chapter.findMany({ where: { bookId }, orderBy: { order: 'asc' } })
-          const todo = task.mode === 'full' ? chapters : chapters.filter((c) => !c.collected)
+          // 只取内容阶段所需列：默认 findMany 会携带全部章节正文（千章书可达数十 MB 无谓驻留）
+          const chapters = await db.chapter.findMany({
+            where: { bookId },
+            orderBy: { order: 'asc' },
+            select: { id: true, url: true, title: true, order: true, collected: true },
+          })
+          // local: 章节无源地址，抓取必然失败；排除以免每轮全量/重采都刷一遍错误
+          const todo = (task.mode === 'full' ? chapters : chapters.filter((c) => !c.collected)).filter(
+            (c) => !c.url.startsWith('local:')
+          )
           if (todo.length === 0) {
             await taskLog(
               taskId,
@@ -506,11 +594,22 @@ export async function executeTask(taskId: string): Promise<void> {
       )
     }
   } catch (e) {
+    const stoppedEarly = e instanceof TaskStoppedError
     await db.collectTask.update({
       where: { id: taskId },
-      data: { status: 'failed', stage: '失败', stats: JSON.stringify(stats) },
+      data: {
+        status: stoppedEarly ? 'stopped' : 'failed',
+        stage: stoppedEarly ? '已停止' : '失败',
+        stats: JSON.stringify(stats),
+      },
     })
-    await taskLog(taskId, 'error', `任务失败：${e instanceof Error ? e.message : String(e)}`)
+    await taskLog(
+      taskId,
+      stoppedEarly ? 'warn' : 'error',
+      stoppedEarly
+        ? `任务已停止（列表阶段）：书籍 ${stats.books}，正文 ${stats.contents} 篇`
+        : `任务失败：${e instanceof Error ? e.message : String(e)}`
+    )
   } finally {
     taskManager.remove(taskId)
   }

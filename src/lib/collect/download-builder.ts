@@ -84,6 +84,7 @@ export async function buildBookTxt(bookId: string, siteName?: string, domain?: s
   parts.push(`作者：${book.author || '佚名'}`)
   parts.push(`分类：${book.category || '其他'} / 状态：${book.status} / 共 ${book.totalChapters} 章`)
   if (book.intro) parts.push(`\n简介：${book.intro}`)
+  const adTemplates = Array.isArray(cfg.adTemplates) ? cfg.adTemplates : []
   if (cfg.insertSiteInfo) {
     parts.push('\n' + '—'.repeat(24))
     parts.push(fillTemplate(cfg.siteInfoTemplate, site, dom))
@@ -93,11 +94,12 @@ export async function buildBookTxt(bookId: string, siteName?: string, domain?: s
   const adEvery = Math.max(1, cfg.adEveryNChapters)
   for (let i = 0; i < book.chapters.length; i++) {
     const ch = book.chapters[i]
+    // 空白正文（纯换行/空格）也视为缺失：先尝试回退本地 txt，再兜底占位
     let body = ch.content
-    if (!body && ch.contentLocal) {
+    if (!body.trim() && ch.contentLocal) {
       body = await readChapterTxt(ch.contentLocal).catch(() => '')
     }
-    if (!body) body = '（本章内容缺失）'
+    if (!body.trim()) body = '（本章内容缺失）'
     if (cfg.insertObfuscation) {
       body = obfuscateText(body, { mode: cfg.obfuscationMode, rate: cfg.obfuscationRate })
     }
@@ -106,8 +108,8 @@ export async function buildBookTxt(bookId: string, siteName?: string, domain?: s
     parts.push(body)
 
     // 定点插入广告
-    if (cfg.insertAds && cfg.adTemplates.length > 0 && (i + 1) % adEvery === 0) {
-      const ad = cfg.adTemplates[Math.floor(Math.random() * cfg.adTemplates.length)]
+    if (cfg.insertAds && adTemplates.length > 0 && (i + 1) % adEvery === 0) {
+      const ad = adTemplates[Math.floor(Math.random() * adTemplates.length)]
       parts.push('')
       parts.push(fillTemplate(ad, site, dom))
     }
@@ -117,12 +119,16 @@ export async function buildBookTxt(bookId: string, siteName?: string, domain?: s
 
   const content = parts.join('\n')
   // 文件名安全化：控制字符与 Windows 非法字符替换、去结尾点/空格、保留名前缀、空标题回退
-  let safeName = book.title
-    .replace(/[\u0000-\u001f\u007f]/g, '')
-    .replace(/[/\\:*?"<>|]/g, '_')
-    .trim()
-    .replace(/[. ]+$/g, '')
+  // 按码点截断（直接 slice 可能把增补平面字符切成孤立代理项，encodeURIComponent 会直接抛 URIError → 下载 500）
+  let safeName = Array.from(
+    book.title
+      .replace(/[\u0000-\u001f\u007f]/g, '')
+      .replace(/[/\\:*?"<>|]/g, '_')
+      .trim()
+      .replace(/[. ]+$/g, '')
+  )
     .slice(0, 60)
+    .join('')
     .trimEnd()
   if (/^(CON|PRN|AUX|NUL|COM[1-9]|LPT[1-9])$/i.test(safeName)) safeName = `_${safeName}`
   if (!safeName) safeName = book.id || 'book'

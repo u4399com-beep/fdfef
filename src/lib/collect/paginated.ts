@@ -19,8 +19,9 @@ export async function fetchPaginated(
   const sleepBetween = () => sleep(randomInt(400, 1200))
 
   if (pagination.mode === 'template' && pagination.urlTemplate) {
-    const start = pagination.startPage ?? 1
-    const end = Math.min(pagination.endPage ?? start, start + cap - 1)
+    const start = Math.max(1, pagination.startPage ?? 1)
+    // endPage < startPage 的配置错误不应返回空页集（上游会误判为“目录为空/无书籍”）
+    const end = Math.max(start, Math.min(pagination.endPage ?? start, start + cap - 1))
     for (let p = start; p <= end; p++) {
       const url = pagination.urlTemplate.replace('{page}', String(p))
       const r = await fetchPage(url, cfg)
@@ -58,12 +59,15 @@ export async function fetchPaginated(
 
   // nextLink 跟随
   let url = startUrl
+  const visited = new Set<string>()
   for (let i = 0; i < cap; i++) {
     const r = await fetchPage(url, cfg)
     pages.push({ url: r.finalUrl, html: r.html })
+    visited.add(r.finalUrl)
     if (!pagination.nextLink?.expr) break
     const next = String(selectValue(r.html, { ...pagination.nextLink, multiple: false }, { baseUrl: r.finalUrl }) || '')
-    if (!next || !/^https?:\/\//.test(next) || next === r.finalUrl) break
+    // 已访问页再次出现（站点分页 bug：末页下一页指回前页成环）时终止，避免空转到上限浪费请求
+    if (!next || !/^https?:\/\//.test(next) || next === r.finalUrl || visited.has(next)) break
     url = next
     await sleepBetween()
   }
@@ -104,9 +108,11 @@ export async function fetchCleanedContent(
     : 1
   let url = startUrl
   let pages = 0
+  const visited = new Set<string>()
   for (let i = 0; i < maxPages; i++) {
     const res = await fetchPage(url, rule)
     pages++
+    visited.add(res.finalUrl)
     const rawHtml = parseContentHtml(res.html, rule.content)
     if (rawHtml) {
       const cleaned = cleanContent(rawHtml, cleaningCfg, rule.extraAdPatterns ?? [])
@@ -116,7 +122,8 @@ export async function fetchCleanedContent(
     const next = String(
       selectValue(res.html, { ...pagination.nextLink, multiple: false }, { baseUrl: res.finalUrl }) || ''
     )
-    if (!next || !/^https?:\/\//.test(next) || next === res.finalUrl) break
+    // 环检测：指向已抓取过的页（分页 bug / 末页回指）时终止，防止重复拼接同一段正文
+    if (!next || !/^https?:\/\//.test(next) || next === res.finalUrl || visited.has(next)) break
     // 防跨章保护：下一页必须与当前页同 base（剥去 _N.html 后缀一致），否则立即终止
     // （部分站点把"下一章"伪装成"下一页"，误跟会把整本书正文合并进一章）
     if (pagination.sameChapterOnly && pageBase(next) !== pageBase(res.finalUrl)) break
