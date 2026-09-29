@@ -1,20 +1,18 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { db } from '@/lib/db'
-import { badRequest, readJson, toBoolOrNull } from '../../_lib/http'
+import { badRequest, readJson, RouteCtx, toBoolOrNull } from '../../_lib/http'
 
 export const runtime = 'nodejs'
 export const dynamic = 'force-dynamic'
 
-type Ctx = { params: Promise<{ id: string }> }
-
-export async function GET(_req: NextRequest, { params }: Ctx) {
+export async function GET(_req: NextRequest, { params }: RouteCtx<{ id: string }>) {
   const { id } = await params
   const rule = await db.collectRule.findUnique({ where: { id } })
   if (!rule) return NextResponse.json({ error: '规则不存在' }, { status: 404 })
   return NextResponse.json({ rule })
 }
 
-export async function PUT(req: NextRequest, { params }: Ctx) {
+export async function PUT(req: NextRequest, { params }: RouteCtx<{ id: string }>) {
   const { id } = await params
   const body = await readJson(req)
   if (!body) return badRequest('请求体必须为 JSON 对象')
@@ -42,7 +40,7 @@ export async function PUT(req: NextRequest, { params }: Ctx) {
   }
 }
 
-export async function DELETE(_req: NextRequest, { params }: Ctx) {
+export async function DELETE(_req: NextRequest, { params }: RouteCtx<{ id: string }>) {
   const { id } = await params
   const ref = await db.collectTask.findFirst({
     where: { OR: [{ listRuleId: id }, { bookRuleId: id }, { tocRuleId: id }, { contentRuleId: id }] },

@@ -420,3 +420,26 @@ Stage Summary:
 - fetcher 7 处修复/增强（cookie 跨域泄漏、Max-Age 生命周期、403-challenge 升级断链、body 连接释放、context 泄漏、jsPages stale element、Sec-Fetch+数组头指纹）+ parser 2 处（base64 校验、代理区码点），共 9 处，改动 139 行、零依赖、零契约变更
 - 反反爬实质提升：无关域不再收到本域通行 cookie；403 状态下发的 WAF 挑战页首次进入自动解题链路；HTTP 指纹与真实浏览器导航对齐（Sec-Fetch 全家桶 + 同源推导）
 - 全部修复经本地真服务/真 chromium 冒烟验证，tsc/lint 全绿
+
+---
+Task ID: R13-simplify
+Agent: code-simplifier
+Task: 整体代码清理整合精简
+
+Work Log:
+- 【死代码·UI】删除 30 个从未被引用的 shadcn 组件（accordion/alert/alert-dialog/aspect-ratio/avatar/breadcrumb/calendar/carousel/chart/collapsible/command/context-menu/drawer/dropdown-menu/form/hover-card/input-otp/menubar/navigation-menu/pagination/popover/resizable/sidebar/slider/sonner/table/toggle-group + 连带孤儿 sheet/toggle/tooltip，共 4343 行）；每个均经 grep 双引号/单引号全量交叉验证后删除
+- 【死代码·hooks】删除 use-mobile.ts（唯一消费者 sidebar.tsx 已删）；ui 目录 53→18 个组件全部有真实引用
+- 【死代码·lib】pipeline.ts 删除 isTaskActive（定义后零引用）与 CollectTask 再导出（零引用），grep 全库交叉验证
+- 【死代码·组件】tasks-page.tsx 删除未使用的 Checkbox import（ui/checkbox 由 rules-page 真实使用故保留）
+- 【tests 清理】删除 4 个一次性脚本：collect-kelex.sh（引用已不存在的 create-kelex-task-final.ts，早已失效）、offline-verify.ts（读 /tmp/kx_*.html 临时产物已不存在）、verify-kelex-rules.ts 与 test-cunshu-rqwb-rules.ts（均被 verify-all-rules.ts 全库验证覆盖）；保留 verify-all-rules / register-*×3 / inject-cookie / solve-captcha*×2 / offline-verify-biqutu（.tmp 模板 HTML 仍在，为 biqutu 离线验证唯一手段）/ reclean-db（DEPLOY.md 文档化的可复用维护脚本）
+- 【整合·_lib/http.ts】新增 7 个共享助手收敛 16 个路由的重复逻辑：RouteCtx<T>（替换 13 处重复 type Ctx）、strId（8 处规则 id 归一）、stringArray（2 处 targetUrls）、STORAGE_MODES（2 处）、RULE_TYPES（2 处）、ACTIVE_TASK_STATUSES（4 处 running/paused 判断）、parsePagination（books/chapters 分页，保留 toInt 防 NaN/Infinity 语义）、chapterContentText（chapters/[id] 与 preview 章节正文 db→txt 回退，保留动态 import 惰性加载 storage）
+- 【语义保真】strId/stringArray/asStorageMode 均保持 String() 强转等原边界语义（如 storageMode=['db'] → String 后仍接受），RULE_TYPES 校验保持 String(body.type) 归一后 includes，响应字段名/状态码/校验消息零变化
+- 【类型收紧】tsconfig noImplicitAny: false→true，全项目（含 tests/）一次性通过 0 错误——代码库本身无隐式 any；src/ 显式 any 计数 0，无需修复点
+- 【依赖体检】grep 全量 import 扫描 + 动态 import 特判，报告 41 个未使用依赖（见 Stage Summary），按要求未卸载
+- 【验证】bunx tsc --noEmit 过滤 ^src/ 0 错误（全项目亦 0）；bun run lint 0 错误；dev server 未重启；运行中任务 R11-存书啦增量实采 全程存活；API 冒烟：tasks/books/stats/preview(home|book|toc|chapter)/chapters 分页(NaN 回退/ pageSize 下限夹取)/rules POST+test 非法类型 400 / 单章正文 txt 回退链，全部 200/400 语义与改前一致
+
+Stage Summary:
+- 净变化：54 文件 +104/-4641 行（组件 4343、tests 172、pipeline 8、use-mobile 19；新增 104 行全部为 _lib 共享助手与注释）
+- 整合点：_lib/http.ts 成为 API 层唯一共享模块（校验 4 + 归一 2 + 常量 3 + 分页 1 + 正文回退 1），13 个路由文件 Ctx 定义与 16 处重复逻辑收敛，零 API 契约变化
+- 依赖报告（41 个，未卸载）：直接未用 18 个 = @dnd-kit/core|sortable|utilities、@hookform/resolvers、@mdxeditor/editor、@reactuses/core、@tanstack/react-query|react-table、date-fns、framer-motion、iconv-lite、next-auth、next-intl、react-markdown、react-syntax-highlighter、uuid、zod、zustand；删除死组件后连带未用 23 个 = cmdk、embla-carousel-react、input-otp、react-day-picker、react-hook-form、recharts、vaul、sonner + @radix-ui/react-{accordion,alert-dialog,aspect-ratio,avatar,collapsible,context-menu,dropdown-menu,hover-card,menubar,navigation-menu,popover,slider,toggle,toggle-group,tooltip}；误报澄清：playwright/z-ai-web-dev-sdk 为变量动态 import 实际在用，tailwindcss-animate（tailwind.config.ts）/tw-animate-css（globals.css）/xpath/@xmldom/xmldom 在用
+- 建议后续：①上述 41 个依赖可统一卸载（预计 node_modules 显著瘦身）②UI 现存 18 组件若后续模板不需要 toast/radix 全家桶可进一步收敛，但本次不动运行时

@@ -2,18 +2,16 @@ import { NextRequest, NextResponse } from 'next/server'
 import { db } from '@/lib/db'
 import { taskManager, taskLog } from '@/lib/collect/task-manager'
 import { executeTask } from '@/lib/collect/pipeline'
-import { badRequest, readJson } from '../../../_lib/http'
+import { badRequest, readJson, RouteCtx, ACTIVE_TASK_STATUSES } from '../../../_lib/http'
 
 export const runtime = 'nodejs'
 export const dynamic = 'force-dynamic'
-
-type Ctx = { params: Promise<{ id: string }> }
 
 /** 终态集合：停止指令不得回写覆盖已完成的最终状态（done/failed 由 pipeline 写入） */
 const TERMINAL_STATUSES = ['done', 'failed', 'stopped']
 
 /** 任务控制：start 立即执行 / pause 暂停 / resume 继续 / stop 停止 */
-export async function POST(req: NextRequest, { params }: Ctx) {
+export async function POST(req: NextRequest, { params }: RouteCtx<{ id: string }>) {
   const { id } = await params
   const body = await readJson(req)
   if (!body) return badRequest('请求体必须为 JSON 对象')
@@ -26,7 +24,7 @@ export async function POST(req: NextRequest, { params }: Ctx) {
       if (taskManager.has(id)) {
         return NextResponse.json({ error: '任务已在运行中' }, { status: 400 })
       }
-      if (task.status === 'running' || task.status === 'paused') {
+      if (ACTIVE_TASK_STATUSES.includes(task.status)) {
         return NextResponse.json({ error: '任务状态异常，请先停止' }, { status: 400 })
       }
       // 同步占位运行时（has 判断与 create 之间无 await，天然防并发双开；

@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { db } from '@/lib/db'
 import { taskManager } from '@/lib/collect/task-manager'
-import { badRequest, readJson, toInt } from '../_lib/http'
+import { badRequest, readJson, strId, ACTIVE_TASK_STATUSES, STORAGE_MODES, stringArray, toInt } from '../_lib/http'
 
 export const runtime = 'nodejs'
 export const dynamic = 'force-dynamic'
@@ -9,7 +9,7 @@ export const dynamic = 'force-dynamic'
 /** 任务列表（带实时状态修正：仅当运行时不存在时才将残留的 running 标记改为 stopped，避免误杀正在执行的任务） */
 export async function GET() {
   const tasks = await db.collectTask.findMany({ orderBy: { updatedAt: 'desc' } })
-  const stale = tasks.filter((t) => (t.status === 'running' || t.status === 'paused') && !taskManager.has(t.id))
+  const stale = tasks.filter((t) => ACTIVE_TASK_STATUSES.includes(t.status) && !taskManager.has(t.id))
   for (const t of stale) {
     await db.collectTask.update({
       where: { id: t.id },
@@ -32,16 +32,16 @@ export async function POST(req: NextRequest) {
     data: {
       name,
       targetType: body.targetType === 'range' ? 'range' : 'single',
-      listRuleId: typeof body.listRuleId === 'string' && body.listRuleId ? body.listRuleId : null,
-      bookRuleId: typeof body.bookRuleId === 'string' && body.bookRuleId ? body.bookRuleId : null,
-      tocRuleId: typeof body.tocRuleId === 'string' && body.tocRuleId ? body.tocRuleId : null,
-      contentRuleId: typeof body.contentRuleId === 'string' && body.contentRuleId ? body.contentRuleId : null,
-      targetUrls: JSON.stringify(Array.isArray(body.targetUrls) ? body.targetUrls.filter((u): u is string => typeof u === 'string') : []),
+      listRuleId: strId(body.listRuleId),
+      bookRuleId: strId(body.bookRuleId),
+      tocRuleId: strId(body.tocRuleId),
+      contentRuleId: strId(body.contentRuleId),
+      targetUrls: JSON.stringify(stringArray(body.targetUrls)),
       urlTemplate: String(body.urlTemplate ?? ''),
       pageStart: toInt(body.pageStart, 1, 1),
       pageEnd: toInt(body.pageEnd, 1, 1),
       mode: body.mode === 'full' ? 'full' : 'incremental',
-      storageMode: ['db', 'txt', 'both'].includes(String(body.storageMode)) ? String(body.storageMode) : 'db',
+      storageMode: STORAGE_MODES.includes(String(body.storageMode)) ? String(body.storageMode) : 'db',
       threadMin: toInt(body.threadMin, 1, 1),
       threadMax: toInt(body.threadMax, 3, 1),
       intervalMin: toInt(body.intervalMin, 500, 0),

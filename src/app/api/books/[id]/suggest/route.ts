@@ -1,15 +1,14 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { db } from '@/lib/db'
 import { fetchSuggestKeywords, mergeSuggestKeywords } from '@/lib/collect/suggest'
+import { RouteCtx } from '../../../_lib/http'
 
 export const runtime = 'nodejs'
 export const dynamic = 'force-dynamic'
 export const maxDuration = 60
 
-type Ctx = { params: Promise<{ id: string }> }
-
 /** 抓取多搜索引擎下拉词并保存为书籍辅助标签 */
-export async function POST(_req: NextRequest, { params }: Ctx) {
+export async function POST(_req: NextRequest, { params }: RouteCtx<{ id: string }>) {
   const { id } = await params
   const book = await db.book.findUnique({ where: { id } })
   if (!book) return NextResponse.json({ error: '书籍不存在' }, { status: 404 })

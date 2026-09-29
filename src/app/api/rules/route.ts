@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { db } from '@/lib/db'
-import { badRequest, readJson } from '../_lib/http'
+import { badRequest, readJson, RULE_TYPES } from '../_lib/http'
 
 export const runtime = 'nodejs'
 export const dynamic = 'force-dynamic'
@@ -23,7 +23,7 @@ export async function POST(req: NextRequest) {
   if (!name || !body.type) {
     return NextResponse.json({ error: '名称与类型必填' }, { status: 400 })
   }
-  if (!['list', 'book', 'toc', 'content'].includes(String(body.type))) {
+  if (!RULE_TYPES.includes(String(body.type))) {
     return NextResponse.json({ error: '规则类型不合法' }, { status: 400 })
   }
   const rule = await db.collectRule.create({

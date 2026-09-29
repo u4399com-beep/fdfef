@@ -1,14 +1,13 @@
 import { NextRequest } from 'next/server'
 import { buildBookTxt } from '@/lib/collect/download-builder'
+import { RouteCtx } from '../../../_lib/http'
 
 export const runtime = 'nodejs'
 export const dynamic = 'force-dynamic'
 export const maxDuration = 120
 
-type Ctx = { params: Promise<{ id: string }> }
-
 /** 小说文件下载（含站点信息/广告/混淆注入） */
-export async function GET(req: NextRequest, { params }: Ctx) {
+export async function GET(req: NextRequest, { params }: RouteCtx<{ id: string }>) {
   const { id } = await params
   const siteName = req.nextUrl.searchParams.get('siteName') ?? undefined
   const domain = req.nextUrl.searchParams.get('domain') ?? undefined

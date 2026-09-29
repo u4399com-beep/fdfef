@@ -46,8 +46,9 @@ local-*
 *.log
 dev.log
 dev.out.log
-test
-prompt
+# 仅忽略仓库根目录下的同名条目（裸名会吞掉 src/app/api/rules/test 等嵌套路由目录！）
+/test
+/prompt
 
 server.log
 # Skills directory

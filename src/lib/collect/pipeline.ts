@@ -228,11 +228,14 @@ export async function executeTask(taskId: string): Promise<void> {
   const { rt } = taskManager.ensure(taskId)
 
   const stats: TaskStats = { books: 0, booksNew: 0, chapters: 0, chaptersNew: 0, contents: 0, errors: 0 }
+  let lastProgress = 0
   const writeStats = async (stage: string, progress: number) => {
+    // progress=-1：保持已有全局进度不回退（内容阶段按书局部完成度无法直接折算全局百分比）
+    if (progress >= 0) lastProgress = progress
     try {
       await db.collectTask.update({
         where: { id: taskId },
-        data: { stage, progress, stats: JSON.stringify(stats) },
+        data: { stage, progress: lastProgress, stats: JSON.stringify(stats) },
       })
     } catch {
       /* ignore */
@@ -526,6 +529,8 @@ export async function executeTask(taskId: string): Promise<void> {
             return
           }
           let contentDone = 0
+          // 内容阶段实时回写 stats/进度（长书采集时 UI 不再长时间停留在旧阶段/旧统计）
+          await writeStats(`正文采集《${info.title}》`, -1)
           await runRandomPool({
             items: todo,
             taskId,
@@ -559,6 +564,8 @@ export async function executeTask(taskId: string): Promise<void> {
                 contentDone++
                 if (contentDone % 20 === 0) {
                   await taskLog(taskId, 'info', `《${info.title}》正文进度 ${contentDone}/${todo.length}`)
+                  // 阶段进度 = 书籍进度基础 + 本书内容完成占比；-1 表示保持全局进度不变
+                  await writeStats(`正文采集《${info.title}》（${contentDone}/${todo.length}）`, -1)
                 }
               } catch (e) {
                 stats.errors++
@@ -614,11 +621,3 @@ export async function executeTask(taskId: string): Promise<void> {
     taskManager.remove(taskId)
   }
 }
-
-/** 编辑任务时防止并发：任务是否正在运行 */
-export async function isTaskActive(taskId: string): Promise<boolean> {
-  const t = await db.collectTask.findUnique({ where: { id: taskId } })
-  return t?.status === 'running' || t?.status === 'paused'
-}
-
-export type { CollectTask } from '@prisma/client'

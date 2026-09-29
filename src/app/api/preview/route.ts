@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { db } from '@/lib/db'
+import { chapterContentText } from '../_lib/http'
 
 export const runtime = 'nodejs'
 export const dynamic = 'force-dynamic'
@@ -116,11 +117,7 @@ export async function GET(req: NextRequest) {
       db.chapter.findFirst({ where: { bookId: chapter.bookId, order: { lt: chapter.order } }, orderBy: { order: 'desc' }, select: { id: true } }),
       db.chapter.findFirst({ where: { bookId: chapter.bookId, order: { gt: chapter.order } }, orderBy: { order: 'asc' }, select: { id: true } }),
     ])
-    let content = chapter.content
-    if (!content && chapter.contentLocal) {
-      const { readChapterTxt } = await import('@/lib/collect/storage')
-      content = await readChapterTxt(chapter.contentLocal).catch(() => '')
-    }
+    const content = await chapterContentText(chapter)
     return NextResponse.json({
       site: siteMeta,
       view: { type: 'chapter', chapterId: chapter.id },

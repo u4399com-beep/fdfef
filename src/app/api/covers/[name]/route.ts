@@ -2,14 +2,13 @@ import { NextRequest } from 'next/server'
 import path from 'path'
 import fs from 'fs/promises'
 import { COVERS_DIR } from '@/lib/collect/storage'
+import { RouteCtx } from '../../_lib/http'
 
 export const runtime = 'nodejs'
 export const dynamic = 'force-dynamic'
 
-type Ctx = { params: Promise<{ name: string }> }
-
 /** 本地封面（webp）服务 */
-export async function GET(_req: NextRequest, { params }: Ctx) {
+export async function GET(_req: NextRequest, { params }: RouteCtx<{ name: string }>) {
   const { name } = await params
   if (!/^[\w-]+\.webp$/.test(name)) {
     return new Response('Bad request', { status: 400 })
