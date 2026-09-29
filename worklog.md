@@ -471,3 +471,73 @@ Stage Summary:
 - 任务3 精简：-4641行死代码，noImplicitAny 收紧，41未用依赖已报告
 - 任务4 git交付：github.com/u4399com-beep/fdfef.git 全量推送（含完整历史修复链）
 - 数据：23书/4485章/3971正文（存书啦增量实采进行中，0错误）
+---
+Task ID: R6-iter-c
+Agent: ui-reviewer-r6
+Task: 深审前端 UI：admin 8 组件 + preview-shell + 6 套主题 + page/layout 逐行审查与修复
+
+Work Log:
+- 通读 worklog（R3-bug-b、R3-theme-a/b、R3(iteration)-final 等）确认既有修复清单，逐项回归核验未发现破坏：books-page load/openDetail 竞态守卫、350ms 搜索防抖、toNumOr/clampInt 数字钳制、rules-page setSel 中间节点自动补建（fields:null / 缺层场景手工推演无 TypeError）、preview-shell load reqRef、tasks 日志轮询 alive+id 去重+after 增量、logsTask 实时快照、THEME_SWATCH themeId 键控、THEME_LIST.length 动态文案均健在
+- 逐行审查 admin 8 组件 / preview-shell / 6 套主题（含 theme-uaa 全文）/ themes/index.ts / page.tsx / layout.tsx；交叉核对 preview API 双分支契约（book=最新12章 desc / toc=全量 asc ≤5000）与 6 套主题渲染语义
+- 【竞态遗漏点】books-page openChapter 无守卫：快速连点章节 A/B 时晚到响应串内容；关闭弹窗后晚到的响应更会把正文 Dialog 重新弹出 → 加 chapterReqRef 守卫 + 关闭清 ref + catch 仅当前请求才 toast
+- 【防抖回归】books-page 350ms 防抖 effect 无条件 setPage(1)：页码 ≥2 时「输入后 350ms 内删空（未提交）」页码被弹回第 1 页丢阅读位置，且挂载时空跑一次 setState → 改为仅 qInput !== qRef.current 时 setQ+setPage(1)
+- 【状态陈旧】books-page openDetail 不重置 chapterQ：上一本书的章节筛选词继续过滤下一本书目录 → openDetail 补 setChapterQ('')
+- 【key 风险】books-page 详情弹窗 keywords/suggestKeywords Badge 以原始 split 项作 key，数据含重复关键词时 React duplicate key 警告 → Set 去重（suggestKeywords 保持 slice(0,20) 语义）
+- 【UX/a11y】tasks-page 日志抽屉每 2s 轮询强制 scrollTo 底部：用户上翻阅读历史被不断拽回 → stick-to-bottom ref + onScroll（距底 <48px 才跟随），在底部时实时滚动行为不变
+- 【head 污染残留】preview-shell 卸载还原只恢复「已存在」的 meta：宿主页原本没有 description/keywords meta 时，预览注入的不被移除（R3-bug-b 修复的同类残留盲区）→ 快照记录 existed 标记，卸载时不存在即 remove
+- 【主题一致性】theme-uaa UaaChapter 面包屑书名 crumb 跳 toc，与其余 5 套主题（均跳 book 信息页）不一致 → 对齐为 {type:'book'}；UAA 底部「返回目录」按钮仍承接 toc 导航
+- 【ISO 时间戳外露】theme-classic/theme-ink 书籍页渲染原始 book.updatedAt（"2025-…T…Z" ISO 串直接示人），uaa 已是 slice(0,10) → classic/ink 对齐 slice(0,10)（magazine/neon/noir 不渲染该字段）
+- 【脚手架残留】layout.tsx metadata 仍为「Z.ai Code Scaffold」（预览退出后还原的 document.title 也是它）+ lang="en"（中文应用 a11y 问题）→ title/description/keywords/og/twitter 改为小说管理系统、lang 改 zh-CN
+- 【确认无恙】dashboard 4s 轮询 alive+clearInterval、rules-page TestPanel disabled 单飞、6 套主题 switch 全 case 覆盖（home/book/toc/chapter/keyword）、toc 均 100/页 + safePage= Math.min(page, max(1,ceil)) + 空态/404 态/loading 骨架/面包屑 首页→书名(回book)→章节目录、book 页最新更新区块 chapters 原样渲染（API desc=最新优先）语义正确、min-h-[44px] 触达面积、UAA 390px（横滑导航/换行分页/搜索框收缩）无破版
+- 验证：bunx tsc --noEmit 全项目 0 错误；bun run lint 0 错误；git diff 复核仅触碰范围内 7 个文件（api/_lib、download-builder 等既有改动为并行任务遗留，未触碰）
+
+Stage Summary:
+- 修复 7 处：竞态遗漏点 1（openChapter 串章/晚到弹窗）、防抖回归 1（未提交搜索弹回页码）、状态陈旧 1（跨书筛选词残留）、React key 风险 1、日志抽屉强制滚动 1、preview 卸载 meta 残留 1、主题一致性 2（uaa 面包屑导航目标、classic/ink ISO 时间戳）+ layout 脚手架 metadata/lang 纠正
+- 此前轮次修复全部回归核验通过，无破坏；6 套主题 toc 视图结构与 chapters 倒序语义一致，视觉零迁移
+- 遗留观察：①UAA 首页/目录页码按钮全量渲染（5000 章=50 钮，390px 下换行变长但可用，收敛为省略号分页需视觉决策）②UaaKeyword 文案「与『关键词』相关」与余 5 套「与《》相关」的引号风格差异（疑似有意）③layout authors/icons 仍指向 Z.ai 品牌（低危残留）④rules-page 数字输入（timeout/maxPages 等）清空得 0 依赖引擎侧兜底，UI 未做保存前钳制
+---
+Task ID: R6-iter-b
+Agent: api-reviewer-r6
+Task: 第6轮深审·API层 21个route + _lib/http + download-builder + suggest 逐行审查与修复
+
+Work Log:
+- 通读 worklog R3-bug-a（API 首轮加固 16 处）与 R5(25r) 记录，规避已修复项；git show 9d133d0 逐一 diff 核对 _lib/http 收敛（RouteCtx/strId/stringArray/parsePagination/ACTIVE_TASK_STATUSES/chapterContentText）与原实现语义等价——books(page=1,pageSize 12@[6,60])/chapters(100@[10,500]) 分页、tasks/sites/rules 各字段校验均无损，无回归
+- 【控制契约复核】control(start 同步占位→executeTask ensure 复用→finally remove；stop 终态保护 8s 兜底；pause/resume 状态机)与 task-manager/fetcher.randomInt(min>max 自钳)逐项核对一致，未改动
+- 【logs 增量】gte+take300 asc+客户端 id 去重，积压>300 也不丢日志（下一轮 after 接续），无需改动
+- 【download-builder】adEveryNChapters 非法值(NaN/非数字串)静默禁用广告→Number 归一，非法回退 DEFAULT_DOWNLOAD.adEveryNChapters、0/负仍钳 1；obfuscationRate 同类归一（NaN→0 与原行为一致但显式化）；fillTemplate 加 String() 归一（存储端模板混入数字时 replaceAll TypeError→下载 500）
+- 【download route】Content-Disposition filename* 的 RFC 5987 单引号转义（encodeURIComponent 不编码 '，含撇号书名产生非法 ext-value）；404 改 NextResponse.json 补 application/json 头（body/status 不变）
+- 【JSON null→"null" 落库】tasks/rules/sites PUT 的 String(body.name/urlTemplate/siteName/domain/…) 对 null 产生字面量 "null" 且绕过空名校验→统一 ?? '' 归一；sites PUT 补 siteName 空名 400（与 POST/tasks PUT 对齐），siteName/domain 补 trim 与 POST 一致，themeId null 回退 'classic' 同 POST
+- 【settings PUT】cleaning/download 仅接受纯对象（防字符串/数组被 JSON.stringify 后 spread 出索引键污染配置，与 clean-test R3 修复同型）；isPlainObject 收敛进 _lib/http 共享，clean-test 改用共享版删除本地副本
+- 【preview】bookId 空串(?bookId=)原 ?? 不回退主书籍→改 ||；keyword 空关键词 includes('') 恒真返回泛化列表→空 kw 时 keywordBooks=[]（响应结构不变，6 套主题均有空态降级）；home offset 负值经数学验证仍为合法旋转且 sites API 钳 ≥0，未改
+- 【复核无恙】suggest 五引擎 4.5s AbortSignal+Promise.all 全捕获+双重去重、covers 白名单正则、clean-test 全链路、stats 并行、chapters content=1、books DELETE 级联——均无需改动
+- 【验证】bunx tsc --noEmit 全项目 0 错误；bun run lint 0 错误；bun 实测：obfuscateText NaN/字符串/Infinity rate、Content-Disposition 撇号往返解码、books NaN/负数分页钳制、preview 空 kw/未知视图、settings 非法/合法 PUT、tasks PUT name=null/空白 400（400 路径不写库，仅 settings 合法 PUT 幂等回写默认等价配置）
+
+Stage Summary:
+- 修复 7 文件 12 处：download-builder 3（广告间隔/混淆率数字归一、模板 String 防 500）+ download route 2（RFC5987 单引号、404 content-type）+ tasks/rules/sites PUT null→"null" 落库 5 + settings 纯对象守卫 1 + preview bookId 空串/空关键词 2 类；全部为畸形输入路径的行为修正，合法输入路径与响应结构零变化
+- 复核确认无回归：_lib/http 收敛语义与 git 原实现逐 diff 等价；control/task-manager/logs/suggest/covers 契约全部成立，未改动
+- 遗留：①download 整本构建为内存字符串（4485 章×几 KB≈20MB，可流式化但超本轮边界）②书籍删除不清理 storage/novels 孤儿 txt（需新增清理助手）③SQLite LIKE 通配符未转义（R3 已记录，语义宽松非安全）④books GET q 搜索 contains 中文 OK 但 %/_ 未转义
+---
+Task ID: R6-iter-a
+Agent: pipeline-reviewer-r6
+Task: pipeline 家族深审（pipeline/task-manager/paginated/testing/collect-types）——数据质量标题规整为主攻方向
+
+Work Log:
+- 读 worklog 全量（R2-engine-b 已修 16 处、R4 sourceName/范围分页、R12 writeStats 落库等），确定本轮不重复报告已知项
+- 实证数据质量 bug：直查 SQLite 证实存书啦(cunshu) 23 书中 title 带脏后缀（「快穿：万人迷宿主又美又撩 作者：甜姜茶」「我都成黄金圣斗士了，金手指才来1-202」「综漫…原初全本」「…至高世界完本群」「转生异世界…魔国(1)」），author 错抓为上传者名（RL/利益至上，规则选择器 a.ph-uploader-link 即上传者链接）；cunshu 站点当前被 GoEdge 验证码拦截无法抓活页，判定依据为库内实数据
+- 【新增通用标题规整能力】collect-types.ts：TitleNormalizeConfig（enabled/extractAuthor/trimChapterRange，默认全开、按规则可关）+ 纯函数 normalizeBookMeta(title, author, cfg)。两条保守规则：①「作者：xxx」仅认标题末尾且前置边界必须是空白/收束符号（防「网文作者：从写毒点开始」类正文书名误伤），收束符号拼回保持《》配对，剥离后 ≥2 字、作者名非纯数字；②尾部章节范围「第?A[-~～—至]B(章|节)?」要求 A∈[1,99] 且 B>A（排除 2018-2020 式年份）、各限 4 位、剥离后 ≥2 字。设计取舍：不剥「全本」后缀（聊斋志异全本类真书名会误伤）、不剥「(1)」（系列命名风险）——记录为遗留
+- pipeline.collectBookInfo 接线 normalizeBookMeta：规整后 title/author 同时用于唯一键(sourceUrl_title)、智能分类、下拉词抓取与日志；内部返回新增 rawTitle/authorFromTitle（纯内部字段），process 中有改动时记「标题规整：《raw》→《title》，作者回填：x」日志
+- testing.testBook 同步接线同款规整（测试面板预览即入库结果，延续 testing 与管线行为对齐原则）；顺带对齐 keywords 的 .map(trim) 与 collectBookInfo 一致
+- 【增量/全量分支】修复 2 处：①full 模式 update 原样覆盖 info.intro/author/category/keywords/latestChapter——本次解析为空（选择器失配/反爬半页）会把库内好数据清成空串 → 改为空值回退 existing（非空仍以本次为准）；②incremental 分支更新 category 不带 categoryScore（分类与分数错位）→ 成对更新
+- 【sourceName 按书计算】原任务级取 bookUrls[0].hostname，镜像轮换/多站混合任务下与实际抓取域不一致 → 改按 info.finalUrl 逐书计算，失败回退任务级；「仅首次写入防互覆盖」语义不变
+- 【进度边界】终态写库 progress 原 `stopped ? undefined : 100`——failed 也被置 100%（误导）→ 改为仅 done 置 100，failed/stopped 保留最后进度
+- 【范围模式】urlTemplate 不含 {page} 且 pageEnd>pageStart 时一次性 warn 日志（会重复抓同一地址，书籍地址虽去重但浪费请求）
+- 【paginated】fetchPaginated cap 与 fetchCleanedContent maxPages 补 Math.max(1,…)：maxPages≤0 配置错误时 nextLink 模式循环不执行返回空页集、上游误判「目录为空」（select/template 模式均至少返回 1 页，唯 nextLink 漏防）
+- 【testing 去重键对齐】testToc 去重键由裸 url||title 改为镜像管线 normalizeTocUrlKey（hash/默认端口/尾斜杠归一）+ 无 url 章节按 local:标题 派生键，测试面板「去重后 N 章」与管线一致
+- 【确认无恙】重启接管链路（GET /api/tasks stale 检测 running/paused→stopped『已中断（服务重启）』；control start 接受 stopped 重启；增量重跑按 collected 幂等续采、createMany 事务原子，无脏数据窗口；ACTIVE_TASK_STATUSES 不含 pending，start 占位窗口无误杀）；task-manager 全文件（ensure/owned 嵌套池语义、waitWhilePaused、shouldStop 共享 store、randomInt min>max 兜底、1000 字截断）；writeStats -1 哨兵与 try/catch；P2002 书籍/章节两级兜底；空目录不清零 totalChapters；local: 章节过滤——逐项复核无需改动
+- 【验证】normalizeBookMeta bun 实测 19 用例全过（17 正反例 + enabled:false 全关 + trimChapterRange:false 单关）；bunx tsc --noEmit 过滤 ^src/ = 0 错误；bun run lint 0 错误；临时脚本已清理
+
+Stage Summary:
+- 数据质量主攻：管线层新增保守可配置的「标题规整」能力（collect-types 定义 + pipeline/testing 双接线），根治存书啦类站点书名带「作者：xxx」/章节范围脏后缀、author 错抓上传者名（有标题署名时回填覆盖）的问题；默认开启、按规则可关、19 用例零误伤
+- 分支/边界修复 5 处：full 模式空值覆盖清库、incremental 分类分数错位、failed 进度误报 100%、maxPages≤0 空页集、sourceName 镜像域错写；另加范围模式 {page} 缺失告警与 testing 去重键对齐
+- 全部改动限于 5 个目标文件（collect-types/pipeline/paginated/testing/task-manager），task-manager 零改动；除 collectBookInfo 私有返回新增内部字段与 BookRuleConfig 新增可选 titleNormalize 外，导出签名与 API 契约零变更
+- 遗留风险：①存量 8 本 cunshu 脏数据不会自愈（增量按 sourceUrl+title 查旧脏键，重采将另建干净记录），建议一次性清理脚本或重采后手工删旧；②「全本/完本群/(1)」类后缀未剥（误伤风险，见上）；③cunshu 规则 author 选择器仍指上传者链接，无标题署名的书 author 依旧为上传者——根治需改该规则选择器（范围外）；④阶段名在多线程下存在『书籍采集/正文采集《X》』交替显示（纯展示）

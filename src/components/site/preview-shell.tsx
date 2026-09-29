@@ -137,19 +137,38 @@ export function SitePreview({
 
   // ---------- TDK + JSON-LD（SEO / GEO 结构化数据） ----------
   // 卸载时还原后台页面自身的 title/meta，避免预览污染宿主页面的 head
-  const headSnapshotRef = useRef<{ title: string; description: string | null; keywords: string | null } | null>(null)
+  const headSnapshotRef = useRef<{
+    title: string
+    description: string | null
+    descriptionExisted: boolean
+    keywords: string | null
+    keywordsExisted: boolean
+  } | null>(null)
   useEffect(() => {
+    const descEl = document.head.querySelector<HTMLMetaElement>('meta[name="description"]')
+    const kwEl = document.head.querySelector<HTMLMetaElement>('meta[name="keywords"]')
     headSnapshotRef.current = {
       title: document.title,
-      description: document.head.querySelector<HTMLMetaElement>('meta[name="description"]')?.content ?? null,
-      keywords: document.head.querySelector<HTMLMetaElement>('meta[name="keywords"]')?.content ?? null,
+      description: descEl?.content ?? null,
+      descriptionExisted: !!descEl,
+      keywords: kwEl?.content ?? null,
+      keywordsExisted: !!kwEl,
     }
     return () => {
       const snap = headSnapshotRef.current
       if (snap) {
         document.title = snap.title
-        if (snap.description !== null) upsertMeta('name', 'description', snap.description)
-        if (snap.keywords !== null) upsertMeta('name', 'keywords', snap.keywords)
+        if (snap.descriptionExisted) {
+          if (snap.description !== null) upsertMeta('name', 'description', snap.description)
+        } else {
+          // 宿主页面原本没有该 meta：预览注入的属于新增污染，卸载时应移除而非保留
+          document.head.querySelector<HTMLMetaElement>('meta[name="description"]')?.remove()
+        }
+        if (snap.keywordsExisted) {
+          if (snap.keywords !== null) upsertMeta('name', 'keywords', snap.keywords)
+        } else {
+          document.head.querySelector<HTMLMetaElement>('meta[name="keywords"]')?.remove()
+        }
         headSnapshotRef.current = null
       }
       document.getElementById('site-jsonld')?.remove()

@@ -370,7 +370,7 @@ function InkBook({ site, data, loading, onNavigate }: ThemeProps) {
                 <span aria-hidden="true">·</span>
                 <span>共 {book.totalChapters} 章</span>
                 <span aria-hidden="true">·</span>
-                <span>更新 {book.updatedAt}</span>
+                <span>更新 {book.updatedAt.slice(0, 10)}</span>
               </p>
               <InkRule className="my-5" />
               <p className="leading-loose text-stone-600">{book.intro}</p>

@@ -14,7 +14,8 @@ export async function fetchPaginated(
     const r = await fetchPage(startUrl, cfg)
     return [{ url: r.finalUrl, html: r.html }]
   }
-  const cap = Math.min(pagination.maxPages ?? hardCap, hardCap)
+  // maxPages≤0/负数的配置错误不产生空页集（nextLink 模式循环不执行会返回 []，上游误判"目录为空"）
+  const cap = Math.max(1, Math.min(pagination.maxPages ?? hardCap, hardCap))
   const pages: { url: string; html: string }[] = []
   const sleepBetween = () => sleep(randomInt(400, 1200))
 
@@ -104,7 +105,7 @@ export async function fetchCleanedContent(
   const parts: string[] = []
   const pagination = rule.pagination
   const maxPages = pagination?.enabled
-    ? Math.min(pagination.maxPages ?? 5, pagination.maxConcat ?? 5, 10)
+    ? Math.max(1, Math.min(pagination.maxPages ?? 5, pagination.maxConcat ?? 5, 10))
     : 1
   let url = startUrl
   let pages = 0

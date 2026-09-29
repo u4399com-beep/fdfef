@@ -358,7 +358,7 @@ function ClassicBook({ site, data, loading, onNavigate }: ThemeProps) {
                   </span>
                   <span className="flex items-center gap-1.5">
                     <Clock className="h-4 w-4 text-amber-700" aria-hidden="true" />
-                    更新：{book.updatedAt}
+                    更新：{book.updatedAt.slice(0, 10)}
                   </span>
                   <span className="rounded-sm border border-amber-700 px-2 py-0.5 font-serif text-xs text-amber-800">
                     {book.status}

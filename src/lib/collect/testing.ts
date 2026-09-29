@@ -1,5 +1,5 @@
 import type { BookRuleConfig, ContentRuleConfig, FieldSelector, ListRuleConfig, RuleType, TocRuleConfig } from '../collect-types'
-import { mergeCleaning } from '../collect-types'
+import { mergeCleaning, normalizeBookMeta } from '../collect-types'
 import { fetchPage } from './fetcher'
 import { parseFields, parseListEntries, resolveUrl, selectValue } from './parser'
 import { cleanIntro } from './cleaner'
@@ -70,11 +70,20 @@ async function testBook(cfg: BookRuleConfig, url: string, started: number): Prom
   if (!cfg?.fields?.title?.expr) return { ok: false, message: '书名选择器不能为空' }
   const res = await fetchPage(url, cfg)
   const parsed = parseFields(res.html, cfg.fields as Record<string, FieldSelector | undefined>, res.finalUrl)
-  const title = parsed.title?.trim()
-  if (!title) return { ok: false, message: '书名解析为空，请检查书名选择器', elapsedMs: Date.now() - started }
+  const parsedTitle = parsed.title?.trim()
+  if (!parsedTitle) return { ok: false, message: '书名解析为空，请检查书名选择器', elapsedMs: Date.now() - started }
+
+  // 与采集管线 collectBookInfo 同规则：标题规整（作者后缀回填/章节范围剥离），保证测试预览即入库结果
+  const norm = normalizeBookMeta(parsedTitle, (parsed.author ?? '').trim(), cfg.titleNormalize)
+  const title = norm.title
 
   const intro = parsed.intro ? cleanIntro(parsed.intro, mergeCleaning(), cfg.extraAdPatterns ?? []) : ''
-  const keywords = (parsed.keywords ?? '').split(/[,，、|\s]+/).filter(Boolean).slice(0, 12).join(',')
+  const keywords = (parsed.keywords ?? '')
+    .split(/[,，、|\s]+/)
+    .map((k) => k.trim())
+    .filter(Boolean)
+    .slice(0, 12)
+    .join(',')
   const match = smartMatchCategory({
     title,
     intro,
@@ -103,7 +112,7 @@ async function testBook(cfg: BookRuleConfig, url: string, started: number): Prom
       tocUrl,
       fields: {
         书名: title,
-        作者: parsed.author ?? '',
+        作者: norm.author,
         分类: parsed.category ?? '',
         关键词: keywords,
         状态: parsed.status ?? '',
@@ -143,7 +152,8 @@ async function testToc(cfg: TocRuleConfig, url: string, started: number): Promis
   if (cfg.dedup?.byUrl !== false) {
     const seen = new Set<string>()
     ordered = ordered.filter((e) => {
-      const k = e.url || e.title
+      // 与管线 collectTocEntries 同键规则：无 url 章节按标题派生键（local:hash(title)）参与去重
+      const k = e.url ? normalizeTocUrlKey(e.url) : `local:${e.title}`
       if (seen.has(k)) return false
       seen.add(k)
       return true
@@ -176,6 +186,22 @@ async function testToc(cfg: TocRuleConfig, url: string, started: number): Promis
 
 function firstPageUrl(pages: { url: string }[]): string {
   return pages[0]?.url ?? ''
+}
+
+/** 与管线 normalizeTocUrlKey 同规则（忽略 hash/默认端口/尾斜杠）：保证测试面板去重数与管线一致 */
+function normalizeTocUrlKey(url: string): string {
+  if (!url) return url
+  try {
+    const u = new URL(url)
+    u.hash = ''
+    if ((u.protocol === 'http:' && u.port === '80') || (u.protocol === 'https:' && u.port === '443')) {
+      u.port = ''
+    }
+    if (u.pathname.length > 1 && u.pathname.endsWith('/')) u.pathname = u.pathname.slice(0, -1)
+    return u.href
+  } catch {
+    return url
+  }
 }
 
 async function testContent(cfg: ContentRuleConfig, url: string, started: number): Promise<TestResponse> {

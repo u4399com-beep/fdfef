@@ -1,14 +1,10 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { cleanContent } from '@/lib/collect/cleaner'
 import { mergeCleaning } from '@/lib/collect-types'
-import { badRequest, readJson } from '../_lib/http'
+import { badRequest, isPlainObject, readJson } from '../_lib/http'
 
 export const runtime = 'nodejs'
 export const dynamic = 'force-dynamic'
-
-function isPlainObject(v: unknown): v is Record<string, unknown> {
-  return typeof v === 'object' && v !== null && !Array.isArray(v)
-}
 
 /** 清洗测试：输入 HTML → 输出清洗结果 */
 export async function POST(req: NextRequest) {

@@ -7,7 +7,7 @@ import type {
   TocRuleConfig,
 } from '../collect-types'
 import type { FieldSelector } from '../collect-types'
-import { mergeCleaning } from '../collect-types'
+import { mergeCleaning, normalizeBookMeta } from '../collect-types'
 import { fetchPage, FIXED_UA, randomInt, sleep } from './fetcher'
 import { parseFields, parseListEntries, resolveUrl, selectValue } from './parser'
 import { detectCompletion, extractChapterNumber, smartMatchCategory } from './matcher'
@@ -128,12 +128,22 @@ async function collectBookInfo(
   suggestKeywords: string
   tocUrl: string
   finalUrl: string
+  /** 规整前原始标题（内部字段：用于日志对比） */
+  rawTitle: string
+  /** 作者是否由标题后缀回填 */
+  authorFromTitle: boolean
 } | null> {
   const res = await fetchPage(bookUrl, rule)
   const fields = rule.fields ?? ({} as BookRuleConfig['fields'])
   const parsed = parseFields(res.html, fields as Record<string, FieldSelector | undefined>, res.finalUrl)
-  const title = parsed.title?.trim()
-  if (!title) return null
+  const parsedTitle = parsed.title?.trim()
+  if (!parsedTitle) return null
+
+  // 标题规整（保守行尾剥离）：提取「作者：xxx」后缀回填作者、剥离尾部章节范围数字。
+  // 规整后的标题/作者同时用于唯一键、智能分类、下拉词，避免脏后缀分裂去重、污染关键词
+  const norm = normalizeBookMeta(parsedTitle, (parsed.author ?? '').trim(), rule.titleNormalize)
+  const title = norm.title
+  const author = norm.author
 
   const cleaningCfg = mergeCleaning()
   const { cleanIntro } = await import('./cleaner')
@@ -190,7 +200,7 @@ async function collectBookInfo(
 
   return {
     title,
-    author: (parsed.author ?? '').trim(),
+    author,
     category,
     categoryScore,
     keywords,
@@ -203,6 +213,8 @@ async function collectBookInfo(
     suggestKeywords,
     tocUrl,
     finalUrl: res.finalUrl,
+    rawTitle: parsedTitle,
+    authorFromTitle: norm.authorFromTitle,
   }
 }
 
@@ -269,6 +281,13 @@ export async function executeTask(taskId: string): Promise<void> {
       if (!listCfg) throw new Error('范围采集必须配置列表页规则')
       await writeStats('列表页解析', 2)
       await taskLog(taskId, 'info', `范围采集：模板 ${task.urlTemplate}，第 ${task.pageStart} ~ ${task.pageEnd} 页`)
+      if (!task.urlTemplate.includes('{page}') && task.pageEnd > task.pageStart) {
+        await taskLog(
+          taskId,
+          'warn',
+          `urlTemplate 未含 {page} 占位符：第 ${task.pageStart}~${task.pageEnd} 页将重复抓取同一地址（书籍地址会去重，仅浪费请求）`
+        )
+      }
       for (let p = task.pageStart; p <= task.pageEnd; p++) {
         // 列表阶段可能持续数分钟：逐页响应暂停/停止（此前停止信号要等列表全部抓完才生效）
         if (!(await taskManager.waitWhilePaused(rt))) throw new TaskStoppedError()
@@ -342,32 +361,52 @@ export async function executeTask(taskId: string): Promise<void> {
             await taskLog(taskId, 'warn', `书籍字段解析失败（title 为空，可能被目标站拦截）：${bookUrl}`)
             return
           }
+          if (info.rawTitle !== info.title) {
+            await taskLog(
+              taskId,
+              'info',
+              `标题规整：《${info.rawTitle}》→《${info.title}》${info.authorFromTitle ? `，作者回填：${info.author}` : ''}`
+            )
+          }
 
           const existing = await db.book.findUnique({
             where: { sourceUrl_title: { sourceUrl: info.finalUrl, title: info.title } },
           })
+          // 来源站按书计算：镜像轮换/多站混合任务下，任务级 bookUrls[0] 主机名可能与实际抓取域不一致
+          let bookSource = sourceName
+          try {
+            bookSource = new URL(info.finalUrl).hostname || sourceName
+          } catch {
+            /* 回退任务级 sourceName */
+          }
           let bookId: string
           if (existing) {
             const updateData: Record<string, string | number | undefined> = {
               // 来源站仅首次写入，避免同书多源互覆盖
-              sourceName: existing.sourceName || sourceName,
+              sourceName: existing.sourceName || bookSource,
             }
             if (task.mode === 'full') {
+              // 完全重采集同样防「空值覆盖」：本次解析为空（选择器失配/反爬半页）时保留库内已有值，
+              // 非空值仍以本次采集为准（与增量分支同一保护语义，避免把好数据清成空串）
               Object.assign(updateData, {
-                author: info.author,
-                category: info.category,
-                categoryScore: info.categoryScore,
-                keywords: info.keywords,
-                intro: info.intro,
+                author: info.author || existing.author,
+                category: info.category || existing.category,
+                categoryScore: info.category ? info.categoryScore : existing.categoryScore,
+                keywords: info.keywords || existing.keywords,
+                intro: info.intro || existing.intro,
                 status: info.status,
                 statusConfidence: info.statusConfidence,
                 statusSource: info.statusSource,
-                latestChapter: info.latestChapter,
+                latestChapter: info.latestChapter || existing.latestChapter,
               })
               if (info.suggestKeywords) updateData.suggestKeywords = info.suggestKeywords
             } else {
               if (info.author) updateData.author = info.author
-              if (info.category) updateData.category = info.category
+              if (info.category) {
+                updateData.category = info.category
+                // 分类与置信度成对更新，避免换了分类还挂着旧分数
+                updateData.categoryScore = info.categoryScore
+              }
               if (info.keywords) updateData.keywords = info.keywords
               if (info.intro) updateData.intro = info.intro
               if (info.statusConfidence >= (existing.statusConfidence ?? 0)) {
@@ -402,7 +441,7 @@ export async function executeTask(taskId: string): Promise<void> {
                   statusSource: info.statusSource,
                   latestChapter: info.latestChapter,
                   sourceUrl: info.finalUrl,
-                  sourceName,
+                  sourceName: bookSource,
                 },
               })
               bookId = created.id
@@ -587,7 +626,8 @@ export async function executeTask(taskId: string): Promise<void> {
       data: {
         status: finalStatus,
         stage: stopped ? '已停止' : '完成',
-        progress: stopped ? undefined : 100,
+        // 仅成功完成才置 100；停止保持原进度，失败保留最后进度（避免 failed 显示 100% 的误导）
+        progress: finalStatus === 'done' ? 100 : undefined,
         stats: JSON.stringify(stats),
       },
     })

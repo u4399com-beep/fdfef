@@ -738,7 +738,8 @@ function UaaChapter({ site, data, loading, onNavigate }: ThemeProps) {
             { label: '首页', onSelect: () => onNavigate({ type: 'home' }) },
             {
               label: chapter?.bookTitle ?? '书籍',
-              onSelect: chapter ? () => onNavigate({ type: 'toc', bookId: chapter.bookId }) : undefined,
+              // 与其余 5 套主题对齐：面包屑书名回到书籍信息页（toc 有底部「返回目录」按钮承接）
+              onSelect: chapter ? () => onNavigate({ type: 'book', bookId: chapter.bookId }) : undefined,
             },
             { label: chapter?.title ?? '正文' },
           ]}

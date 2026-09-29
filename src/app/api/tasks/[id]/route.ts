@@ -24,20 +24,21 @@ export async function PUT(req: NextRequest, { params }: RouteCtx<{ id: string }>
   }
   const body = await readJson(req)
   if (!body) return badRequest('请求体必须为 JSON 对象')
-  if (body.name !== undefined && !String(body.name).trim()) {
+  // ?? '' 防 JSON null 被 String() 归一成字面量 "null" 落库（下同）
+  if (body.name !== undefined && !String(body.name ?? '').trim()) {
     return badRequest('任务名称不能为空')
   }
   const task = await db.collectTask.update({
     where: { id },
     data: {
-      ...(body.name !== undefined ? { name: String(body.name).trim() } : {}),
+      ...(body.name !== undefined ? { name: String(body.name ?? '').trim() } : {}),
       ...(body.targetType !== undefined ? { targetType: body.targetType === 'range' ? 'range' : 'single' } : {}),
       ...(body.listRuleId !== undefined ? { listRuleId: strId(body.listRuleId) } : {}),
       ...(body.bookRuleId !== undefined ? { bookRuleId: strId(body.bookRuleId) } : {}),
       ...(body.tocRuleId !== undefined ? { tocRuleId: strId(body.tocRuleId) } : {}),
       ...(body.contentRuleId !== undefined ? { contentRuleId: strId(body.contentRuleId) } : {}),
       ...(body.targetUrls !== undefined ? { targetUrls: JSON.stringify(stringArray(body.targetUrls)) } : {}),
-      ...(body.urlTemplate !== undefined ? { urlTemplate: String(body.urlTemplate) } : {}),
+      ...(body.urlTemplate !== undefined ? { urlTemplate: String(body.urlTemplate ?? '') } : {}),
       ...(body.pageStart !== undefined ? { pageStart: toInt(body.pageStart, 1, 1) } : {}),
       ...(body.pageEnd !== undefined ? { pageEnd: toInt(body.pageEnd, 1, 1) } : {}),
       ...(body.mode !== undefined ? { mode: body.mode === 'full' ? 'full' : 'incremental' } : {}),

@@ -50,6 +50,11 @@ export function stringArray(value: unknown): string[] {
   return Array.isArray(value) ? value.filter((u): u is string => typeof u === 'string') : []
 }
 
+/** 仅接受纯对象：防字符串/数组/数字被展开污染配置（clean-test / settings 共用） */
+export function isPlainObject(v: unknown): v is Record<string, unknown> {
+  return typeof v === 'object' && v !== null && !Array.isArray(v)
+}
+
 // ---- 共享枚举常量（与 prisma/schema.prisma 字段取值一致）----
 
 export const STORAGE_MODES = ['db', 'txt', 'both']

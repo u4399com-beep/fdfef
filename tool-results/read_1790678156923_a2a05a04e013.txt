@@ -1,0 +1,737 @@
+     1→'use client'
+     2→
+     3→import { useCallback, useEffect, useMemo, useState } from 'react'
+     4→import { Badge } from '@/components/ui/badge'
+     5→import { Button } from '@/components/ui/button'
+     6→import { Card, CardContent } from '@/components/ui/card'
+     7→import { Checkbox } from '@/components/ui/checkbox'
+     8→import {
+     9→  Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle,
+    10→} from '@/components/ui/dialog'
+    11→import { Input } from '@/components/ui/input'
+    12→import { Label } from '@/components/ui/label'
+    13→import { ScrollArea } from '@/components/ui/scroll-area'
+    14→import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
+    15→import { Separator } from '@/components/ui/separator'
+    16→import { Switch } from '@/components/ui/switch'
+    17→import { Tabs, TabsList, TabsTrigger } from '@/components/ui/tabs'
+    18→import { Textarea } from '@/components/ui/textarea'
+    19→import { useToast } from '@/hooks/use-toast'
+    20→import { api } from '@/lib/client-api'
+    21→import type { FieldSelector, FetchStrategy, RuleType } from '@/lib/collect-types'
+    22→import {
+    23→  Beaker, ChevronDown, FileText, LayoutList, Library, ListOrdered, Loader2, Pencil, Play,
+    24→  Plus, Trash2, Wand2,
+    25→} from 'lucide-react'
+    26→
+    27→interface RuleRow {
+    28→  id: string
+    29→  name: string
+    30→  type: RuleType
+    31→  enabled: boolean
+    32→  config: string
+    33→  updatedAt: string
+    34→}
+    35→
+    36→const TYPE_META: Record<RuleType, { label: string; desc: string; icon: typeof LayoutList }> = {
+    37→  list: { label: '列表页', desc: '书单列表页：解析候选书籍链接（支持范围采集与分页）', icon: LayoutList },
+    38→  book: { label: '书籍信息页', desc: '主关键词落地页：书名/作者/分类/关键词/简介/封面', icon: Library },
+    39→  toc: { label: '章节目录页', desc: '目录页：章节标题与链接、分页、乱序重排、去重', icon: ListOrdered },
+    40→  content: { label: '章节内容页', desc: '正文页：正文选择器、分页合并、附加广告清洗', icon: FileText },
+    41→}
+    42→
+    43→function emptySelector(): FieldSelector {
+    44→  return { mode: 'css', expr: '', attr: 'text' }
+    45→}
+    46→
+    47→/** 数字输入防 NaN 注入（输入中间态如 "1e"/"-" 时 Number() 会得到 NaN） */
+    48→function toNumOr(raw: string, fallback: number): number {
+    49→  const n = Number(raw)
+    50→  return Number.isFinite(n) ? n : fallback
+    51→}
+    52→
+    53→function defaultConfig(type: RuleType): Record<string, unknown> {
+    54→  const base = { strategy: 'http', encoding: 'auto', timeout: 20000 }
+    55→  switch (type) {
+    56→    case 'list':
+    57→      return {
+    58→        ...base,
+    59→        items: {
+    60→          item: emptySelector(),
+    61→          title: emptySelector(),
+    62→          link: { mode: 'css', expr: 'a', attr: 'href' },
+    63→          intro: emptySelector(),
+    64→          cover: emptySelector(),
+    65→        },
+    66→        pagination: { enabled: false, mode: 'nextLink', nextLink: { mode: 'css', expr: '', attr: 'href' }, maxPages: 10 },
+    67→      }
+    68→    case 'book':
+    69→      return {
+    70→        ...base,
+    71→        smartCategory: true,
+    72→        smartCompletion: true,
+    73→        fetchSuggest: false,
+    74→        downloadCover: true,
+    75→        fields: {
+    76→          title: emptySelector(),
+    77→          author: emptySelector(),
+    78→          category: emptySelector(),
+    79→          keywords: emptySelector(),
+    80→          intro: emptySelector(),
+    81→          cover: { mode: 'css', expr: '', attr: 'src' },
+    82→          status: emptySelector(),
+    83→          latestChapter: emptySelector(),
+    84→          tocLink: { mode: 'css', expr: '', attr: 'href' },
+    85→        },
+    86→      }
+    87→    case 'toc':
+    88→      return {
+    89→        ...base,
+    90→        items: {
+    91→          item: emptySelector(),
+    92→          title: emptySelector(),
+    93→          link: { mode: 'css', expr: 'a', attr: 'href' },
+    94→        },
+    95→        pagination: { enabled: false, mode: 'nextLink', nextLink: { mode: 'css', expr: '', attr: 'href' }, maxPages: 20 },
+    96→        reorder: { enabled: true, numberPattern: '' },
+    97→        dedup: { byUrl: true, byTitle: false },
+    98→      }
+    99→    case 'content':
+   100→      return {
+   101→        ...base,
+   102→        content: emptySelector(),
+   103→        pagination: {
+   104→          enabled: false, mode: 'nextLink',
+   105→          nextLink: { mode: 'css', expr: '', attr: 'href' },
+   106→          maxConcat: 5,
+   107→        },
+   108→        extraAdPatterns: [],
+   109→      }
+   110→  }
+   111→}
+   112→
+   113→/** 各类型示例规则（一键填充，便于快速理解写法） */
+   114→function presetConfig(type: RuleType): Record<string, unknown> {
+   115→  const c = defaultConfig(type) as Record<string, unknown>
+   116→  if (type === 'list') {
+   117→    const items = c.items as Record<string, FieldSelector>
+   118→    items.item = { mode: 'css', expr: '.item, li', attr: 'text' }
+   119→    items.title = { mode: 'css', expr: 'h3 a, .title', attr: 'text' }
+   120→    items.link = { mode: 'css', expr: 'a', attr: 'href' }
+   121→    c.pagination = { enabled: true, mode: 'template', urlTemplate: '', startPage: 1, endPage: 5, maxPages: 20 }
+   122→  } else if (type === 'book') {
+   123→    const f = c.fields as Record<string, FieldSelector>
+   124→    f.title = { mode: 'css', expr: 'h1, .book-title, #title', attr: 'text' }
+   125→    f.author = { mode: 'css', expr: '#author, .author', attr: 'text' }
+   126→    f.category = { mode: 'css', expr: '.breadcrumb a:nth-child(2), .category', attr: 'text' }
+   127→    f.keywords = { mode: 'regex', expr: '<meta\\s+name="keywords"\\s+content="([^"]+)"', group: 1 }
+   128→    f.intro = { mode: 'css', expr: '.intro, #intro, .book-desc', attr: 'text' }
+   129→    f.cover = { mode: 'css', expr: '.cover img, #cover img', attr: 'src' }
+   130→    f.status = { mode: 'css', expr: '.status', attr: 'text' }
+   131→    f.latestChapter = { mode: 'css', expr: '.latest a', attr: 'text' }
+   132→    f.tocLink = { mode: 'css', expr: 'a:contains("目录"), .btn-toc', attr: 'href' }
+   133→  } else if (type === 'toc') {
+   134→    const items = c.items as Record<string, FieldSelector>
+   135→    items.item = { mode: 'css', expr: '#list dd, .chapter-list li', attr: 'text' }
+   136→    items.title = { mode: 'css', expr: 'a', attr: 'text' }
+   137→    items.link = { mode: 'css', expr: 'a', attr: 'href' }
+   138→    const reorder = c.reorder as { enabled: boolean; numberPattern: string }
+   139→    reorder.enabled = true
+   140→  } else if (type === 'content') {
+   141→    c.content = { mode: 'css', expr: '#content, .read-content, .txt', attr: 'html' }
+   142→    c.extraAdPatterns = ['一秒记住.*?', '天才一秒记住.*?']
+   143→  }
+   144→  return c
+   145→}
+   146→
+   147→// ---------------- 选择器行 ----------------
+   148→function SelectorRow({
+   149→  label, value, onChange, hint,
+   150→}: {
+   151→  label: string
+   152→  value: FieldSelector
+   153→  onChange: (v: FieldSelector) => void
+   154→  hint?: string
+   155→}) {
+   156→  const update = (patch: Partial<FieldSelector>) => onChange({ ...value, ...patch })
+   157→  return (
+   158→    <div className="space-y-1.5">
+   159→      <div className="flex items-center justify-between">
+   160→        <Label className="text-xs">{label}</Label>
+   161→        {hint && <span className="text-[10px] text-muted-foreground">{hint}</span>}
+   162→      </div>
+   163→      <div className="flex flex-wrap items-center gap-1.5">
+   164→        <Select value={value.mode} onValueChange={(v) => update({ mode: v as FieldSelector['mode'] })}>
+   165→          <SelectTrigger className="h-8 w-[86px] shrink-0 text-xs"><SelectValue /></SelectTrigger>
+   166→          <SelectContent>
+   167→            <SelectItem value="css">CSS</SelectItem>
+   168→            <SelectItem value="regex">正则</SelectItem>
+   169→            <SelectItem value="xpath">XPath</SelectItem>
+   170→          </SelectContent>
+   171→        </Select>
+   172→        <Input
+   173→          className="h-8 min-w-[140px] flex-1 font-mono text-xs"
+   174→          placeholder={
+   175→            value.mode === 'css' ? '如 #content 或 .item a' : value.mode === 'regex' ? '如 <div id="c">([\s\S]*?)</div>' : '如 //div[@id="content"]'
+   176→          }
+   177→          value={value.expr}
+   178→          onChange={(e) => update({ expr: e.target.value })}
+   179→        />
+   180→        {value.mode !== 'regex' && (
+   181→          <Select value={value.attr ?? 'text'} onValueChange={(v) => update({ attr: v })}>
+   182→            <SelectTrigger className="h-8 w-[92px] shrink-0 text-xs"><SelectValue /></SelectTrigger>
+   183→            <SelectContent>
+   184→              <SelectItem value="text">text</SelectItem>
+   185→              <SelectItem value="html">html</SelectItem>
+   186→              <SelectItem value="outerHtml">outerHtml</SelectItem>
+   187→              <SelectItem value="href">href</SelectItem>
+   188→              <SelectItem value="src">src</SelectItem>
+   189→              <SelectItem value="content">content</SelectItem>
+   190→            </SelectContent>
+   191→          </Select>
+   192→        )}
+   193→        {value.mode === 'regex' && (
+   194→          <Input
+   195→            className="h-8 w-16 shrink-0 text-xs"
+   196→            type="number" min={0}
+   197→            placeholder="组"
+   198→            value={value.group ?? 1}
+   199→            onChange={(e) => update({ group: toNumOr(e.target.value, 1) })}
+   200→          />
+   201→        )}
+   202→        <label className="flex items-center gap-1 text-[11px] text-muted-foreground">
+   203→          <Checkbox checked={!!value.multiple} onCheckedChange={(v) => update({ multiple: v === true })} />
+   204→          多值
+   205→        </label>
+   206→      </div>
+   207→    </div>
+   208→  )
+   209→}
+   210→
+   211→function SubSection({ title, children, defaultOpen = true }: { title: string; children: React.ReactNode; defaultOpen?: boolean }) {
+   212→  const [open, setOpen] = useState(defaultOpen)
+   213→  return (
+   214→    <div className="rounded-lg border">
+   215→      <button
+   216→        type="button"
+   217→        onClick={() => setOpen(!open)}
+   218→        className="flex w-full items-center justify-between px-3 py-2 text-sm font-medium hover:bg-accent/50 rounded-t-lg"
+   219→      >
+   220→        {title}
+   221→        <ChevronDown className={`h-4 w-4 transition-transform ${open ? '' : '-rotate-90'}`} />
+   222→      </button>
+   223→      {open && <div className="space-y-3 border-t px-3 py-3">{children}</div>}
+   224→    </div>
+   225→  )
+   226→}
+   227→
+   228→function FetchFields({ cfg, onChange }: { cfg: Record<string, unknown>; onChange: (patch: Record<string, unknown>) => void }) {
+   229→  return (
+   230→    <SubSection title="请求与反反爬（策略 / 编码 / Cookie / UA 轮换）">
+   231→      <div className="grid grid-cols-2 gap-2 md:grid-cols-4">
+   232→        <div className="space-y-1">
+   233→          <Label className="text-xs">抓取策略</Label>
+   234→          <Select value={String(cfg.strategy ?? 'http')} onValueChange={(v) => onChange({ strategy: v as FetchStrategy })}>
+   235→            <SelectTrigger className="h-8 text-xs"><SelectValue /></SelectTrigger>
+   236→            <SelectContent>
+   237→              <SelectItem value="http">HTTP 直连</SelectItem>
+   238→              <SelectItem value="playwright">Playwright (JS渲染)</SelectItem>
+   239→              <SelectItem value="hyperbrowser">Hyperbrowser (云隐身)</SelectItem>
+   240→            </SelectContent>
+   241→          </Select>
+   242→        </div>
+   243→        <div className="space-y-1">
+   244→          <Label className="text-xs">编码</Label>
+   245→          <Select value={String(cfg.encoding ?? 'auto')} onValueChange={(v) => onChange({ encoding: v })}>
+   246→            <SelectTrigger className="h-8 text-xs"><SelectValue /></SelectTrigger>
+   247→            <SelectContent>
+   248→              <SelectItem value="auto">自动识别</SelectItem>
+   249→              <SelectItem value="utf-8">UTF-8</SelectItem>
+   250→              <SelectItem value="gbk">GBK</SelectItem>
+   251→              <SelectItem value="gb2312">GB2312</SelectItem>
+   252→              <SelectItem value="big5">Big5</SelectItem>
+   253→            </SelectContent>
+   254→          </Select>
+   255→        </div>
+   256→        <div className="space-y-1">
+   257→          <Label className="text-xs">超时(ms)</Label>
+   258→          <Input className="h-8 text-xs" type="number" value={Number(cfg.timeout ?? 20000)}
+   259→            onChange={(e) => onChange({ timeout: toNumOr(e.target.value, 20000) })} />
+   260→        </div>
+   261→        <div className="space-y-1">
+   262→          <Label className="text-xs">Referer</Label>
+   263→          <Input className="h-8 text-xs" placeholder="可选" value={String(cfg.referer ?? '')}
+   264→            onChange={(e) => onChange({ referer: e.target.value })} />
+   265→        </div>
+   266→      </div>
+   267→      <div className="space-y-1">
+   268→        <Label className="text-xs">Cookies（分号分隔 k=v;k2=v2）</Label>
+   269→        <Input className="h-8 font-mono text-xs" value={String(cfg.cookies ?? '')}
+   270→          onChange={(e) => onChange({ cookies: e.target.value })} />
+   271→      </div>
+   272→      <div className="space-y-1">
+   273→        <Label className="text-xs">自定义 Headers（JSON）</Label>
+   274→        <Textarea className="h-16 font-mono text-xs" placeholder='{"X-Token": "xxx"}'
+   275→          value={typeof cfg.headers === 'string' ? (cfg.headers as string) : cfg.headers ? JSON.stringify(cfg.headers, null, 2) : ''}
+   276→          onChange={(e) => onChange({ headers: e.target.value })} />
+   277→      </div>
+   278→    </SubSection>
+   279→  )
+   280→}
+   281→
+   282→function PaginationFields({ cfg, onChange }: { cfg: Record<string, unknown>; onChange: (patch: Record<string, unknown>) => void }) {
+   283→  const pg = (cfg.pagination ?? {}) as Record<string, unknown>
+   284→  const setPg = (patch: Record<string, unknown>) => onChange({ pagination: { ...pg, ...patch } })
+   285→  return (
+   286→    <SubSection title="分页设置（预留：下一页跟随 / URL 模板区间）" defaultOpen={false}>
+   287→      <div className="flex items-center gap-2">
+   288→        <Switch checked={!!pg.enabled} onCheckedChange={(v) => setPg({ enabled: v })} />
+   289→        <span className="text-sm">启用分页</span>
+   290→      </div>
+   291→      {!!pg.enabled && (
+   292→        <>
+   293→          <div className="grid grid-cols-2 gap-2">
+   294→            <div className="space-y-1">
+   295→              <Label className="text-xs">分页方式</Label>
+   296→              <Select value={String(pg.mode ?? 'nextLink')} onValueChange={(v) => setPg({ mode: v })}>
+   297→                <SelectTrigger className="h-8 text-xs"><SelectValue /></SelectTrigger>
+   298→                <SelectContent>
+   299→                  <SelectItem value="nextLink">跟随下一页链接</SelectItem>
+   300→                  <SelectItem value="template">URL 模板 {'{page}'}</SelectItem>
+   301→                </SelectContent>
+   302→              </Select>
+   303→            </div>
+   304→            <div className="space-y-1">
+   305→              <Label className="text-xs">最大页数</Label>
+   306→              <Input className="h-8 text-xs" type="number" min={1} value={Number(pg.maxPages ?? 10)}
+   307→                onChange={(e) => setPg({ maxPages: toNumOr(e.target.value, 10) })} />
+   308→            </div>
+   309→          </div>
+   310→          {pg.mode === 'template' && (
+   311→            <div className="grid grid-cols-3 gap-2">
+   312→              <div className="col-span-3 space-y-1">
+   313→                <Label className="text-xs">URL 模板（含 {'{page}'} 占位）</Label>
+   314→                <Input className="h-8 font-mono text-xs" value={String(pg.urlTemplate ?? '')}
+   315→                  onChange={(e) => setPg({ urlTemplate: e.target.value })} />
+   316→              </div>
+   317→              <div className="space-y-1">
+   318→                <Label className="text-xs">起始页</Label>
+   319→                <Input className="h-8 text-xs" type="number" value={Number(pg.startPage ?? 1)}
+   320→                  onChange={(e) => setPg({ startPage: toNumOr(e.target.value, 1) })} />
+   321→              </div>
+   322→              <div className="space-y-1">
+   323→                <Label className="text-xs">结束页</Label>
+   324→                <Input className="h-8 text-xs" type="number" value={Number(pg.endPage ?? 5)}
+   325→                  onChange={(e) => setPg({ endPage: toNumOr(e.target.value, 5) })} />
+   326→              </div>
+   327→            </div>
+   328→          )}
+   329→        </>
+   330→      )}
+   331→    </SubSection>
+   332→  )
+   333→}
+   334→
+   335→// ---------------- 测试面板 ----------------
+   336→interface TestResult {
+   337→  ok: boolean
+   338→  message: string
+   339→  elapsedMs?: number
+   340→  data?: Record<string, unknown>
+   341→}
+   342→
+   343→function TestPanel({ type, config }: { type: RuleType; config: Record<string, unknown> }) {
+   344→  const [url, setUrl] = useState('')
+   345→  const [running, setRunning] = useState(false)
+   346→  const [result, setResult] = useState<TestResult | null>(null)
+   347→
+   348→  const run = async () => {
+   349→    if (!url.trim()) return
+   350→    setRunning(true)
+   351→    setResult(null)
+   352→    try {
+   353→      const r = await api<TestResult>('/api/rules/test', {
+   354→        method: 'POST',
+   355→        body: JSON.stringify({ type, config, url: url.trim() }),
+   356→      })
+   357→      setResult(r)
+   358→    } catch (e) {
+   359→      setResult({ ok: false, message: e instanceof Error ? e.message : String(e) })
+   360→    } finally {
+   361→      setRunning(false)
+   362→    }
+   363→  }
+   364→
+   365→  const sample = (result?.data?.sample ?? result?.data?.fields) as unknown
+   366→  const preview = String(result?.data?.preview ?? '')
+   367→
+   368→  return (
+   369→    <SubSection title="规则测试（保存前即可验证）">
+   370→      <div className="flex gap-2">
+   371→        <Input className="h-8 flex-1 font-mono text-xs" placeholder="输入目标页 URL 进行测试"
+   372→          value={url} onChange={(e) => setUrl(e.target.value)} />
+   373→        <Button size="sm" className="h-8" disabled={running || !url.trim()} onClick={() => void run()}>
+   374→          {running ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Play className="h-3.5 w-3.5" />}
+   375→          测试
+   376→        </Button>
+   377→      </div>
+   378→      {result && (
+   379→        <div className="space-y-2 rounded-md border bg-muted/40 p-2.5">
+   380→          <div className="flex items-center gap-2">
+   381→            <Badge variant={result.ok ? 'secondary' : 'destructive'}>{result.ok ? '成功' : '失败'}</Badge>
+   382→            <span className="text-xs">{result.message}</span>
+   383→            {result.elapsedMs !== undefined && <span className="ml-auto text-[10px] text-muted-foreground">{result.elapsedMs}ms</span>}
+   384→          </div>
+   385→          {Array.isArray(sample) && sample.length > 0 && (
+   386→            <ScrollArea className="max-h-44 rounded border bg-background">
+   387→              <div className="space-y-1 p-2 font-mono text-[11px] leading-relaxed">
+   388→                {(sample as unknown[]).slice(0, 30).map((item, i) => (
+   389→                  <div key={i} className="truncate border-b border-dashed pb-1 last:border-0">
+   390→                    {typeof item === 'object' && item !== null
+   391→                      ? Object.entries(item as Record<string, unknown>)
+   392→                          .filter(([, v]) => v !== '' && v !== undefined)
+   393→                          .map(([k, v]) => `${k}: ${String(v).slice(0, 90)}`)
+   394→                          .join(' ｜ ')
+   395→                      : String(item).slice(0, 120)}
+   396→                  </div>
+   397→                ))}
+   398→              </div>
+   399→            </ScrollArea>
+   400→          )}
+   401→          {!!sample && !Array.isArray(sample) && (
+   402→            <ScrollArea className="max-h-44 rounded border bg-background">
+   403→              <div className="space-y-1 p-2 font-mono text-[11px]">
+   404→                {Object.entries(sample as Record<string, unknown>).map(([k, v]) => (
+   405→                  <div key={k} className="flex gap-2 border-b border-dashed pb-1 last:border-0">
+   406→                    <span className="shrink-0 font-medium">{k}:</span>
+   407→                    <span className="break-all">{String(v).slice(0, 200)}</span>
+   408→                  </div>
+   409→                ))}
+   410→              </div>
+   411→            </ScrollArea>
+   412→          )}
+   413→          {preview && (
+   414→            <pre className="max-h-40 overflow-auto whitespace-pre-wrap rounded border bg-background p-2 text-[11px] leading-relaxed">{preview}</pre>
+   415→          )}
+   416→          {!!(result.data && (result.data.smartCategory || result.data.smartCompletion)) && (
+   417→            <div className="flex flex-wrap gap-2 text-[11px]">
+   418→              {result.data.smartCategory !== undefined && (
+   419→                <Badge variant="outline">
+   420→                  智能分类：{String((result.data.smartCategory as Record<string, unknown>).category)}
+   421→                  （置信度 {Number((result.data.smartCategory as Record<string, unknown>).score).toFixed(2)}）
+   422→                </Badge>
+   423→              )}
+   424→              {result.data.smartCompletion !== undefined && (
+   425→                <Badge variant="outline">
+   426→                  完结判断：{String((result.data.smartCompletion as Record<string, unknown>).status)}
+   427→                  （置信度 {Number((result.data.smartCompletion as Record<string, unknown>).confidence).toFixed(2)}）
+   428→                </Badge>
+   429→              )}
+   430→            </div>
+   431→          )}
+   432→        </div>
+   433→      )}
+   434→    </SubSection>
+   435→  )
+   436→}
+   437→
+   438→// ---------------- 规则编辑器 ----------------
+   439→function RuleEditor({
+   440→  type, ruleId, name, config, onNameChange, onConfigChange,
+   441→}: {
+   442→  type: RuleType
+   443→  ruleId: string | null
+   444→  name: string
+   445→  config: Record<string, unknown>
+   446→  onNameChange: (v: string) => void
+   447→  onConfigChange: (c: Record<string, unknown>) => void
+   448→}) {
+   449→  const patch = (p: Record<string, unknown>) => onConfigChange({ ...config, ...p })
+   450→  const setSel = (path: (string | number)[], sel: FieldSelector) => {
+   451→    const clone = structuredClone(config) as Record<string, unknown>
+   452→    let node: Record<string, unknown> = clone
+   453→    for (let i = 0; i < path.length - 1; i++) {
+   454→      // 中间节点缺失/非对象时（历史规则数据可能存了 null）自动补建，避免 TypeError
+   455→      const next = node[path[i]]
+   456→      if (!next || typeof next !== 'object') node[path[i]] = {}
+   457→      node = node[path[i]] as Record<string, unknown>
+   458→    }
+   459→    node[path[path.length - 1]] = sel
+   460→    onConfigChange(clone)
+   461→  }
+   462→
+   463→  const items = (config.items ?? {}) as Record<string, FieldSelector>
+   464→  const fields = (config.fields ?? {}) as Record<string, FieldSelector>
+   465→
+   466→  return (
+   467→    <div className="space-y-3">
+   468→      <div className="space-y-1">
+   469→        <Label className="text-xs">规则名称</Label>
+   470→        <Input className="h-8" value={name} onChange={(e) => onNameChange(e.target.value)}
+   471→          placeholder={`${TYPE_META[type].label}规则`} />
+   472→      </div>
+   473→
+   474→      <FetchFields cfg={config} onChange={patch} />
+   475→
+   476→      {type === 'list' && (
+   477→        <SubSection title="列表项解析">
+   478→          <SelectorRow label="列表项（每本书的容器）" value={items.item ?? emptySelector()} onChange={(s) => setSel(['items', 'item'], s)} />
+   479→          <SelectorRow label="书名" value={items.title ?? emptySelector()} onChange={(s) => setSel(['items', 'title'], s)} />
+   480→          <SelectorRow label="链接" value={items.link ?? emptySelector()} onChange={(s) => setSel(['items', 'link'], s)} hint="相对列表项" />
+   481→          <SelectorRow label="简介（可选）" value={items.intro ?? emptySelector()} onChange={(s) => setSel(['items', 'intro'], s)} />
+   482→          <SelectorRow label="封面（可选）" value={items.cover ?? emptySelector()} onChange={(s) => setSel(['items', 'cover'], s)} />
+   483→        </SubSection>
+   484→      )}
+   485→
+   486→      {type === 'book' && (
+   487→        <SubSection title="书籍字段解析">
+   488→          <SelectorRow label="书名（必填）" value={fields.title ?? emptySelector()} onChange={(s) => setSel(['fields', 'title'], s)} />
+   489→          <SelectorRow label="作者" value={fields.author ?? emptySelector()} onChange={(s) => setSel(['fields', 'author'], s)} />
+   490→          <SelectorRow label="分类" value={fields.category ?? emptySelector()} onChange={(s) => setSel(['fields', 'category'], s)} hint="留空则智能匹配" />
+   491→          <SelectorRow label="关键词" value={fields.keywords ?? emptySelector()} onChange={(s) => setSel(['fields', 'keywords'], s)} />
+   492→          <SelectorRow label="简介" value={fields.intro ?? emptySelector()} onChange={(s) => setSel(['fields', 'intro'], s)} />
+   493→          <SelectorRow label="封面图" value={fields.cover ?? emptySelector()} onChange={(s) => setSel(['fields', 'cover'], s)} />
+   494→          <SelectorRow label="状态（连载/完结）" value={fields.status ?? emptySelector()} onChange={(s) => setSel(['fields', 'status'], s)} />
+   495→          <SelectorRow label="最新章节" value={fields.latestChapter ?? emptySelector()} onChange={(s) => setSel(['fields', 'latestChapter'], s)} />
+   496→          <SelectorRow label="目录页链接（可选）" value={fields.tocLink ?? emptySelector()} onChange={(s) => setSel(['fields', 'tocLink'], s)} hint="默认用当前页" />
+   497→        </SubSection>
+   498→      )}
+   499→
+   500→      {(type === 'list' || type === 'toc') && <PaginationFields cfg={config} onChange={patch} />}
+   501→
+   502→      {type === 'toc' && (
+   503→        <>
+   504→          <SubSection title="章节列表解析">
+   505→            <SelectorRow label="章节项容器" value={items.item ?? emptySelector()} onChange={(s) => setSel(['items', 'item'], s)} />
+   506→            <SelectorRow label="章节标题" value={items.title ?? emptySelector()} onChange={(s) => setSel(['items', 'title'], s)} />
+   507→            <SelectorRow label="章节链接" value={items.link ?? emptySelector()} onChange={(s) => setSel(['items', 'link'], s)} />
+   508→          </SubSection>
+   509→          <SubSection title="乱序重排 / 去重">
+   510→            <div className="grid gap-3 md:grid-cols-2">
+   511→              <div className="flex items-center justify-between rounded-md border p-2.5">
+   512→                <div>
+   513→                  <p className="text-sm font-medium">乱序重排</p>
+   514→                  <p className="text-[11px] text-muted-foreground">按章节序号重排目录</p>
+   515→                </div>
+   516→                <Switch
+   517→                  checked={!!(config.reorder as Record<string, unknown> | undefined)?.enabled}
+   518→                  onCheckedChange={(v) => patch({ reorder: { ...(config.reorder as Record<string, unknown>), enabled: v } })}
+   519→                />
+   520→              </div>
+   521→              <div className="flex items-center justify-between rounded-md border p-2.5">
+   522→                <div>
+   523→                  <p className="text-sm font-medium">按章节名去重</p>
+   524→                  <p className="text-[11px] text-muted-foreground">URL 去重始终开启</p>
+   525→                </div>
+   526→                <Switch
+   527→                  checked={!!(config.dedup as Record<string, unknown> | undefined)?.byTitle}
+   528→                  onCheckedChange={(v) => patch({ dedup: { ...(config.dedup as Record<string, unknown>), byTitle: v } })}
+   529→                />
+   530→              </div>
+   531→            </div>
+   532→            <Input className="h-8 font-mono text-xs" placeholder="章节序号正则（可选，默认支持中文数字）"
+   533→              value={String((config.reorder as Record<string, unknown> | undefined)?.numberPattern ?? '')}
+   534→              onChange={(e) => patch({ reorder: { ...(config.reorder as Record<string, unknown>), numberPattern: e.target.value } })} />
+   535→          </SubSection>
+   536→        </>
+   537→      )}
+   538→
+   539→      {type === 'content' && (
+   540→        <>
+   541→          <SubSection title="正文解析">
+   542→            <SelectorRow label="正文选择器" value={(config.content as FieldSelector) ?? emptySelector()}
+   543→              onChange={(s) => patch({ content: s })} hint="建议取 html" />
+   544→          </SubSection>
+   545→          <PaginationFields cfg={config} onChange={patch} />
+   546→          <SubSection title="附加广告清洗（正则，每行一条）" defaultOpen={false}>
+   547→            <Textarea className="h-20 font-mono text-xs"
+   548→              value={Array.isArray(config.extraAdPatterns) ? (config.extraAdPatterns as string[]).join('\n') : ''}
+   549→              onChange={(e) => patch({ extraAdPatterns: e.target.value.split('\n').filter(Boolean) })} />
+   550→          </SubSection>
+   551→        </>
+   552→      )}
+   553→
+   554→      {type === 'book' && (
+   555→        <SubSection title="智能增强">
+   556→          <div className="grid gap-2 md:grid-cols-2">
+   557→            {([
+   558→              ['smartCategory', '智能匹配分类', '按字典特征自动归类'],
+   559→              ['smartCompletion', '智能判断完结', '状态字段+最新章节特征'],
+   560→              ['fetchSuggest', '抓取搜索引擎下拉词', '百度/必应/360 等（较慢）'],
+   561→              ['downloadCover', '下载封面为 webp', '本地化封面存储'],
+   562→            ] as const).map(([key, label, desc]) => (
+   563→              <div key={key} className="flex items-center justify-between rounded-md border p-2.5">
+   564→                <div>
+   565→                  <p className="text-sm font-medium">{label}</p>
+   566→                  <p className="text-[11px] text-muted-foreground">{desc}</p>
+   567→                </div>
+   568→                <Switch checked={!!config[key]} onCheckedChange={(v) => patch({ [key]: v })} />
+   569→              </div>
+   570→            ))}
+   571→          </div>
+   572→        </SubSection>
+   573→      )}
+   574→
+   575→      <TestPanel type={type} config={config} />
+   576→    </div>
+   577→  )
+   578→}
+   579→
+   580→// ---------------- 主页面 ----------------
+   581→export function RulesPage() {
+   582→  const { toast } = useToast()
+   583→  const [rules, setRules] = useState<RuleRow[]>([])
+   584→  const [tab, setTab] = useState<RuleType>('list')
+   585→  const [dialogOpen, setDialogOpen] = useState(false)
+   586→  const [editingId, setEditingId] = useState<string | null>(null)
+   587→  const [name, setName] = useState('')
+   588→  const [config, setConfig] = useState<Record<string, unknown>>({})
+   589→  const [saving, setSaving] = useState(false)
+   590→
+   591→  const load = useCallback(async () => {
+   592→    try {
+   593→      const r = await api<{ rules: RuleRow[] }>('/api/rules')
+   594→      setRules(r.rules)
+   595→    } catch (e) {
+   596→      toast({ title: '加载失败', description: e instanceof Error ? e.message : String(e), variant: 'destructive' })
+   597→    }
+   598→  }, [toast])
+   599→
+   600→  useEffect(() => { void load() }, [load])
+   601→
+   602→  const rulesOfType = useMemo(() => rules.filter((r) => r.type === tab), [rules, tab])
+   603→
+   604→  const openCreate = () => {
+   605→    setEditingId(null)
+   606→    setName('')
+   607→    setConfig(presetConfig(tab))
+   608→    setDialogOpen(true)
+   609→  }
+   610→
+   611→  const openEdit = (rule: RuleRow) => {
+   612→    setEditingId(rule.id)
+   613→    setName(rule.name)
+   614→    try {
+   615→      setConfig({ ...defaultConfig(rule.type), ...(JSON.parse(rule.config) as Record<string, unknown>) })
+   616→    } catch {
+   617→      setConfig(defaultConfig(rule.type))
+   618→    }
+   619→    setDialogOpen(true)
+   620→  }
+   621→
+   622→  const save = async () => {
+   623→    if (!name.trim()) {
+   624→      toast({ title: '请填写规则名称', variant: 'destructive' })
+   625→      return
+   626→    }
+   627→    setSaving(true)
+   628→    try {
+   629→      if (editingId) {
+   630→        await api(`/api/rules/${editingId}`, { method: 'PUT', body: JSON.stringify({ name, config }) })
+   631→      } else {
+   632→        await api('/api/rules', { method: 'POST', body: JSON.stringify({ name, type: tab, config }) })
+   633→      }
+   634→      toast({ title: editingId ? '规则已更新' : '规则已创建' })
+   635→      setDialogOpen(false)
+   636→      await load()
+   637→    } catch (e) {
+   638→      toast({ title: '保存失败', description: e instanceof Error ? e.message : String(e), variant: 'destructive' })
+   639→    } finally {
+   640→      setSaving(false)
+   641→    }
+   642→  }
+   643→
+   644→  const remove = async (rule: RuleRow) => {
+   645→    if (!confirm(`确定删除规则「${rule.name}」？`)) return
+   646→    try {
+   647→      await api(`/api/rules/${rule.id}`, { method: 'DELETE' })
+   648→      toast({ title: '已删除' })
+   649→      await load()
+   650→    } catch (e) {
+   651→      toast({ title: '删除失败', description: e instanceof Error ? e.message : String(e), variant: 'destructive' })
+   652→    }
+   653→  }
+   654→
+   655→  return (
+   656→    <div className="space-y-4">
+   657→      <div className="flex flex-wrap items-center justify-between gap-3">
+   658→        <Tabs value={tab} onValueChange={(v) => setTab(v as RuleType)}>
+   659→          <TabsList>
+   660→            {(Object.keys(TYPE_META) as RuleType[]).map((t) => {
+   661→              const Icon = TYPE_META[t].icon
+   662→              return (
+   663→                <TabsTrigger key={t} value={t} className="gap-1.5">
+   664→                  <Icon className="h-3.5 w-3.5" />
+   665→                  {TYPE_META[t].label}
+   666→                </TabsTrigger>
+   667→              )
+   668→            })}
+   669→          </TabsList>
+   670→        </Tabs>
+   671→        <Button onClick={openCreate} size="sm">
+   672→          <Plus className="h-4 w-4" /> 新建{TYPE_META[tab].label}规则
+   673→        </Button>
+   674→      </div>
+   675→      <p className="text-xs text-muted-foreground">{TYPE_META[tab].desc} —— 支持 CSS / 正则 / XPath 三种模式混用，每个规则均内置测试。</p>
+   676→
+   677→      <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-3">
+   678→        {rulesOfType.length === 0 && (
+   679→          <Card className="md:col-span-2 xl:col-span-3">
+   680→            <CardContent className="flex flex-col items-center gap-2 py-10 text-center">
+   681→              <Wand2 className="h-8 w-8 text-muted-foreground" />
+   682→              <p className="text-sm text-muted-foreground">暂无{TYPE_META[tab].label}规则，点击右上角「新建」（已预填示例结构，可直接改表达式）</p>
+   683→            </CardContent>
+   684→          </Card>
+   685→        )}
+   686→        {rulesOfType.map((rule) => (
+   687→          <Card key={rule.id}>
+   688→            <CardContent className="space-y-2.5 p-4">
+   689→              <div className="flex items-start justify-between gap-2">
+   690→                <div className="min-w-0">
+   691→                  <p className="truncate text-sm font-semibold">{rule.name}</p>
+   692→                  <p className="text-[11px] text-muted-foreground">更新于 {new Date(rule.updatedAt).toLocaleString('zh-CN', { hour12: false })}</p>
+   693→                </div>
+   694→                <Badge variant={rule.enabled ? 'secondary' : 'outline'}>{rule.enabled ? '启用' : '停用'}</Badge>
+   695→              </div>
+   696→              <div className="flex gap-2">
+   697→                <Button size="sm" variant="outline" className="flex-1" onClick={() => openEdit(rule)}>
+   698→                  <Pencil className="h-3.5 w-3.5" /> 编辑
+   699→                </Button>
+   700→                <Button size="sm" variant="outline" className="text-red-600 hover:text-red-700" onClick={() => void remove(rule)} aria-label={`删除规则「${rule.name}」`}>
+   701→                  <Trash2 className="h-3.5 w-3.5" />
+   702→                </Button>
+   703→              </div>
+   704→            </CardContent>
+   705→          </Card>
+   706→        ))}
+   707→      </div>
+   708→
+   709→      <Dialog open={dialogOpen} onOpenChange={setDialogOpen}>
+   710→        <DialogContent className="max-h-[88vh] overflow-y-auto sm:max-w-2xl">
+   711→          <DialogHeader>
+   712→            <DialogTitle>{editingId ? '编辑' : '新建'}{TYPE_META[tab].label}规则</DialogTitle>
+   713→            <DialogDescription>三种选择器模式可混用；CSS 取属性需选择 attr；正则建议使用捕获组。</DialogDescription>
+   714→          </DialogHeader>
+   715→          <Separator />
+   716→          <RuleEditor
+   717→            type={tab}
+   718→            ruleId={editingId}
+   719→            name={name}
+   720→            config={config}
+   721→            onNameChange={setName}
+   722→            onConfigChange={setConfig}
+   723→          />
+   724→          <DialogFooter>
+   725→            <Button variant="outline" onClick={() => setConfig(presetConfig(tab))}>
+   726→              <Beaker className="h-4 w-4" /> 重置为示例
+   727→            </Button>
+   728→            <Button onClick={() => void save()} disabled={saving}>
+   729→              {saving && <Loader2 className="h-4 w-4 animate-spin" />} 保存规则
+   730→            </Button>
+   731→          </DialogFooter>
+   732→        </DialogContent>
+   733→      </Dialog>
+   734→    </div>
+   735→  )
+   736→}
+   737→

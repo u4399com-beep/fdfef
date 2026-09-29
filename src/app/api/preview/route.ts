@@ -74,7 +74,8 @@ export async function GET(req: NextRequest) {
   }
 
   if (type === 'book' || type === 'toc') {
-    const bookId = sp.get('bookId') ?? siteMeta.mainBookId
+    // || 而非 ??：bookId=（空串）同样视为未传，回退主书籍（与注释语义一致）
+    const bookId = sp.get('bookId') || siteMeta.mainBookId
     const book = bookId ? await db.book.findUnique({ where: { id: bookId } }) : null
     if (!book) return NextResponse.json({ error: '书籍不存在' }, { status: 404 })
 
@@ -138,15 +139,18 @@ export async function GET(req: NextRequest) {
 
   if (type === 'keyword') {
     const keyword = sp.get('keyword') ?? ''
-    const all = await db.book.findMany({ orderBy: { updatedAt: 'desc' }, take: 200 })
     const kw = keyword.trim().toLowerCase()
-    const matched = all
-      .filter((b) => {
-        const hay = [b.title, b.keywords, b.suggestKeywords, b.category, b.intro.slice(0, 200)].join(',').toLowerCase()
-        return hay.includes(kw)
-      })
-      .slice(0, 12)
-      .map(toCard)
+    const all = await db.book.findMany({ orderBy: { updatedAt: 'desc' }, take: 200 })
+    // 空关键词不派生「相关书籍」（includes('') 恒真会返回泛化列表，产生无意义落地页数据）
+    const matched = kw
+      ? all
+          .filter((b) => {
+            const hay = [b.title, b.keywords, b.suggestKeywords, b.category, b.intro.slice(0, 200)].join(',').toLowerCase()
+            return hay.includes(kw)
+          })
+          .slice(0, 12)
+          .map(toCard)
+      : []
     return NextResponse.json({
       site: siteMeta,
       view: { type: 'keyword', keyword },

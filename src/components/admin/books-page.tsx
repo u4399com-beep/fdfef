@@ -61,6 +61,7 @@ export function BooksPage() {
   // 请求序号：防止快速翻页/搜索时旧响应晚到覆盖新结果（乱序竞态）
   const listReqRef = useRef(0)
   const detailReqRef = useRef('')
+  const chapterReqRef = useRef('')
 
   const load = useCallback(async () => {
     const reqId = ++listReqRef.current
@@ -85,8 +86,16 @@ export function BooksPage() {
 
   // 搜索防抖：输入每键都直接请求会造成请求风暴，350ms 内停顿才真正触发查询
   const [qInput, setQInput] = useState('')
+  const qRef = useRef(q)
+  qRef.current = q
   useEffect(() => {
-    const t = setTimeout(() => { setQ(qInput); setPage(1) }, 350)
+    const t = setTimeout(() => {
+      // 仅当搜索词真正变化才重置页码：输入后又在 350ms 内删空（未提交）不应把页码弹回第 1 页
+      if (qInput !== qRef.current) {
+        setQ(qInput)
+        setPage(1)
+      }
+    }, 350)
     return () => clearTimeout(t)
   }, [qInput])
 
@@ -94,6 +103,7 @@ export function BooksPage() {
     detailReqRef.current = book.id
     setDetail(book)
     setChapters([])
+    setChapterQ('') // 切换书籍时清空上一本的章节筛选词，避免旧条件继续过滤新书目录
     try {
       const r = await api<{ chapters: ChapterRow[] }>(`/api/books/${book.id}/chapters?pageSize=500`)
       if (detailReqRef.current !== book.id) return
@@ -138,11 +148,16 @@ export function BooksPage() {
   }
 
   const openChapter = async (chapterId: string) => {
+    chapterReqRef.current = chapterId
     try {
       const r = await api<{ chapter: { title: string; content: string } }>(`/api/chapters/${chapterId}`)
+      // 竞态守卫：快速连点章节时晚到的旧响应不得覆盖/弹出新内容
+      if (chapterReqRef.current !== chapterId) return
       setChapterContent({ title: r.chapter.title, content: r.chapter.content || '（正文未采集或为空）' })
     } catch (e) {
-      toast({ title: '正文加载失败', description: e instanceof Error ? e.message : String(e), variant: 'destructive' })
+      if (chapterReqRef.current === chapterId) {
+        toast({ title: '正文加载失败', description: e instanceof Error ? e.message : String(e), variant: 'destructive' })
+      }
     }
   }
 
@@ -267,7 +282,7 @@ export function BooksPage() {
                 {detail.keywords && (
                   <div className="flex flex-wrap items-center gap-1.5">
                     <Tag className="h-3.5 w-3.5 text-muted-foreground" />
-                    {detail.keywords.split(',').filter(Boolean).map((k) => (
+                    {[...new Set(detail.keywords.split(',').filter(Boolean))].map((k) => (
                       <Badge key={k} variant="outline" className="text-[11px]">{k}</Badge>
                     ))}
                   </div>
@@ -275,7 +290,7 @@ export function BooksPage() {
                 {detail.suggestKeywords && (
                   <div className="flex flex-wrap items-center gap-1.5">
                     <Sparkles className="h-3.5 w-3.5 text-muted-foreground" />
-                    {detail.suggestKeywords.split(',').filter(Boolean).slice(0, 20).map((k) => (
+                    {[...new Set(detail.suggestKeywords.split(',').filter(Boolean))].slice(0, 20).map((k) => (
                       <Badge key={k} variant="secondary" className="text-[11px]">{k}</Badge>
                     ))}
                   </div>
@@ -330,7 +345,7 @@ export function BooksPage() {
       </Dialog>
 
       {/* 章节正文 */}
-      <Dialog open={!!chapterContent} onOpenChange={(open) => !open && setChapterContent(null)}>
+      <Dialog open={!!chapterContent} onOpenChange={(open) => { if (!open) { chapterReqRef.current = ''; setChapterContent(null) } }}>
         <DialogContent className="max-h-[85vh] sm:max-w-xl">
           <DialogHeader>
             <DialogTitle>{chapterContent?.title}</DialogTitle>

@@ -113,6 +113,13 @@ export interface BookRuleConfig extends FetchConfig {
   fetchSuggest?: boolean // 抓取多搜索引擎下拉词
   downloadCover?: boolean // 下载封面为 webp
   extraAdPatterns?: string[] // 简介附加广告正则（模板方言：转义残留、推广句等）
+  /**
+   * 标题规整（保守行尾剥离，默认开启）：部分站点把「作者：xxx」/章节范围
+   * 拼进书名（如「快穿：万人迷宿主又美又撩 作者：甜姜茶」「书名1-202」），
+   * 同时 author 字段错抓为上传者名。规整后标题用于唯一键/智能分类/下拉词，
+   * 提取到的作者在 author 字段为空或可疑时回填。按规则置 enabled:false 可整体关闭。
+   */
+  titleNormalize?: TitleNormalizeConfig
 }
 
 /** 章节目录页规则 */
@@ -212,4 +219,82 @@ export function mergeDownload(raw?: string | null): DownloadConfig {
   } catch {
     return { ...DEFAULT_DOWNLOAD }
   }
+}
+
+// ---------- 书籍标题规整（采集管线 collectBookInfo 与规则测试引擎 testBook 共用） ----------
+
+/**
+ * 标题规整配置（挂在 BookRuleConfig，按规则可关）。
+ * 全部规则均为「行尾强特征」保守剥离：不匹配时原样返回，绝不改动标题主体。
+ */
+export interface TitleNormalizeConfig {
+  /** 总开关（默认 true） */
+  enabled?: boolean
+  /** 从标题末尾「作者：xxx」后缀提取作者并回填 author（默认 true） */
+  extractAuthor?: boolean
+  /** 剥离标题末尾章节范围数字，如「书名1-202」「书名 第1-202章」（默认 true） */
+  trimChapterRange?: boolean
+}
+
+export interface NormalizedBookMeta {
+  title: string
+  author: string
+  /** 作者是否由标题后缀回填而来（即原 author 字段被替换） */
+  authorFromTitle: boolean
+  /** 标题或作者是否被改动 */
+  changed: boolean
+}
+
+/**
+ * 「作者：xxx」仅允许出现在标题末尾，且其前必须是空白或收束符号
+ * （防「网文作者：从写毒点开始」类把正文书名中的「作者：」误当后缀剥离）。
+ * 捕获组 1 = 前置边界字符（收束符号需拼回保持《》配对，空白则丢弃），2 = 作者名。
+ */
+const TITLE_AUTHOR_SUFFIX_RE = /(?:^|([\s　》」』】）)]))作者[：:][ \t]*([^\s　]{1,20})[ \t]*$/
+/**
+ * 章节范围：第?A[分隔符]B(章|节)?，分隔符限 - ~ ～ — 至。
+ * 守卫：A∈[1,99] 且 B>A（排除「2018-2020」式年份区间）、各限 4 位数字、剥离后标题 ≥2 字。
+ */
+const TITLE_CHAPTER_RANGE_RE = /第?[ \t　]*([0-9]{1,4})[ \t　]*[-~～—至][ \t　]*([0-9]{1,4})[ \t　]*(?:[章节][ \t　]*)?$/
+
+/**
+ * 书籍标题/作者规整：从标题末尾「作者：xxx」后缀提取作者并回填、剥离尾部章节范围数字。
+ * 纯函数、无副作用；不匹配任何模式时原样返回（changed=false）。
+ */
+export function normalizeBookMeta(title: string, author: string, cfg?: TitleNormalizeConfig): NormalizedBookMeta {
+  if (!title || cfg?.enabled === false) return { title, author, authorFromTitle: false, changed: false }
+  let t = title
+  let a = author
+  let authorFromTitle = false
+
+  if (cfg?.extractAuthor !== false) {
+    const m = TITLE_AUTHOR_SUFFIX_RE.exec(t)
+    if (m) {
+      // 收束符号（如《书名》的「》」）拼回保持配对；空白边界随后 trim 丢弃
+      const head = (t.slice(0, m.index) + (m[1] ?? '')).trim()
+      const name = m[2]
+      // 保守守卫：剥离后正文标题 ≥2 字；作者名非纯数字
+      if (head.length >= 2 && !/^[0-9０-９]+$/.test(name)) {
+        t = head
+        if (name !== a) {
+          a = name
+          authorFromTitle = true
+        }
+      }
+    }
+  }
+
+  if (cfg?.trimChapterRange !== false) {
+    const m = TITLE_CHAPTER_RANGE_RE.exec(t)
+    if (m) {
+      const from = parseInt(m[1], 10)
+      const to = parseInt(m[2], 10)
+      const head = t.slice(0, m.index).trim()
+      if (head.length >= 2 && from >= 1 && from <= 99 && to > from && to <= 9999) {
+        t = head
+      }
+    }
+  }
+
+  return { title: t, author: a, authorFromTitle, changed: t !== title || a !== author }
 }

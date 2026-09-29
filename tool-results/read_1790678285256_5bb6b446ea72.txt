@@ -1,0 +1,742 @@
+     1→'use client'
+     2→
+     3→import { useState } from 'react'
+     4→import type { ReactElement } from 'react'
+     5→import {
+     6→  ArrowLeft,
+     7→  ArrowRight,
+     8→  BookOpen,
+     9→  ChevronRight,
+    10→  Clock,
+    11→  Feather,
+    12→  List,
+    13→  Tag,
+    14→  User,
+    15→} from 'lucide-react'
+    16→import type { BookCard, ChapterItem, SiteMeta, SiteView, ThemeProps } from '@/lib/theme-types'
+    17→
+    18→type Nav = (v: SiteView) => void
+    19→
+    20→/* ================= 封面（含占位） ================= */
+    21→
+    22→function Cover({
+    23→  book,
+    24→  className,
+    25→}: {
+    26→  book: Pick<BookCard, 'title' | 'coverUrl'>
+    27→  className: string
+    28→}) {
+    29→  if (book.coverUrl) {
+    30→    return (
+    31→      <img
+    32→        src={book.coverUrl}
+    33→        alt={`《${book.title}》封面`}
+    34→        className={`${className} shrink-0 rounded-sm border border-amber-200/80 object-cover shadow-sm`}
+    35→      />
+    36→    )
+    37→  }
+    38→  return (
+    39→    <div
+    40→      className={`${className} flex shrink-0 items-center justify-center rounded-sm border border-amber-300/70 bg-gradient-to-br from-amber-50 via-amber-100 to-amber-200 font-serif text-2xl font-bold text-amber-800 shadow-sm`}
+    41→    >
+    42→      {book.title.charAt(0) || '书'}
+    43→    </div>
+    44→  )
+    45→}
+    46→
+    47→/* ================= 页头 / 页脚 / 面包屑 ================= */
+    48→
+    49→function Header({ site, onNavigate }: { site: SiteMeta; onNavigate: Nav }) {
+    50→  return (
+    51→    <header className="border-b-2 border-amber-700/50 bg-amber-50/80">
+    52→      <div className="mx-auto flex max-w-5xl flex-col gap-1 px-4 py-2 sm:flex-row sm:items-center sm:justify-between">
+    53→        <button
+    54→          type="button"
+    55→          onClick={() => onNavigate({ type: 'home' })}
+    56→          className="flex min-h-[44px] items-center gap-2 self-start font-serif text-2xl font-bold tracking-wide text-stone-800 transition-colors hover:text-amber-800"
+    57→        >
+    58→          <Feather className="h-6 w-6 text-amber-700" aria-hidden="true" />
+    59→          {site.siteName}
+    60→        </button>
+    61→        <nav aria-label="主导航" className="flex items-center font-serif text-sm text-stone-600">
+    62→          <button
+    63→            type="button"
+    64→            onClick={() => onNavigate({ type: 'home' })}
+    65→            className="min-h-[44px] px-3 transition-colors hover:text-amber-800"
+    66→          >
+    67→            首页
+    68→          </button>
+    69→          <span className="text-amber-300" aria-hidden="true">｜</span>
+    70→          {site.mainBookId ? (
+    71→            <button
+    72→              type="button"
+    73→              onClick={() => onNavigate({ type: 'book', bookId: site.mainBookId })}
+    74→              className="min-h-[44px] px-3 transition-colors hover:text-amber-800"
+    75→            >
+    76→              主推书籍
+    77→            </button>
+    78→          ) : null}
+    79→          <span className="hidden font-serif text-xs text-stone-400 sm:inline sm:px-3">
+    80→            {site.domain}
+    81→          </span>
+    82→        </nav>
+    83→      </div>
+    84→    </header>
+    85→  )
+    86→}
+    87→
+    88→function Footer({ site }: { site: SiteMeta }) {
+    89→  return (
+    90→    <footer className="mt-14 border-t border-amber-200 bg-amber-100/50 py-8 text-center">
+    91→      <p className="font-serif text-sm text-stone-600">
+    92→        {site.footerText || `${site.siteName} · ${site.domain}`}
+    93→      </p>
+    94→      <p className="mt-2 font-serif text-xs text-stone-400">{site.title}</p>
+    95→    </footer>
+    96→  )
+    97→}
+    98→
+    99→function Breadcrumb({ items }: { items: { label: string; onSelect?: () => void }[] }) {
+   100→  return (
+   101→    <nav
+   102→      aria-label="面包屑"
+   103→      className="flex flex-wrap items-center gap-0.5 py-3 font-serif text-sm text-stone-500"
+   104→    >
+   105→      {items.map((item, index) => (
+   106→        <span key={`${item.label}-${index}`} className="flex items-center gap-0.5">
+   107→          {index > 0 && <ChevronRight className="h-3.5 w-3.5 text-amber-400" aria-hidden="true" />}
+   108→          {item.onSelect ? (
+   109→            <button
+   110→              type="button"
+   111→              onClick={item.onSelect}
+   112→              className="inline-flex min-h-[44px] items-center px-1 underline-offset-4 transition-colors hover:text-amber-800 hover:underline"
+   113→            >
+   114→              {item.label}
+   115→            </button>
+   116→          ) : (
+   117→            <span className="inline-flex min-h-[44px] items-center px-1 text-stone-700">
+   118→              {item.label}
+   119→            </span>
+   120→          )}
+   121→        </span>
+   122→      ))}
+   123→    </nav>
+   124→  )
+   125→}
+   126→
+   127→/* ================= 骨架屏 ================= */
+   128→
+   129→function ListSkeleton({ rows = 5 }: { rows?: number }) {
+   130→  return (
+   131→    <ul className="divide-y divide-amber-100" aria-hidden="true">
+   132→      {Array.from({ length: rows }).map((_, i) => (
+   133→        <li key={i} className="flex gap-4 py-5 sm:gap-5">
+   134→          <div className="h-32 w-24 animate-pulse rounded-sm bg-amber-200/60" />
+   135→          <div className="flex-1 space-y-3 py-1">
+   136→            <div className="h-5 w-1/3 animate-pulse rounded bg-amber-200/60" />
+   137→            <div className="h-4 w-1/4 animate-pulse rounded bg-amber-100" />
+   138→            <div className="h-4 w-full animate-pulse rounded bg-amber-100" />
+   139→            <div className="h-4 w-2/3 animate-pulse rounded bg-amber-100" />
+   140→          </div>
+   141→        </li>
+   142→      ))}
+   143→    </ul>
+   144→  )
+   145→}
+   146→
+   147→function BookSkeleton() {
+   148→  return (
+   149→    <div className="mt-2 flex flex-col gap-6 md:flex-row md:gap-10" aria-hidden="true">
+   150→      <div className="h-60 w-44 animate-pulse self-center rounded-sm bg-amber-200/60 md:self-start" />
+   151→      <div className="flex-1 space-y-4 py-2">
+   152→        <div className="h-8 w-1/2 animate-pulse rounded bg-amber-200/60" />
+   153→        <div className="h-4 w-2/3 animate-pulse rounded bg-amber-100" />
+   154→        <div className="h-4 w-full animate-pulse rounded bg-amber-100" />
+   155→        <div className="h-4 w-5/6 animate-pulse rounded bg-amber-100" />
+   156→        <div className="h-4 w-1/3 animate-pulse rounded bg-amber-100" />
+   157→      </div>
+   158→    </div>
+   159→  )
+   160→}
+   161→
+   162→function ChapterSkeleton() {
+   163→  return (
+   164→    <div className="mx-auto mt-4 max-w-3xl space-y-5" aria-hidden="true">
+   165→      <div className="mx-auto h-8 w-2/3 animate-pulse rounded bg-amber-200/60" />
+   166→      <div className="mx-auto h-4 w-1/4 animate-pulse rounded bg-amber-100" />
+   167→      {Array.from({ length: 8 }).map((_, i) => (
+   168→        <div
+   169→          key={i}
+   170→          className={`h-4 animate-pulse rounded bg-amber-100 ${i % 3 === 2 ? 'w-2/3' : 'w-full'}`}
+   171→        />
+   172→      ))}
+   173→    </div>
+   174→  )
+   175→}
+   176→
+   177→/* ================= 书籍行（home / keyword 复用） ================= */
+   178→
+   179→function BookRow({ book, onNavigate }: { book: BookCard; onNavigate: Nav }) {
+   180→  return (
+   181→    <li>
+   182→      <button
+   183→        type="button"
+   184→        onClick={() => onNavigate({ type: 'book', bookId: book.id })}
+   185→        className="group flex w-full items-start gap-4 py-5 text-left transition-colors hover:bg-amber-100/40 sm:gap-5"
+   186→      >
+   187→        <Cover book={book} className="h-32 w-24" />
+   188→        <span className="min-w-0 flex-1">
+   189→          <span className="block truncate font-serif text-lg font-bold text-stone-800 transition-colors group-hover:text-amber-900">
+   190→            {book.title}
+   191→          </span>
+   192→          <span className="mt-1.5 flex flex-wrap items-center gap-x-4 gap-y-1 text-xs text-stone-500">
+   193→            <span className="flex items-center gap-1">
+   194→              <User className="h-3.5 w-3.5 text-amber-700" aria-hidden="true" />
+   195→              {book.author}
+   196→            </span>
+   197→            <span className="flex items-center gap-1">
+   198→              <Tag className="h-3.5 w-3.5 text-amber-700" aria-hidden="true" />
+   199→              {book.category}
+   200→            </span>
+   201→            <span className="flex items-center gap-1">
+   202→              <BookOpen className="h-3.5 w-3.5 text-amber-700" aria-hidden="true" />
+   203→              {book.totalChapters} 章 · {book.status}
+   204→            </span>
+   205→          </span>
+   206→          <span className="mt-2 line-clamp-2 block font-serif text-sm leading-relaxed text-stone-500">
+   207→            {book.intro}
+   208→          </span>
+   209→          <span className="mt-1.5 flex items-center gap-1 font-serif text-xs text-amber-700">
+   210→            <Clock className="h-3.5 w-3.5" aria-hidden="true" />
+   211→            最新：{book.latestChapter}
+   212→          </span>
+   213→        </span>
+   214→      </button>
+   215→    </li>
+   216→  )
+   217→}
+   218→
+   219→/* ================= 章节行（toc / book 复用） ================= */
+   220→
+   221→function ChapterLine({
+   222→  chapter,
+   223→  onNavigate,
+   224→}: {
+   225→  chapter: ChapterItem
+   226→  onNavigate: Nav
+   227→}) {
+   228→  return (
+   229→    <li className="border-b border-amber-100">
+   230→      <button
+   231→        type="button"
+   232→        onClick={() => onNavigate({ type: 'chapter', chapterId: chapter.id })}
+   233→        className="flex min-h-[44px] w-full items-center gap-3 px-4 text-left font-serif text-sm text-stone-700 transition-colors hover:bg-amber-100/70 hover:text-amber-900"
+   234→      >
+   235→        <span className="w-7 shrink-0 text-xs text-amber-700">
+   236→          {String(chapter.order).padStart(2, '0')}
+   237→        </span>
+   238→        <span className="min-w-0 flex-1 truncate">{chapter.title}</span>
+   239→      </button>
+   240→    </li>
+   241→  )
+   242→}
+   243→
+   244→/* ================= Home ================= */
+   245→
+   246→function ClassicHome({ site, data, loading, onNavigate }: ThemeProps) {
+   247→  const [category, setCategory] = useState('全部')
+   248→  const books = data.books ?? []
+   249→  const categories = ['全部', ...(data.categories ?? [])]
+   250→  const filtered = category === '全部' ? books : books.filter((b) => b.category === category)
+   251→
+   252→  return (
+   253→    <div className="flex min-h-screen flex-col bg-amber-50 text-stone-800">
+   254→      <Header site={site} onNavigate={onNavigate} />
+   255→      <main className="mx-auto w-full max-w-5xl flex-1 px-4">
+   256→        <section className="py-10 text-center">
+   257→          <h1 className="font-serif text-3xl font-bold tracking-wide text-stone-800 sm:text-4xl">
+   258→            {site.title || site.siteName}
+   259→          </h1>
+   260→          {site.description ? (
+   261→            <p className="mx-auto mt-4 max-w-2xl font-serif leading-loose text-stone-500">
+   262→              {site.description}
+   263→            </p>
+   264→          ) : null}
+   265→          <div className="mt-6 flex items-center justify-center gap-3" aria-hidden="true">
+   266→            <span className="h-px w-20 bg-gradient-to-r from-transparent to-amber-400" />
+   267→            <BookOpen className="h-4 w-4 text-amber-700" />
+   268→            <span className="h-px w-20 bg-gradient-to-l from-transparent to-amber-400" />
+   269→          </div>
+   270→        </section>
+   271→
+   272→        <nav
+   273→          aria-label="分类筛选"
+   274→          className="flex flex-wrap items-center gap-2 border-y border-amber-200 py-3"
+   275→        >
+   276→          {categories.map((c) => (
+   277→            <button
+   278→              key={c}
+   279→              type="button"
+   280→              onClick={() => setCategory(c)}
+   281→              className={`min-h-[44px] rounded-sm px-4 font-serif text-sm transition-colors ${
+   282→                category === c
+   283→                  ? 'bg-amber-800 text-amber-50 shadow-sm'
+   284→                  : 'bg-amber-100/80 text-stone-600 hover:bg-amber-200/80'
+   285→              }`}
+   286→            >
+   287→              {c}
+   288→            </button>
+   289→          ))}
+   290→        </nav>
+   291→
+   292→        <section aria-label="书籍列表" className="pb-4">
+   293→          {loading ? (
+   294→            <ListSkeleton />
+   295→          ) : filtered.length === 0 ? (
+   296→            <p className="py-20 text-center font-serif text-stone-500">书架空空，暂无收录书籍。</p>
+   297→          ) : (
+   298→            <ul className="divide-y divide-amber-100">
+   299→              {filtered.map((book) => (
+   300→                <BookRow key={book.id} book={book} onNavigate={onNavigate} />
+   301→              ))}
+   302→            </ul>
+   303→          )}
+   304→        </section>
+   305→      </main>
+   306→      <Footer site={site} />
+   307→    </div>
+   308→  )
+   309→}
+   310→
+   311→/* ================= Book ================= */
+   312→
+   313→function ClassicBook({ site, data, loading, onNavigate }: ThemeProps) {
+   314→  const book = data.book
+   315→
+   316→  return (
+   317→    <div className="flex min-h-screen flex-col bg-amber-50 text-stone-800">
+   318→      <Header site={site} onNavigate={onNavigate} />
+   319→      <main className="mx-auto w-full max-w-5xl flex-1 px-4">
+   320→        <Breadcrumb
+   321→          items={[
+   322→            { label: '首页', onSelect: () => onNavigate({ type: 'home' }) },
+   323→            { label: book?.title ?? (loading ? '加载中' : '书籍详情') },
+   324→          ]}
+   325→        />
+   326→
+   327→        {loading ? (
+   328→          <BookSkeleton />
+   329→        ) : !book ? (
+   330→          <div className="py-24 text-center">
+   331→            <p className="font-serif text-lg text-stone-500">未找到该书籍，可能已被移除。</p>
+   332→            <button
+   333→              type="button"
+   334→              onClick={() => onNavigate({ type: 'home' })}
+   335→              className="mt-6 min-h-[44px] rounded-sm bg-amber-800 px-6 font-serif text-sm text-amber-50 transition-colors hover:bg-amber-900"
+   336→            >
+   337→              返回首页
+   338→            </button>
+   339→          </div>
+   340→        ) : (
+   341→          <>
+   342→            <article className="mt-2 flex flex-col gap-6 md:flex-row md:gap-10">
+   343→              <Cover book={book} className="h-60 w-44 self-center md:self-start" />
+   344→              <div className="min-w-0 flex-1">
+   345→                <h1 className="font-serif text-3xl font-bold text-stone-900">{book.title}</h1>
+   346→                <div className="mt-4 flex flex-wrap items-center gap-x-5 gap-y-2 text-sm text-stone-600">
+   347→                  <span className="flex items-center gap-1.5">
+   348→                    <User className="h-4 w-4 text-amber-700" aria-hidden="true" />
+   349→                    {book.author}
+   350→                  </span>
+   351→                  <span className="flex items-center gap-1.5">
+   352→                    <Tag className="h-4 w-4 text-amber-700" aria-hidden="true" />
+   353→                    {book.category}
+   354→                  </span>
+   355→                  <span className="flex items-center gap-1.5">
+   356→                    <BookOpen className="h-4 w-4 text-amber-700" aria-hidden="true" />
+   357→                    共 {book.totalChapters} 章
+   358→                  </span>
+   359→                  <span className="flex items-center gap-1.5">
+   360→                    <Clock className="h-4 w-4 text-amber-700" aria-hidden="true" />
+   361→                    更新：{book.updatedAt}
+   362→                  </span>
+   363→                  <span className="rounded-sm border border-amber-700 px-2 py-0.5 font-serif text-xs text-amber-800">
+   364→                    {book.status}
+   365→                  </span>
+   366→                </div>
+   367→                <p className="mt-5 font-serif leading-loose text-stone-600">{book.intro}</p>
+   368→                <div className="mt-6 flex flex-wrap gap-3">
+   369→                  <button
+   370→                    type="button"
+   371→                    disabled={!book.firstChapterId}
+   372→                    onClick={() => {
+   373→                      if (book.firstChapterId) onNavigate({ type: 'chapter', chapterId: book.firstChapterId })
+   374→                    }}
+   375→                    className="flex min-h-[44px] items-center gap-2 rounded-sm bg-amber-800 px-6 font-serif text-sm text-amber-50 transition-colors hover:bg-amber-900 disabled:cursor-not-allowed disabled:opacity-40"
+   376→                  >
+   377→                    <BookOpen className="h-4 w-4" aria-hidden="true" />
+   378→                    开始阅读
+   379→                  </button>
+   380→                  <button
+   381→                    type="button"
+   382→                    onClick={() => onNavigate({ type: 'toc', bookId: book.id })}
+   383→                    className="flex min-h-[44px] items-center gap-2 rounded-sm border border-amber-700 bg-amber-50 px-6 font-serif text-sm text-amber-900 transition-colors hover:bg-amber-100"
+   384→                  >
+   385→                    <List className="h-4 w-4" aria-hidden="true" />
+   386→                    查看全部 {book.totalChapters} 章目录
+   387→                  </button>
+   388→                </div>
+   389→                {book.keywords.length + book.suggestKeywords.length > 0 && (
+   390→                  <div className="mt-5 flex flex-wrap gap-2">
+   391→                    {Array.from(new Set([...book.keywords, ...book.suggestKeywords])).map((kw) => (
+   392→                      <button
+   393→                        key={kw}
+   394→                        type="button"
+   395→                        onClick={() => onNavigate({ type: 'keyword', keyword: kw })}
+   396→                        className="min-h-[44px] rounded-sm bg-amber-100/90 px-3 py-1 font-serif text-sm text-amber-900 transition-colors hover:bg-amber-200"
+   397→                      >
+   398→                        {kw}
+   399→                      </button>
+   400→                    ))}
+   401→                  </div>
+   402→                )}
+   403→              </div>
+   404→            </article>
+   405→
+   406→            <section aria-label="最新更新" className="mt-10">
+   407→              <div className="flex items-center justify-between border-b-2 border-amber-700/50 pb-3">
+   408→                <h2 className="flex items-center gap-2 font-serif text-xl font-bold text-stone-800">
+   409→                  <Clock className="h-5 w-5 text-amber-700" aria-hidden="true" />
+   410→                  最新更新
+   411→                  <span className="ml-1 font-serif text-sm font-normal text-stone-400">
+   412→                    最近 {book.chapters.length} 章 / 共 {book.totalChapters} 章
+   413→                  </span>
+   414→                </h2>
+   415→                <button
+   416→                  type="button"
+   417→                  onClick={() => onNavigate({ type: 'toc', bookId: book.id })}
+   418→                  className="min-h-[44px] rounded-sm border border-amber-300 bg-amber-50 px-4 font-serif text-sm text-amber-900 transition-colors hover:bg-amber-100"
+   419→                >
+   420→                  完整目录 →
+   421→                </button>
+   422→              </div>
+   423→              {book.chapters.length === 0 ? (
+   424→                <p className="py-10 text-center font-serif text-stone-400">暂无章节。</p>
+   425→              ) : (
+   426→                <ul className="grid grid-cols-1 border-x border-b border-amber-200 md:grid-cols-2">
+   427→                  {book.chapters.map((ch) => (
+   428→                    <ChapterLine key={ch.id} chapter={ch} onNavigate={onNavigate} />
+   429→                  ))}
+   430→                </ul>
+   431→              )}
+   432→            </section>
+   433→          </>
+   434→        )}
+   435→      </main>
+   436→      <Footer site={site} />
+   437→    </div>
+   438→  )
+   439→}
+   440→
+   441→/* ================= Toc（完整章节目录页） ================= */
+   442→
+   443→const TOC_PAGE_SIZE = 100
+   444→
+   445→function ClassicToc({ site, data, loading, onNavigate }: ThemeProps) {
+   446→  const [page, setPage] = useState(1)
+   447→  const book = data.book
+   448→  const chapters = book?.chapters ?? []
+   449→  const totalPages = Math.max(1, Math.ceil(chapters.length / TOC_PAGE_SIZE))
+   450→  const safePage = Math.min(page, totalPages)
+   451→  const visible = chapters.slice((safePage - 1) * TOC_PAGE_SIZE, safePage * TOC_PAGE_SIZE)
+   452→
+   453→  return (
+   454→    <div className="flex min-h-screen flex-col bg-amber-50 text-stone-800">
+   455→      <Header site={site} onNavigate={onNavigate} />
+   456→      <main className="mx-auto w-full max-w-5xl flex-1 px-4">
+   457→        <Breadcrumb
+   458→          items={[
+   459→            { label: '首页', onSelect: () => onNavigate({ type: 'home' }) },
+   460→            {
+   461→              label: book?.title ?? '书籍',
+   462→              onSelect: book ? () => onNavigate({ type: 'book', bookId: book.id }) : undefined,
+   463→            },
+   464→            { label: '章节目录' },
+   465→          ]}
+   466→        />
+   467→
+   468→        {loading ? (
+   469→          <BookSkeleton />
+   470→        ) : !book ? (
+   471→          <div className="py-24 text-center">
+   472→            <p className="font-serif text-lg text-stone-500">未找到该书籍，可能已被移除。</p>
+   473→            <button
+   474→              type="button"
+   475→              onClick={() => onNavigate({ type: 'home' })}
+   476→              className="mt-6 min-h-[44px] rounded-sm bg-amber-800 px-6 font-serif text-sm text-amber-50 transition-colors hover:bg-amber-900"
+   477→            >
+   478→              返回首页
+   479→            </button>
+   480→          </div>
+   481→        ) : (
+   482→          <>
+   483→            <div className="flex flex-wrap items-end justify-between gap-3">
+   484→              <h1 className="font-serif text-2xl font-bold text-stone-900">
+   485→                {book.title}
+   486→                <span className="ml-3 text-base font-normal text-stone-400">章节目录</span>
+   487→              </h1>
+   488→              <p className="font-serif text-sm text-stone-500">
+   489→                {book.author} · 共 {book.totalChapters} 章
+   490→              </p>
+   491→            </div>
+   492→
+   493→            <nav
+   494→              aria-label="目录分页"
+   495→              className="mt-4 flex flex-wrap items-center gap-2 border-y border-amber-200 py-3"
+   496→            >
+   497→              <button
+   498→                type="button"
+   499→                disabled={safePage <= 1}
+   500→                onClick={() => setPage((p) => Math.max(1, p - 1))}
+   501→                className="min-h-[36px] rounded-sm border border-amber-300 bg-amber-50 px-3 font-serif text-sm text-amber-900 transition-colors hover:bg-amber-100 disabled:cursor-not-allowed disabled:opacity-40"
+   502→              >
+   503→                上一页
+   504→              </button>
+   505→              <span className="font-serif text-sm text-stone-500">
+   506→                第 {safePage} / {totalPages} 页
+   507→              </span>
+   508→              <button
+   509→                type="button"
+   510→                disabled={safePage >= totalPages}
+   511→                onClick={() => setPage((p) => Math.min(totalPages, p + 1))}
+   512→                className="min-h-[36px] rounded-sm border border-amber-300 bg-amber-50 px-3 font-serif text-sm text-amber-900 transition-colors hover:bg-amber-100 disabled:cursor-not-allowed disabled:opacity-40"
+   513→              >
+   514→                下一页
+   515→              </button>
+   516→            </nav>
+   517→
+   518→            {visible.length === 0 ? (
+   519→              <p className="py-10 text-center font-serif text-stone-400">暂无章节。</p>
+   520→            ) : (
+   521→              <ul className="grid grid-cols-1 border-x border-b border-amber-200 md:grid-cols-2">
+   522→                {visible.map((ch) => (
+   523→                  <ChapterLine key={ch.id} chapter={ch} onNavigate={onNavigate} />
+   524→                ))}
+   525→              </ul>
+   526→            )}
+   527→          </>
+   528→        )}
+   529→      </main>
+   530→      <Footer site={site} />
+   531→    </div>
+   532→  )
+   533→}
+   534→
+   535→/* ================= Chapter ================= */
+   536→
+   537→function ClassicChapter({ site, data, loading, onNavigate }: ThemeProps) {
+   538→  const chapter = data.chapter
+   539→  const paragraphs = chapter
+   540→    ? chapter.content
+   541→        .split('\n')
+   542→        .map((p) => p.trim())
+   543→        .filter(Boolean)
+   544→    : []
+   545→
+   546→  return (
+   547→    <div className="flex min-h-screen flex-col bg-amber-50 text-stone-800">
+   548→      <Header site={site} onNavigate={onNavigate} />
+   549→      <main className="mx-auto w-full max-w-3xl flex-1 px-4">
+   550→        <Breadcrumb
+   551→          items={[
+   552→            { label: '首页', onSelect: () => onNavigate({ type: 'home' }) },
+   553→            {
+   554→              label: chapter?.bookTitle ?? '书籍',
+   555→              onSelect: chapter
+   556→                ? () => onNavigate({ type: 'book', bookId: chapter.bookId })
+   557→                : undefined,
+   558→            },
+   559→            { label: chapter?.title ?? '正文' },
+   560→          ]}
+   561→        />
+   562→
+   563→        {loading ? (
+   564→          <ChapterSkeleton />
+   565→        ) : !chapter ? (
+   566→          <div className="py-24 text-center">
+   567→            <p className="font-serif text-lg text-stone-500">未找到该章节内容。</p>
+   568→            <button
+   569→              type="button"
+   570→              onClick={() => onNavigate({ type: 'home' })}
+   571→              className="mt-6 min-h-[44px] rounded-sm bg-amber-800 px-6 font-serif text-sm text-amber-50 transition-colors hover:bg-amber-900"
+   572→            >
+   573→              返回首页
+   574→            </button>
+   575→          </div>
+   576→        ) : (
+   577→          <article className="pb-6">
+   578→            <h1 className="text-center font-serif text-2xl font-bold text-stone-900 sm:text-3xl">
+   579→              {chapter.title}
+   580→            </h1>
+   581→            <p className="mt-3 text-center font-serif text-sm text-stone-500">
+   582→              《{chapter.bookTitle}》· 第 {chapter.order} 章
+   583→            </p>
+   584→            <div className="mb-2 mx-auto mt-8 flex items-center gap-3" aria-hidden="true">
+   585→              <span className="h-px flex-1 bg-amber-200" />
+   586→              <BookOpen className="h-4 w-4 text-amber-600" />
+   587→              <span className="h-px flex-1 bg-amber-200" />
+   588→            </div>
+   589→            <div className="space-y-6 py-4 font-serif text-lg leading-loose text-stone-800">
+   590→              {paragraphs.map((p, i) => (
+   591→                <p key={i}>{p}</p>
+   592→              ))}
+   593→            </div>
+   594→            <nav
+   595→              aria-label="章节导航"
+   596→              className="mt-8 flex flex-col items-stretch justify-center gap-3 border-t border-amber-200 pt-6 sm:flex-row"
+   597→            >
+   598→              <button
+   599→                type="button"
+   600→                disabled={!chapter.prevId}
+   601→                onClick={() => {
+   602→                  if (chapter.prevId) onNavigate({ type: 'chapter', chapterId: chapter.prevId })
+   603→                }}
+   604→                className="flex min-h-[44px] items-center justify-center gap-2 rounded-sm border border-amber-300 bg-amber-50 px-6 font-serif text-sm text-amber-900 transition-colors hover:bg-amber-100 disabled:cursor-not-allowed disabled:opacity-40"
+   605→              >
+   606→                <ArrowLeft className="h-4 w-4" aria-hidden="true" />
+   607→                上一章
+   608→              </button>
+   609→              <button
+   610→                type="button"
+   611→                onClick={() => onNavigate({ type: 'toc', bookId: chapter.bookId })}
+   612→                className="flex min-h-[44px] items-center justify-center gap-2 rounded-sm bg-amber-800 px-6 font-serif text-sm text-amber-50 transition-colors hover:bg-amber-900"
+   613→              >
+   614→                <List className="h-4 w-4" aria-hidden="true" />
+   615→                返回目录
+   616→              </button>
+   617→              <button
+   618→                type="button"
+   619→                disabled={!chapter.nextId}
+   620→                onClick={() => {
+   621→                  if (chapter.nextId) onNavigate({ type: 'chapter', chapterId: chapter.nextId })
+   622→                }}
+   623→                className="flex min-h-[44px] items-center justify-center gap-2 rounded-sm border border-amber-300 bg-amber-50 px-6 font-serif text-sm text-amber-900 transition-colors hover:bg-amber-100 disabled:cursor-not-allowed disabled:opacity-40"
+   624→              >
+   625→                下一章
+   626→                <ArrowRight className="h-4 w-4" aria-hidden="true" />
+   627→              </button>
+   628→            </nav>
+   629→          </article>
+   630→        )}
+   631→      </main>
+   632→      <Footer site={site} />
+   633→    </div>
+   634→  )
+   635→}
+   636→
+   637→/* ================= Keyword ================= */
+   638→
+   639→function ClassicKeyword({
+   640→  site,
+   641→  data,
+   642→  loading,
+   643→  onNavigate,
+   644→  keyword,
+   645→}: ThemeProps & { keyword: string }) {
+   646→  const books = data.keywordBooks ?? []
+   647→  const goMain = () =>
+   648→    onNavigate(site.mainBookId ? { type: 'book', bookId: site.mainBookId } : { type: 'home' })
+   649→  const relatedKeywords = Array.from(
+   650→    new Set(
+   651→      books
+   652→        .flatMap((b) => [...b.keywords, ...b.suggestKeywords])
+   653→        .filter((k) => k !== keyword),
+   654→    ),
+   655→  ).slice(0, 12)
+   656→
+   657→  return (
+   658→    <div className="flex min-h-screen flex-col bg-amber-50 text-stone-800">
+   659→      <Header site={site} onNavigate={onNavigate} />
+   660→      <main className="mx-auto w-full max-w-5xl flex-1 px-4">
+   661→        <Breadcrumb
+   662→          items={[
+   663→            { label: '首页', onSelect: () => onNavigate({ type: 'home' }) },
+   664→            { label: `关键词：${keyword}` },
+   665→          ]}
+   666→        />
+   667→
+   668→        {/* 最醒目的主书籍入口 */}
+   669→        <button
+   670→          type="button"
+   671→          onClick={goMain}
+   672→          className="flex min-h-[44px] w-full items-center justify-center gap-3 rounded-sm border-2 border-amber-800 bg-amber-800 px-6 py-4 font-serif text-base font-bold text-amber-50 shadow-sm transition-colors hover:bg-amber-900"
+   673→        >
+   674→          <BookOpen className="h-5 w-5" aria-hidden="true" />
+   675→          进入主书籍信息页
+   676→          <ArrowRight className="h-4 w-4" aria-hidden="true" />
+   677→        </button>
+   678→
+   679→        <section className="py-10 text-center">
+   680→          <h1 className="font-serif text-3xl font-bold text-stone-900 sm:text-4xl">{keyword}</h1>
+   681→          <p className="mt-3 font-serif text-stone-500">与《{keyword}》相关的书籍与内容</p>
+   682→        </section>
+   683→
+   684→        {loading ? (
+   685→          <ListSkeleton rows={3} />
+   686→        ) : books.length === 0 ? (
+   687→          <p className="py-16 text-center font-serif text-stone-500">
+   688→            暂无与「{keyword}」相关的书籍。
+   689→          </p>
+   690→        ) : (
+   691→          <ul className="divide-y divide-amber-100">
+   692→            {books.map((book) => (
+   693→              <BookRow key={book.id} book={book} onNavigate={onNavigate} />
+   694→            ))}
+   695→          </ul>
+   696→        )}
+   697→
+   698→        {relatedKeywords.length > 0 && (
+   699→          <section aria-label="相关关键词" className="mt-10 border-t border-amber-200 py-6">
+   700→            <h2 className="font-serif text-sm text-stone-500">相关关键词</h2>
+   701→            <div className="mt-3 flex flex-wrap gap-2">
+   702→              {relatedKeywords.map((k) => (
+   703→                <button
+   704→                  key={k}
+   705→                  type="button"
+   706→                  onClick={() => onNavigate({ type: 'keyword', keyword: k })}
+   707→                  className="min-h-[44px] rounded-sm bg-amber-100/80 px-3 py-1 font-serif text-sm text-amber-900 transition-colors hover:bg-amber-200"
+   708→                >
+   709→                  {k}
+   710→                </button>
+   711→              ))}
+   712→            </div>
+   713→          </section>
+   714→        )}
+   715→      </main>
+   716→      <Footer site={site} />
+   717→    </div>
+   718→  )
+   719→}
+   720→
+   721→/* ================= 主组件 ================= */
+   722→
+   723→export function ThemeClassic(props: ThemeProps): ReactElement {
+   724→  const { view } = props
+   725→  switch (view.type) {
+   726→    case 'home':
+   727→      return <ClassicHome {...props} />
+   728→    case 'book':
+   729→      return <ClassicBook {...props} />
+   730→    case 'toc':
+   731→      return <ClassicToc {...props} />
+   732→    case 'chapter':
+   733→      return <ClassicChapter {...props} />
+   734→    case 'keyword':
+   735→      return <ClassicKeyword {...props} keyword={view.keyword} />
+   736→    default:
+   737→      return <ClassicHome {...props} />
+   738→  }
+   739→}
+   740→
+   741→export default ThemeClassic
+   742→

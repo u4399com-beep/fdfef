@@ -113,6 +113,8 @@ export function TasksPage() {
   const [logs, setLogs] = useState<LogRow[]>([])
   const [busyId, setBusyId] = useState<string | null>(null)
   const logsRef = useRef<HTMLDivElement>(null)
+  // 用户位于日志底部附近时才跟随自动滚动；上翻阅读历史时不再被轮询拽回底部
+  const logsStickRef = useRef(true)
   const lastLogAt = useRef<string>('')
   const seenLogIds = useRef<Set<string>>(new Set())
 
@@ -271,7 +273,9 @@ export function TasksPage() {
   }, [logsFor])
 
   useEffect(() => {
-    logsRef.current?.scrollTo({ top: logsRef.current.scrollHeight })
+    if (logsStickRef.current) {
+      logsRef.current?.scrollTo({ top: logsRef.current.scrollHeight })
+    }
   }, [logs])
 
   const runningCount = tasks.filter((t) => t.status === 'running' || t.status === 'paused').length
@@ -510,7 +514,15 @@ export function TasksPage() {
             </DialogTitle>
             <DialogDescription>实时滚动（每 2 秒增量拉取），最多保留最近 500 条。</DialogDescription>
           </DialogHeader>
-          <div ref={logsRef} className="max-h-[52vh] min-h-[240px] overflow-y-auto rounded-md border bg-zinc-950 p-3 font-mono text-[11px] leading-relaxed" data-testid="task-logs">
+          <div
+            ref={logsRef}
+            className="max-h-[52vh] min-h-[240px] overflow-y-auto rounded-md border bg-zinc-950 p-3 font-mono text-[11px] leading-relaxed"
+            data-testid="task-logs"
+            onScroll={(e) => {
+              const el = e.currentTarget
+              logsStickRef.current = el.scrollHeight - el.scrollTop - el.clientHeight < 48
+            }}
+          >
             {logs.length === 0 && <p className="text-zinc-500">暂无日志…</p>}
             {logs.map((log) => (
               <div key={log.id} className={`flex gap-2 py-0.5 ${LOG_COLOR[log.level] ?? ''}`}>

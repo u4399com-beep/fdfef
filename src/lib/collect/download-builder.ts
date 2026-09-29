@@ -1,5 +1,5 @@
 import { db } from '@/lib/db'
-import { mergeDownload } from '../collect-types'
+import { DEFAULT_DOWNLOAD, mergeDownload } from '../collect-types'
 import { readChapterTxt } from './storage'
 
 // ============================================================
@@ -16,7 +16,8 @@ const RARE_CHARS = '攴夂彐疒辶镸飠黾鼍齾龘靐齉爩鱻麤龗灪吁'
 /** 按配置混淆章节文本 */
 export function obfuscateText(text: string, cfg: { mode: string; rate: number }): string {
   if (!text) return text
-  const rate = Math.min(0.2, Math.max(0, cfg.rate))
+  // Number() 归一：字符串数字可识别，NaN/undefined 回退 0（同原 NaN 行为：不插入），Infinity 被钳到上限
+  const rate = Math.min(0.2, Math.max(0, Number(cfg.rate) || 0))
   if (rate <= 0) return text
 
   if (cfg.mode === 'zero-width') {
@@ -59,7 +60,8 @@ export function obfuscateText(text: string, cfg: { mode: string; rate: number })
 }
 
 function fillTemplate(tpl: string, siteName: string, domain: string): string {
-  return tpl.replaceAll('{siteName}', siteName).replaceAll('{domain}', domain)
+  // String() 归一：存储端配置若混入非字符串模板（数字等），replaceAll 直接 TypeError → 下载 500
+  return String(tpl ?? '').replaceAll('{siteName}', siteName).replaceAll('{domain}', domain)
 }
 
 export interface BuiltDownload {
@@ -91,7 +93,10 @@ export async function buildBookTxt(bookId: string, siteName?: string, domain?: s
     parts.push('—'.repeat(24))
   }
 
-  const adEvery = Math.max(1, cfg.adEveryNChapters)
+  // 广告间隔数字归一：存储端若被写入 NaN/非数字字符串，Math.max(1, NaN)=NaN 会使 (i+1)%NaN===0
+  // 恒为 false，已配置的广告静默失效——非法值回退默认间隔（同 mergeDownload 缺省键语义），0/负数仍钳为 1
+  const adEveryN = Number(cfg.adEveryNChapters)
+  const adEvery = Number.isFinite(adEveryN) ? Math.max(1, Math.floor(adEveryN)) : DEFAULT_DOWNLOAD.adEveryNChapters
   for (let i = 0; i < book.chapters.length; i++) {
     const ch = book.chapters[i]
     // 空白正文（纯换行/空格）也视为缺失：先尝试回退本地 txt，再兜底占位

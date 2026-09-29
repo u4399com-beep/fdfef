@@ -245,18 +245,37 @@ export function resolveUrl(href: string, baseUrl: string): string {
   }
 }
 
+/**
+ * 字符串级藏字预解码：把 kw-protect 标记（<span class="kw-protect"><i class="cr" data-cp="hex"></i>…）
+ * 在原始 HTML 上直接还原为真实字符，使 regex/xpath 模式（以原始字符串为源）也能拿到解码后的文本。
+ * 仅匹配 data-cp 标记模式，对无藏字的站点完全 no-op。
+ */
+export function decodeProtectedCharsStr(html: string): string {
+  return html.replace(/<i\s+class="cr"\s+data-cp="([0-9a-fA-F]+)"\s*><\/i>/g, (_m, cp: string) => {
+    const code = Number.parseInt(cp, 16)
+    if (!Number.isFinite(code) || code <= 0 || code >= 0x10ffff || (code >= 0xd800 && code <= 0xdfff)) return ''
+    try {
+      return String.fromCodePoint(code)
+    } catch {
+      return ''
+    }
+  }).replace(/<span class="kw-protect">([\s\S]*?)<\/span>/g, '$1')
+}
+
 /** 字段集合提取 */
 export function parseFields(
   html: string,
   fields: Record<string, FieldSelector | undefined>,
   baseUrl?: string
 ): Record<string, string> {
-  const $ = cheerio.load(html)
+  // 字符串级预解码：保证 regex/xpath 模式字段（源为原始字符串）同样能取到藏字真实字符
+  const decoded = decodeProtectedCharsStr(html)
+  const $ = cheerio.load(decoded)
   decodeProtectedChars($)
   const out: Record<string, string> = {}
   for (const [key, sel] of Object.entries(fields)) {
     if (!sel || !sel.expr) continue
-    const v = selectValue(html, sel, { $, baseUrl })
+    const v = selectValue(decoded, sel, { $, baseUrl })
     out[key] = typeof v === 'string' ? v : v[0] ?? ''
   }
   return out

@@ -1,0 +1,766 @@
+     1→'use client'
+     2→
+     3→import { useState } from 'react'
+     4→import type { ReactElement, ReactNode } from 'react'
+     5→import {
+     6→  ArrowLeft,
+     7→  ArrowRight,
+     8→  BookOpen,
+     9→  ChevronRight,
+    10→  Flame,
+    11→  List,
+    12→  Sparkles,
+    13→  User,
+    14→  Zap,
+    15→} from 'lucide-react'
+    16→import type { BookCard, ChapterItem, SiteMeta, SiteView, ThemeProps } from '@/lib/theme-types'
+    17→
+    18→type Nav = (v: SiteView) => void
+    19→
+    20→/* ================= 渐变常量（violet → fuchsia → orange） ================= */
+    21→
+    22→const GRAD_R = 'bg-gradient-to-r from-violet-500 via-fuchsia-500 to-orange-400'
+    23→const GRAD_BR = 'bg-gradient-to-br from-violet-500 via-fuchsia-500 to-orange-400'
+    24→const GRAD_TEXT = 'bg-gradient-to-r from-violet-400 via-fuchsia-400 to-orange-300 bg-clip-text text-transparent'
+    25→
+    26→/* ================= 外壳 ================= */
+    27→
+    28→function Shell({
+    29→  site,
+    30→  onNavigate,
+    31→  children,
+    32→}: {
+    33→  site: SiteMeta
+    34→  onNavigate: Nav
+    35→  children: ReactNode
+    36→}) {
+    37→  return (
+    38→    <div className="flex min-h-screen flex-col bg-[#18181b] text-zinc-100">
+    39→      <header className="sticky top-0 z-20 border-b border-white/10 bg-[#18181b]/90 backdrop-blur">
+    40→        <div className="mx-auto flex max-w-6xl items-center justify-between gap-4 px-4 py-3">
+    41→          <button
+    42→            type="button"
+    43→            onClick={() => onNavigate({ type: 'home' })}
+    44→            className="min-h-[44px] text-2xl font-black tracking-tight"
+    45→          >
+    46→            <span className={GRAD_TEXT}>{site.siteName}</span>
+    47→          </button>
+    48→          <nav aria-label="主导航" className="flex items-center gap-1 text-sm font-semibold text-zinc-400">
+    49→            <button
+    50→              type="button"
+    51→              onClick={() => onNavigate({ type: 'home' })}
+    52→              className="min-h-[44px] rounded-full px-4 transition-colors hover:bg-white/5 hover:text-white"
+    53→            >
+    54→              首页
+    55→            </button>
+    56→            {site.mainBookId ? (
+    57→              <button
+    58→                type="button"
+    59→                onClick={() => onNavigate({ type: 'book', bookId: site.mainBookId })}
+    60→                className="min-h-[44px] rounded-full px-4 transition-colors hover:bg-white/5 hover:text-white"
+    61→              >
+    62→                主推书籍
+    63→              </button>
+    64→            ) : null}
+    65→          </nav>
+    66→        </div>
+    67→        <div className={`h-0.5 w-full ${GRAD_R}`} aria-hidden="true" />
+    68→      </header>
+    69→      <main className="mx-auto w-full max-w-6xl flex-1 px-4">{children}</main>
+    70→      <footer className="mt-14 border-t border-white/10 py-8 text-center text-sm text-zinc-500">
+    71→        <p>{site.footerText || `${site.siteName} · ${site.domain}`}</p>
+    72→        <p className="mt-1.5 text-xs text-zinc-600">{site.title}</p>
+    73→      </footer>
+    74→    </div>
+    75→  )
+    76→}
+    77→
+    78→/* ================= 面包屑 ================= */
+    79→
+    80→function Crumbs({ trail }: { trail: { label: string; onSelect?: () => void }[] }) {
+    81→  return (
+    82→    <nav
+    83→      aria-label="面包屑"
+    84→      className="flex flex-wrap items-center gap-1 py-4 text-sm font-medium text-zinc-500"
+    85→    >
+    86→      {trail.map((item, index) => (
+    87→        <span key={`${item.label}-${index}`} className="flex items-center gap-1">
+    88→          {index > 0 && <ChevronRight className="h-4 w-4 text-zinc-700" aria-hidden="true" />}
+    89→          {item.onSelect ? (
+    90→            <button
+    91→              type="button"
+    92→              onClick={item.onSelect}
+    93→              className="inline-flex min-h-[44px] items-center rounded-full px-2 transition-colors hover:text-white"
+    94→            >
+    95→              {item.label}
+    96→            </button>
+    97→          ) : (
+    98→            <span className="inline-flex min-h-[44px] items-center px-2 text-zinc-300">
+    99→              {item.label}
+   100→            </span>
+   101→          )}
+   102→        </span>
+   103→      ))}
+   104→    </nav>
+   105→  )
+   106→}
+   107→
+   108→/* ================= 骨架屏 ================= */
+   109→
+   110→function GridSkeleton({ count = 6 }: { count?: number }) {
+   111→  return (
+   112→    <div className="grid grid-cols-1 gap-5 pb-4 sm:grid-cols-2 lg:grid-cols-3" aria-hidden="true">
+   113→      {Array.from({ length: count }).map((_, i) => (
+   114→        <div key={i} className="rounded-2xl bg-white/5 p-3 ring-1 ring-white/10">
+   115→          <div className="aspect-[3/4] w-full animate-pulse rounded-xl bg-white/10" />
+   116→          <div className="space-y-2.5 px-1 pb-1 pt-3">
+   117→            <div className="h-4 w-2/3 animate-pulse rounded bg-white/10" />
+   118→            <div className="h-3 w-1/2 animate-pulse rounded bg-white/5" />
+   119→          </div>
+   120→        </div>
+   121→      ))}
+   122→    </div>
+   123→  )
+   124→}
+   125→
+   126→function BookSkeleton() {
+   127→  return (
+   128→    <div className={`mt-2 rounded-3xl ${GRAD_BR} p-[2px]`} aria-hidden="true">
+   129→      <div className="flex flex-col gap-8 rounded-[22px] bg-[#1d1d22] p-6 sm:p-8 md:flex-row">
+   130→        <div className="aspect-[3/4] w-44 animate-pulse self-center rounded-xl bg-white/10 md:self-start" />
+   131→        <div className="flex-1 space-y-4 py-1">
+   132→          <div className="h-9 w-1/2 animate-pulse rounded bg-white/10" />
+   133→          <div className="h-4 w-1/3 animate-pulse rounded bg-white/5" />
+   134→          <div className="h-4 w-full animate-pulse rounded bg-white/5" />
+   135→          <div className="h-4 w-5/6 animate-pulse rounded bg-white/5" />
+   136→        </div>
+   137→      </div>
+   138→    </div>
+   139→  )
+   140→}
+   141→
+   142→function ChapterSkeleton() {
+   143→  return (
+   144→    <div className="rounded-3xl bg-white/5 p-8 ring-1 ring-white/10" aria-hidden="true">
+   145→      <div className="mx-auto h-8 w-2/3 animate-pulse rounded bg-white/10" />
+   146→      <div className="mt-8 space-y-4">
+   147→        {Array.from({ length: 8 }).map((_, i) => (
+   148→          <div
+   149→            key={i}
+   150→            className={`h-4 animate-pulse rounded bg-white/5 ${i % 3 === 2 ? 'w-2/3' : 'w-full'}`}
+   151→          />
+   152→        ))}
+   153→      </div>
+   154→    </div>
+   155→  )
+   156→}
+   157→
+   158→/* ================= 渐变描边卡片（home / keyword 复用） ================= */
+   159→
+   160→function NeonCard({ book, onNavigate }: { book: BookCard; onNavigate: Nav }) {
+   161→  return (
+   162→    <div
+   163→      className={`group rounded-2xl ${GRAD_BR} p-[2px] transition-all duration-200 hover:-translate-y-1 hover:shadow-[0_0_35px_rgba(192,38,211,0.35)]`}
+   164→    >
+   165→      <button
+   166→        type="button"
+   167→        onClick={() => onNavigate({ type: 'book', bookId: book.id })}
+   168→        className="flex h-full w-full flex-col rounded-[14px] bg-[#1d1d22] p-3 text-left"
+   169→      >
+   170→        <div className="relative aspect-[3/4] w-full overflow-hidden rounded-xl bg-zinc-800">
+   171→          {book.coverUrl ? (
+   172→            <img
+   173→              src={book.coverUrl}
+   174→              alt={`《${book.title}》封面`}
+   175→              className="h-full w-full object-cover"
+   176→            />
+   177→          ) : (
+   178→            <div className="flex h-full w-full items-center justify-center bg-zinc-800 text-5xl font-black">
+   179→              <span className="bg-gradient-to-br from-violet-300 via-fuchsia-300 to-orange-200 bg-clip-text text-transparent">
+   180→                {book.title.charAt(0) || '书'}
+   181→              </span>
+   182→            </div>
+   183→          )}
+   184→          <span className="absolute left-2.5 top-2.5 rounded-full bg-black/50 px-2.5 py-1 text-[11px] font-bold text-fuchsia-200 ring-1 ring-fuchsia-400/40 backdrop-blur">
+   185→            {book.category}
+   186→          </span>
+   187→        </div>
+   188→        <div className="flex flex-1 flex-col px-1 pb-1 pt-3">
+   189→          <h3 className="truncate text-base font-extrabold text-zinc-100">{book.title}</h3>
+   190→          <p className="mt-1.5 flex items-center gap-1.5 text-xs text-zinc-400">
+   191→            <User className="h-3.5 w-3.5 shrink-0 text-fuchsia-400" aria-hidden="true" />
+   192→            <span className="truncate">{book.author}</span>
+   193→          </p>
+   194→          <p className="mt-1.5 flex items-center gap-1.5 text-xs text-zinc-500">
+   195→            <Zap className="h-3.5 w-3.5 shrink-0 text-orange-300" aria-hidden="true" />
+   196→            <span className="truncate">{book.latestChapter}</span>
+   197→          </p>
+   198→        </div>
+   199→      </button>
+   200→    </div>
+   201→  )
+   202→}
+   203→
+   204→/* ================= 章节行（book 最新更新 / toc 复用） ================= */
+   205→
+   206→function ChapterRow({ chapter, onNavigate }: { chapter: ChapterItem; onNavigate: Nav }) {
+   207→  return (
+   208→    <li>
+   209→      <button
+   210→        type="button"
+   211→        onClick={() => onNavigate({ type: 'chapter', chapterId: chapter.id })}
+   212→        className="group flex min-h-[44px] w-full items-center gap-4 rounded-xl px-4 py-2 text-left transition-colors hover:bg-white/5"
+   213→      >
+   214→        <span className="w-8 shrink-0 font-mono text-xs font-bold text-fuchsia-400">
+   215→          {String(chapter.order).padStart(2, '0')}
+   216→        </span>
+   217→        <span className="min-w-0 flex-1 truncate text-sm text-zinc-300 transition-colors group-hover:text-white">
+   218→          {chapter.title}
+   219→        </span>
+   220→        <ChevronRight
+   221→          className="h-4 w-4 shrink-0 text-zinc-700 transition-colors group-hover:text-fuchsia-300"
+   222→          aria-hidden="true"
+   223→        />
+   224→      </button>
+   225→    </li>
+   226→  )
+   227→}
+   228→
+   229→/* ================= Home ================= */
+   230→
+   231→function NeonHome({ site, data, loading, onNavigate }: ThemeProps) {
+   232→  const [category, setCategory] = useState('全部')
+   233→  const books = data.books ?? []
+   234→  const categories = ['全部', ...(data.categories ?? [])]
+   235→  const filtered = category === '全部' ? books : books.filter((b) => b.category === category)
+   236→  const goHeroTarget = () =>
+   237→    onNavigate(site.mainBookId ? { type: 'book', bookId: site.mainBookId } : { type: 'home' })
+   238→
+   239→  return (
+   240→    <Shell site={site} onNavigate={onNavigate}>
+   241→      {/* 大渐变 hero 横幅 */}
+   242→      <section
+   243→        className={`relative mt-6 overflow-hidden rounded-3xl ${GRAD_R} px-6 py-12 sm:px-12 sm:py-16`}
+   244→      >
+   245→        <div
+   246→          className="pointer-events-none absolute -right-16 -top-16 h-56 w-56 rounded-full bg-white/20 blur-3xl"
+   247→          aria-hidden="true"
+   248→        />
+   249→        <div
+   250→          className="pointer-events-none absolute -bottom-20 left-1/4 h-56 w-56 rounded-full bg-white/15 blur-3xl"
+   251→          aria-hidden="true"
+   252→        />
+   253→        <div className="relative">
+   254→          <p className="inline-flex items-center gap-1.5 rounded-full bg-black/30 px-3.5 py-1.5 text-xs font-bold uppercase tracking-[0.25em] text-white backdrop-blur">
+   255→            <Flame className="h-4 w-4" aria-hidden="true" />
+   256→            Hot Now
+   257→          </p>
+   258→          <h1 className="mt-5 max-w-2xl text-4xl font-black leading-tight text-white sm:text-6xl">
+   259→            {site.title || site.siteName}
+   260→          </h1>
+   261→          {site.description && (
+   262→            <p className="mt-5 max-w-xl text-sm font-medium leading-relaxed text-white/90 sm:text-base">
+   263→              {site.description}
+   264→            </p>
+   265→          )}
+   266→          <button
+   267→            type="button"
+   268→            onClick={goHeroTarget}
+   269→            className="mt-7 inline-flex min-h-[44px] items-center gap-2 rounded-full bg-[#18181b] px-6 text-sm font-bold text-white transition-transform hover:scale-105"
+   270→          >
+   271→            <Sparkles className="h-4 w-4 text-fuchsia-300" aria-hidden="true" />
+   272→            立即开读
+   273→          </button>
+   274→        </div>
+   275→      </section>
+   276→
+   277→      {/* 分类筛选 */}
+   278→      <nav aria-label="分类筛选" className="flex flex-wrap items-center gap-2 py-6">
+   279→        {categories.map((c) => (
+   280→          <button
+   281→            key={c}
+   282→            type="button"
+   283→            onClick={() => setCategory(c)}
+   284→            className={`min-h-[44px] rounded-full px-4 text-sm font-bold transition-all ${
+   285→              category === c
+   286→                ? `${GRAD_R} text-white shadow-lg shadow-fuchsia-500/25`
+   287→                : 'bg-white/5 text-zinc-400 hover:bg-white/10 hover:text-zinc-100'
+   288→            }`}
+   289→          >
+   290→            {c}
+   291→          </button>
+   292→        ))}
+   293→      </nav>
+   294→
+   295→      {loading ? (
+   296→        <GridSkeleton />
+   297→      ) : filtered.length === 0 ? (
+   298→        <div className="py-24 text-center">
+   299→          <p className="text-sm text-zinc-500">这个分类还很空，敬请期待。</p>
+   300→        </div>
+   301→      ) : (
+   302→        <section
+   303→          aria-label="书籍列表"
+   304→          className="grid grid-cols-1 gap-5 pb-4 sm:grid-cols-2 lg:grid-cols-3"
+   305→        >
+   306→          {filtered.map((book) => (
+   307→            <NeonCard key={book.id} book={book} onNavigate={onNavigate} />
+   308→          ))}
+   309→        </section>
+   310→      )}
+   311→    </Shell>
+   312→  )
+   313→}
+   314→
+   315→/* ================= Book ================= */
+   316→
+   317→function NeonBook({ site, data, loading, onNavigate }: ThemeProps) {
+   318→  const book = data.book
+   319→  const keywords = book
+   320→    ? Array.from(new Set([...book.keywords, ...book.suggestKeywords]))
+   321→    : []
+   322→
+   323→  return (
+   324→    <Shell site={site} onNavigate={onNavigate}>
+   325→      <Crumbs
+   326→        trail={[
+   327→          { label: '首页', onSelect: () => onNavigate({ type: 'home' }) },
+   328→          { label: book?.title ?? (loading ? '加载中' : '书籍详情') },
+   329→        ]}
+   330→      />
+   331→
+   332→      {loading ? (
+   333→        <BookSkeleton />
+   334→      ) : !book ? (
+   335→        <div className="py-24 text-center">
+   336→          <p className="text-sm text-zinc-500">未找到该书籍。</p>
+   337→          <button
+   338→            type="button"
+   339→            onClick={() => onNavigate({ type: 'home' })}
+   340→            className="mt-6 inline-flex min-h-[44px] items-center rounded-full bg-white/10 px-6 text-sm font-bold text-zinc-100 transition-colors hover:bg-white/20"
+   341→          >
+   342→            返回首页
+   343→          </button>
+   344→        </div>
+   345→      ) : (
+   346→        <>
+   347→          <article className={`mt-2 rounded-3xl ${GRAD_BR} p-[2px]`}>
+   348→            <div className="flex flex-col gap-8 rounded-[22px] bg-[#1d1d22] p-6 sm:p-8 md:flex-row">
+   349→              {book.coverUrl ? (
+   350→                <img
+   351→                  src={book.coverUrl}
+   352→                  alt={`《${book.title}》封面`}
+   353→                  className="aspect-[3/4] w-44 shrink-0 self-center rounded-xl object-cover md:self-start"
+   354→                />
+   355→              ) : (
+   356→                <div className="flex aspect-[3/4] w-44 shrink-0 self-center items-center justify-center rounded-xl bg-zinc-800 text-6xl font-black md:self-start">
+   357→                  <span className="bg-gradient-to-br from-violet-300 via-fuchsia-300 to-orange-200 bg-clip-text text-transparent">
+   358→                    {book.title.charAt(0) || '书'}
+   359→                  </span>
+   360→                </div>
+   361→              )}
+   362→              <div className="min-w-0 flex-1">
+   363→                <span className="inline-block rounded-full bg-white/5 px-3 py-1 text-xs font-bold text-fuchsia-300 ring-1 ring-fuchsia-400/40">
+   364→                  {book.category}
+   365→                </span>
+   366→                <h1 className="mt-3 text-3xl font-black tracking-tight text-white sm:text-4xl">
+   367→                  {book.title}
+   368→                </h1>
+   369→                <div className="mt-4 flex flex-wrap items-center gap-x-5 gap-y-2 text-sm text-zinc-400">
+   370→                  <span className="flex items-center gap-1.5">
+   371→                    <User className="h-4 w-4 text-fuchsia-400" aria-hidden="true" />
+   372→                    {book.author}
+   373→                  </span>
+   374→                  <span className="flex items-center gap-1.5">
+   375→                    <List className="h-4 w-4 text-orange-300" aria-hidden="true" />
+   376→                    {book.totalChapters} 章
+   377→                  </span>
+   378→                  <span
+   379→                    className={`rounded-full px-2.5 py-0.5 text-xs font-bold ${
+   380→                      book.status.includes('完')
+   381→                        ? 'bg-fuchsia-500/15 text-fuchsia-300 ring-1 ring-fuchsia-400/40'
+   382→                        : 'bg-orange-400/10 text-orange-300 ring-1 ring-orange-400/40'
+   383→                    }`}
+   384→                  >
+   385→                    {book.status}
+   386→                  </span>
+   387→                </div>
+   388→                <p className="mt-5 leading-relaxed text-zinc-300">{book.intro}</p>
+   389→                <div className="mt-6 flex flex-wrap gap-3">
+   390→                  <button
+   391→                    type="button"
+   392→                    disabled={!book.firstChapterId}
+   393→                    onClick={() => {
+   394→                      if (book.firstChapterId) onNavigate({ type: 'chapter', chapterId: book.firstChapterId })
+   395→                    }}
+   396→                    className={`inline-flex min-h-[44px] items-center gap-2 rounded-full ${GRAD_R} px-6 text-sm font-bold text-white shadow-lg shadow-fuchsia-500/25 transition-opacity hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-40`}
+   397→                  >
+   398→                    <BookOpen className="h-4 w-4" aria-hidden="true" />
+   399→                    开始阅读
+   400→                  </button>
+   401→                  <button
+   402→                    type="button"
+   403→                    onClick={() => onNavigate({ type: 'toc', bookId: book.id })}
+   404→                    className="inline-flex min-h-[44px] items-center gap-2 rounded-full border border-white/15 px-6 text-sm font-semibold text-zinc-200 transition-colors hover:border-fuchsia-400/60 hover:text-white"
+   405→                  >
+   406→                    <List className="h-4 w-4" aria-hidden="true" />
+   407→                    查看全部 {book.totalChapters} 章目录
+   408→                  </button>
+   409→                </div>
+   410→                {keywords.length > 0 && (
+   411→                  <div className="mt-5 flex flex-wrap gap-2">
+   412→                    {keywords.map((kw) => (
+   413→                      <button
+   414→                        key={kw}
+   415→                        type="button"
+   416→                        onClick={() => onNavigate({ type: 'keyword', keyword: kw })}
+   417→                        className="min-h-[44px] rounded-full bg-white/5 px-3.5 text-sm font-semibold text-violet-300 ring-1 ring-violet-500/40 transition-all hover:text-fuchsia-300 hover:ring-fuchsia-400/60"
+   418→                      >
+   419→                        # {kw}
+   420→                      </button>
+   421→                    ))}
+   422→                  </div>
+   423→                )}
+   424→              </div>
+   425→            </div>
+   426→          </article>
+   427→
+   428→          <section aria-label="最新更新" className="mt-8 pb-4">
+   429→            <div className="flex flex-wrap items-center justify-between gap-3">
+   430→              <h2 className="flex items-center gap-2 text-lg font-black text-white">
+   431→                <Zap className="h-5 w-5 text-orange-300" aria-hidden="true" />
+   432→                最新更新
+   433→                <span className="text-sm font-medium text-zinc-500">
+   434→                  最近 {book.chapters.length} 章 / 共 {book.totalChapters} 章
+   435→                </span>
+   436→              </h2>
+   437→              <button
+   438→                type="button"
+   439→                onClick={() => onNavigate({ type: 'toc', bookId: book.id })}
+   440→                className="inline-flex min-h-[44px] items-center gap-2 rounded-full bg-white/5 px-4 text-sm font-semibold text-zinc-300 transition-colors hover:bg-white/10"
+   441→              >
+   442→                完整目录 →
+   443→              </button>
+   444→            </div>
+   445→            {book.chapters.length === 0 ? (
+   446→              <p className="py-10 text-center text-sm text-zinc-500">暂无章节。</p>
+   447→            ) : (
+   448→              <ul className="mt-4 grid grid-cols-1 gap-1 rounded-2xl bg-black/30 p-2 ring-1 ring-white/10 sm:grid-cols-2 lg:grid-cols-3">
+   449→                {book.chapters.map((ch) => (
+   450→                  <ChapterRow key={ch.id} chapter={ch} onNavigate={onNavigate} />
+   451→                ))}
+   452→              </ul>
+   453→            )}
+   454→          </section>
+   455→        </>
+   456→      )}
+   457→    </Shell>
+   458→  )
+   459→}
+   460→
+   461→/* ================= Chapter ================= */
+   462→
+   463→function NeonChapter({ site, data, loading, onNavigate }: ThemeProps) {
+   464→  const chapter = data.chapter
+   465→  const paragraphs = chapter
+   466→    ? chapter.content
+   467→        .split('\n')
+   468→        .map((p) => p.trim())
+   469→        .filter(Boolean)
+   470→    : []
+   471→
+   472→  return (
+   473→    <Shell site={site} onNavigate={onNavigate}>
+   474→      <Crumbs
+   475→        trail={[
+   476→          { label: '首页', onSelect: () => onNavigate({ type: 'home' }) },
+   477→          chapter
+   478→            ? {
+   479→                label: chapter.bookTitle,
+   480→                onSelect: () => onNavigate({ type: 'book', bookId: chapter.bookId }),
+   481→              }
+   482→            : { label: '书籍' },
+   483→          { label: chapter?.title ?? '正文' },
+   484→        ]}
+   485→      />
+   486→
+   487→      {loading ? (
+   488→        <ChapterSkeleton />
+   489→      ) : !chapter ? (
+   490→        <div className="py-24 text-center">
+   491→          <p className="text-sm text-zinc-500">未找到该章节内容。</p>
+   492→          <button
+   493→            type="button"
+   494→            onClick={() => onNavigate({ type: 'home' })}
+   495→            className="mt-6 inline-flex min-h-[44px] items-center rounded-full bg-white/10 px-6 text-sm font-bold text-zinc-100 transition-colors hover:bg-white/20"
+   496→          >
+   497→            返回首页
+   498→          </button>
+   499→        </div>
+   500→      ) : (
+   501→        <>
+   502→          <article className="py-4">
+   503→            <p className="font-mono text-xs font-bold uppercase tracking-[0.4em] text-fuchsia-400">
+   504→              Chapter {String(chapter.order).padStart(3, '0')}
+   505→            </p>
+   506→            <h1 className="mt-3 text-3xl font-black tracking-tight text-white sm:text-4xl">
+   507→              {chapter.title}
+   508→            </h1>
+   509→            <p className="mt-3 text-sm text-zinc-500">《{chapter.bookTitle}》</p>
+   510→            <div className={`mt-6 h-1 w-24 rounded-full ${GRAD_R}`} aria-hidden="true" />
+   511→            <div className="mt-8 max-w-3xl space-y-5">
+   512→              {paragraphs.map((p, i) => (
+   513→                <p key={i} className="text-[17px] leading-8 text-zinc-200">
+   514→                  {p}
+   515→                </p>
+   516→              ))}
+   517→            </div>
+   518→          </article>
+   519→          <nav
+   520→            aria-label="章节导航"
+   521→            className="mt-8 flex flex-col gap-3 pb-4 sm:flex-row sm:justify-between"
+   522→          >
+   523→            <button
+   524→              type="button"
+   525→              disabled={!chapter.prevId}
+   526→              onClick={() => {
+   527→                if (chapter.prevId) onNavigate({ type: 'chapter', chapterId: chapter.prevId })
+   528→              }}
+   529→              className="inline-flex min-h-[44px] items-center justify-center gap-2 rounded-full border border-white/15 px-6 text-sm font-semibold text-zinc-300 transition-colors hover:border-fuchsia-400/60 hover:text-white disabled:cursor-not-allowed disabled:opacity-40"
+   530→            >
+   531→              <ArrowLeft className="h-4 w-4" aria-hidden="true" />
+   532→              上一章
+   533→            </button>
+   534→            <button
+   535→              type="button"
+   536→              onClick={() => onNavigate({ type: 'toc', bookId: chapter.bookId })}
+   537→              className={`inline-flex min-h-[44px] items-center justify-center rounded-full ${GRAD_R} px-6 text-sm font-bold text-white transition-opacity hover:opacity-90`}
+   538→            >
+   539→              返回目录
+   540→            </button>
+   541→            <button
+   542→              type="button"
+   543→              disabled={!chapter.nextId}
+   544→              onClick={() => {
+   545→                if (chapter.nextId) onNavigate({ type: 'chapter', chapterId: chapter.nextId })
+   546→              }}
+   547→              className="inline-flex min-h-[44px] items-center justify-center gap-2 rounded-full border border-white/15 px-6 text-sm font-semibold text-zinc-300 transition-colors hover:border-fuchsia-400/60 hover:text-white disabled:cursor-not-allowed disabled:opacity-40"
+   548→            >
+   549→              下一章
+   550→              <ArrowRight className="h-4 w-4" aria-hidden="true" />
+   551→            </button>
+   552→          </nav>
+   553→        </>
+   554→      )}
+   555→    </Shell>
+   556→  )
+   557→}
+   558→
+   559→/* ================= Toc（完整章节目录页） ================= */
+   560→
+   561→const TOC_PAGE_SIZE = 100
+   562→
+   563→function NeonToc({ site, data, loading, onNavigate }: ThemeProps) {
+   564→  const [page, setPage] = useState(1)
+   565→  const book = data.book
+   566→  const chapters = book?.chapters ?? []
+   567→  const totalPages = Math.max(1, Math.ceil(chapters.length / TOC_PAGE_SIZE))
+   568→  const safePage = Math.min(page, totalPages)
+   569→  const visible = chapters.slice((safePage - 1) * TOC_PAGE_SIZE, safePage * TOC_PAGE_SIZE)
+   570→
+   571→  return (
+   572→    <Shell site={site} onNavigate={onNavigate}>
+   573→      <Crumbs
+   574→        trail={[
+   575→          { label: '首页', onSelect: () => onNavigate({ type: 'home' }) },
+   576→          {
+   577→            label: book?.title ?? '书籍',
+   578→            onSelect: book ? () => onNavigate({ type: 'book', bookId: book.id }) : undefined,
+   579→          },
+   580→          { label: '章节目录' },
+   581→        ]}
+   582→      />
+   583→
+   584→      {loading ? (
+   585→        <BookSkeleton />
+   586→      ) : !book ? (
+   587→        <div className="py-24 text-center">
+   588→          <p className="text-sm text-zinc-500">未找到该书籍。</p>
+   589→          <button
+   590→            type="button"
+   591→            onClick={() => onNavigate({ type: 'home' })}
+   592→            className="mt-6 inline-flex min-h-[44px] items-center rounded-full bg-white/10 px-6 text-sm font-bold text-zinc-100 transition-colors hover:bg-white/20"
+   593→          >
+   594→            返回首页
+   595→          </button>
+   596→        </div>
+   597→      ) : (
+   598→        <>
+   599→          <p className="font-mono text-xs font-bold uppercase tracking-[0.4em] text-zinc-500">
+   600→            Chapters
+   601→          </p>
+   602→          <div className="mt-3 flex flex-wrap items-end justify-between gap-3">
+   603→            <h1 className="text-2xl font-black tracking-tight text-white sm:text-3xl">
+   604→              {book.title}
+   605→              <span className="ml-3 text-base font-medium text-zinc-500">章节目录</span>
+   606→            </h1>
+   607→            <p className="text-sm text-zinc-500">
+   608→              {book.author} · 共 {book.totalChapters} 章
+   609→            </p>
+   610→          </div>
+   611→
+   612→          <nav
+   613→            aria-label="目录分页"
+   614→            className="mt-5 flex flex-wrap items-center gap-2 rounded-2xl bg-white/5 px-4 py-3 ring-1 ring-white/10"
+   615→          >
+   616→            <button
+   617→              type="button"
+   618→              disabled={safePage <= 1}
+   619→              onClick={() => setPage((p) => Math.max(1, p - 1))}
+   620→              className="min-h-[36px] rounded-full border border-white/15 px-4 text-sm font-semibold text-zinc-300 transition-colors hover:border-fuchsia-400/60 hover:text-white disabled:cursor-not-allowed disabled:opacity-40"
+   621→            >
+   622→              上一页
+   623→            </button>
+   624→            <span className="text-sm text-zinc-500">
+   625→              第 {safePage} / {totalPages} 页
+   626→            </span>
+   627→            <button
+   628→              type="button"
+   629→              disabled={safePage >= totalPages}
+   630→              onClick={() => setPage((p) => Math.min(totalPages, p + 1))}
+   631→              className="min-h-[36px] rounded-full border border-white/15 px-4 text-sm font-semibold text-zinc-300 transition-colors hover:border-fuchsia-400/60 hover:text-white disabled:cursor-not-allowed disabled:opacity-40"
+   632→            >
+   633→              下一页
+   634→            </button>
+   635→          </nav>
+   636→
+   637→          {visible.length === 0 ? (
+   638→            <p className="py-10 text-center text-sm text-zinc-500">暂无章节。</p>
+   639→          ) : (
+   640→            <ul className="mb-2 mt-4 grid grid-cols-1 gap-1 rounded-2xl bg-black/30 p-2 ring-1 ring-white/10 sm:grid-cols-2 lg:grid-cols-3">
+   641→              {visible.map((ch) => (
+   642→                <ChapterRow key={ch.id} chapter={ch} onNavigate={onNavigate} />
+   643→              ))}
+   644→            </ul>
+   645→          )}
+   646→        </>
+   647→      )}
+   648→    </Shell>
+   649→  )
+   650→}
+   651→
+   652→/* ================= Keyword ================= */
+   653→
+   654→function NeonKeyword({
+   655→  site,
+   656→  data,
+   657→  loading,
+   658→  onNavigate,
+   659→  keyword,
+   660→}: ThemeProps & { keyword: string }) {
+   661→  const books = data.keywordBooks ?? []
+   662→  const goMain = () =>
+   663→    onNavigate(site.mainBookId ? { type: 'book', bookId: site.mainBookId } : { type: 'home' })
+   664→  const related = Array.from(
+   665→    new Set(
+   666→      books
+   667→        .flatMap((b) => [...b.keywords, ...b.suggestKeywords])
+   668→        .filter((k) => k !== keyword),
+   669→    ),
+   670→  ).slice(0, 12)
+   671→
+   672→  return (
+   673→    <Shell site={site} onNavigate={onNavigate}>
+   674→      <Crumbs
+   675→        trail={[
+   676→          { label: '首页', onSelect: () => onNavigate({ type: 'home' }) },
+   677→          { label: `关键词：${keyword}` },
+   678→        ]}
+   679→      />
+   680→
+   681→      {/* 最醒目的主书籍入口：渐变描边大按钮 */}
+   682→      <div className={`mt-4 rounded-2xl ${GRAD_BR} p-[2px] shadow-[0_0_35px_rgba(192,38,211,0.3)]`}>
+   683→        <button
+   684→          type="button"
+   685→          onClick={goMain}
+   686→          className="group flex min-h-[44px] w-full items-center justify-between gap-4 rounded-[14px] bg-[#1d1d22] px-6 py-5 text-left"
+   687→        >
+   688→          <span className="flex items-center gap-3 text-base font-black text-white">
+   689→            <Sparkles className="h-5 w-5 text-fuchsia-400" aria-hidden="true" />
+   690→            进入主书籍信息页
+   691→          </span>
+   692→          <ArrowRight
+   693→            className="h-5 w-5 text-fuchsia-400 transition-transform group-hover:translate-x-1"
+   694→            aria-hidden="true"
+   695→          />
+   696→        </button>
+   697→      </div>
+   698→
+   699→      <section className="py-10">
+   700→        <p className="font-mono text-xs font-bold uppercase tracking-[0.4em] text-zinc-500">
+   701→          Keyword
+   702→        </p>
+   703→        <h1 className="mt-4 text-4xl font-black tracking-tight sm:text-5xl">
+   704→          <span className={GRAD_TEXT}>{keyword}</span>
+   705→        </h1>
+   706→        <p className="mt-4 text-sm text-zinc-400">与《{keyword}》相关的书籍与内容</p>
+   707→      </section>
+   708→
+   709→      {loading ? (
+   710→        <GridSkeleton count={3} />
+   711→      ) : books.length === 0 ? (
+   712→        <p className="py-20 text-center text-sm text-zinc-500">暂无相关书籍。</p>
+   713→      ) : (
+   714→        <section
+   715→          aria-label="相关书籍"
+   716→          className="grid grid-cols-1 gap-5 pb-4 sm:grid-cols-2 lg:grid-cols-3"
+   717→        >
+   718→          {books.map((book) => (
+   719→            <NeonCard key={book.id} book={book} onNavigate={onNavigate} />
+   720→          ))}
+   721→        </section>
+   722→      )}
+   723→
+   724→      {related.length > 0 && (
+   725→        <section aria-label="相关关键词" className="mt-6 pb-4">
+   726→          <h2 className="text-sm font-bold text-zinc-500">相关关键词</h2>
+   727→          <div className="mt-3 flex flex-wrap gap-2">
+   728→            {related.map((k) => (
+   729→              <button
+   730→                key={k}
+   731→                type="button"
+   732→                onClick={() => onNavigate({ type: 'keyword', keyword: k })}
+   733→                className="min-h-[44px] rounded-full bg-white/5 px-4 text-sm font-semibold text-zinc-300 ring-1 ring-white/10 transition-all hover:text-fuchsia-300 hover:ring-fuchsia-400/50"
+   734→              >
+   735→                # {k}
+   736→              </button>
+   737→            ))}
+   738→          </div>
+   739→        </section>
+   740→      )}
+   741→    </Shell>
+   742→  )
+   743→}
+   744→
+   745→/* ================= 主组件 ================= */
+   746→
+   747→export function ThemeNeon(props: ThemeProps): ReactElement {
+   748→  const { view } = props
+   749→  switch (view.type) {
+   750→    case 'home':
+   751→      return <NeonHome {...props} />
+   752→    case 'book':
+   753→      return <NeonBook {...props} />
+   754→    case 'toc':
+   755→      return <NeonToc {...props} />
+   756→    case 'chapter':
+   757→      return <NeonChapter {...props} />
+   758→    case 'keyword':
+   759→      return <NeonKeyword {...props} keyword={view.keyword} />
+   760→    default:
+   761→      return <NeonHome {...props} />
+   762→  }
+   763→}
+   764→
+   765→export default ThemeNeon
+   766→

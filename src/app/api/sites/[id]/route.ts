@@ -9,19 +9,23 @@ export async function PUT(req: NextRequest, { params }: RouteCtx<{ id: string }>
   const { id } = await params
   const body = await readJson(req)
   if (!body) return badRequest('请求体必须为 JSON 对象')
+  // ?? '' 防 JSON null 被 String() 归一成字面量 "null" 落库（下同）
+  if (body.siteName !== undefined && !String(body.siteName ?? '').trim()) {
+    return badRequest('站点名称不能为空')
+  }
   try {
     const site = await db.siteConfig.update({
       where: { id },
       data: {
-        ...(body.siteName !== undefined ? { siteName: String(body.siteName) } : {}),
-        ...(body.domain !== undefined ? { domain: String(body.domain) } : {}),
-        ...(body.themeId !== undefined ? { themeId: String(body.themeId) } : {}),
-        ...(body.title !== undefined ? { title: String(body.title) } : {}),
-        ...(body.description !== undefined ? { description: String(body.description) } : {}),
-        ...(body.keywords !== undefined ? { keywords: String(body.keywords) } : {}),
+        ...(body.siteName !== undefined ? { siteName: String(body.siteName ?? '').trim() } : {}),
+        ...(body.domain !== undefined ? { domain: String(body.domain ?? '').trim() } : {}),
+        ...(body.themeId !== undefined ? { themeId: String(body.themeId ?? 'classic') } : {}),
+        ...(body.title !== undefined ? { title: String(body.title ?? '') } : {}),
+        ...(body.description !== undefined ? { description: String(body.description ?? '') } : {}),
+        ...(body.keywords !== undefined ? { keywords: String(body.keywords ?? '') } : {}),
         ...(body.offset !== undefined ? { offset: toInt(body.offset, 0, 0) } : {}),
-        ...(body.mainBookId !== undefined ? { mainBookId: String(body.mainBookId) } : {}),
-        ...(body.footerText !== undefined ? { footerText: String(body.footerText) } : {}),
+        ...(body.mainBookId !== undefined ? { mainBookId: String(body.mainBookId ?? '') } : {}),
+        ...(body.footerText !== undefined ? { footerText: String(body.footerText ?? '') } : {}),
       },
     })
     return NextResponse.json({ site })

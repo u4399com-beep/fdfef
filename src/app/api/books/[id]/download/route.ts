@@ -1,4 +1,4 @@
-import { NextRequest } from 'next/server'
+import { NextRequest, NextResponse } from 'next/server'
 import { buildBookTxt } from '@/lib/collect/download-builder'
 import { RouteCtx } from '../../../_lib/http'
 
@@ -13,12 +13,13 @@ export async function GET(req: NextRequest, { params }: RouteCtx<{ id: string }>
   const domain = req.nextUrl.searchParams.get('domain') ?? undefined
   const built = await buildBookTxt(id, siteName, domain)
   if (!built) {
-    return new Response(JSON.stringify({ error: '书籍不存在' }), { status: 404 })
+    return NextResponse.json({ error: '书籍不存在' }, { status: 404 })
   }
   return new Response(built.content, {
     headers: {
       'Content-Type': 'text/plain; charset=utf-8',
-      'Content-Disposition': `attachment; filename*=UTF-8''${encodeURIComponent(built.filename)}`,
+      // RFC 5987 ext-value 中单引号是分隔符，需转义（encodeURIComponent 不会编码 '）
+      'Content-Disposition': `attachment; filename*=UTF-8''${encodeURIComponent(built.filename).replace(/'/g, '%27')}`,
     },
   })
 }

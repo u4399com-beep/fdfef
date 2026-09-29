@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { db } from '@/lib/db'
 import { DEFAULT_CLEANING, DEFAULT_DOWNLOAD } from '@/lib/collect-types'
-import { badRequest, readJson } from '../_lib/http'
+import { badRequest, isPlainObject, readJson } from '../_lib/http'
 
 export const runtime = 'nodejs'
 export const dynamic = 'force-dynamic'
@@ -24,6 +24,13 @@ export async function GET() {
 export async function PUT(req: NextRequest) {
   const body = await readJson(req)
   if (!body) return badRequest('请求体必须为 JSON 对象')
+  // 仅接受纯对象：防字符串/数组/数字被 JSON.stringify 后展开污染配置（数字/字符串 spread 出索引键）
+  if (body.cleaning !== undefined && !isPlainObject(body.cleaning)) {
+    return badRequest('cleaning 必须为对象')
+  }
+  if (body.download !== undefined && !isPlainObject(body.download)) {
+    return badRequest('download 必须为对象')
+  }
   const data = {
     ...(body.cleaning !== undefined ? { cleaning: JSON.stringify(body.cleaning) } : {}),
     ...(body.download !== undefined ? { download: JSON.stringify(body.download) } : {}),
