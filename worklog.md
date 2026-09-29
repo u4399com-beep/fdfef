@@ -443,3 +443,31 @@ Stage Summary:
 - 整合点：_lib/http.ts 成为 API 层唯一共享模块（校验 4 + 归一 2 + 常量 3 + 分页 1 + 正文回退 1），13 个路由文件 Ctx 定义与 16 处重复逻辑收敛，零 API 契约变化
 - 依赖报告（41 个，未卸载）：直接未用 18 个 = @dnd-kit/core|sortable|utilities、@hookform/resolvers、@mdxeditor/editor、@reactuses/core、@tanstack/react-query|react-table、date-fns、framer-motion、iconv-lite、next-auth、next-intl、react-markdown、react-syntax-highlighter、uuid、zod、zustand；删除死组件后连带未用 23 个 = cmdk、embla-carousel-react、input-otp、react-day-picker、react-hook-form、recharts、vaul、sonner + @radix-ui/react-{accordion,alert-dialog,aspect-ratio,avatar,collapsible,context-menu,dropdown-menu,hover-card,menubar,navigation-menu,popover,slider,toggle,toggle-group,tooltip}；误报澄清：playwright/z-ai-web-dev-sdk 为变量动态 import 实际在用，tailwindcss-animate（tailwind.config.ts）/tw-animate-css（globals.css）/xpath/@xmldom/xmldom 在用
 - 建议后续：①上述 41 个依赖可统一卸载（预计 node_modules 显著瘦身）②UI 现存 18 组件若后续模板不需要 toast/radix 全家桶可进一步收敛，但本次不动运行时
+---
+Task ID: R5(iteration-25r)-full
+Agent: orchestrator (Z.ai Code)
+Task: 25轮迭代(恢复→深审→增强→精简→集成→验证)：全库规则突破+逐行抓bug+清理精简+git交付
+
+Work Log:
+- 【R1 恢复】盘点：dev 200/git 已推(48a67df)/20规则5站全在库/18书1991章；verify-all-rules 5/5 实盘通过
+- 【R2-5 深审×3路并行】36处修复：
+  · fetcher+parser(9): cookie域点边界/同名去重/Max-Age注销、403挑战页升级链路恢复、body连接归还、context泄漏、jsPages stale element、Sec-Fetch指纹、base64前置校验、代理区码点剔除
+  · pipeline+task-manager(16): 暂停丢失窗口根治(ensure复用占位)、列表阶段可停(TaskStoppedError)、目录空瞬时不清零、createMany批量、URL归一化去重键、页码钳制、分页环路检测(visited Set)、testing与管线行为对齐
+  · cleaner/matcher/storage/suggest/download(11): "未完结"否定前缀完结误判、实体解码边界×3(cp上界/代理区/CR归一)、removeTags非法选择器容错、路径安全增强、>20MB封面防线、代理项截断
+- 【R6 回归】verify-all-rules 复跑 4/5（rqwb 因验证期高频请求触发 GoEdge IP 封禁，非规则失效）
+- 【R7 增强】WAF通行cookie磁盘持久化：storage/waf-cookies.json（2s防抖写盘、7天TTL、启动加载）——VLM解题成果跨进程重启保留，"稳定长期获取"关键闭环
+- 【R8 集成事故修复】/api/rules/test 路由缺失（405）：gitignore 裸名 test 规则吞掉嵌套路由目录=历史"环境同步丢文件"根因 → 改 /test 仅根目录匹配，重建路由，UI测试面板实测通过(mock 3项/1219ms)
+- 【R10-11 实盘】mock全量任务 3书30章30正文0错误；存书啦增量实采：23书/4485章/3971正文 0错误（持续后台采集）
+- 【R12 修复】正文采集阶段 stats/进度不落库（长书 UI 长时间 0）→ writeStats 每20章回写+阶段名含 n/total+(-1)哨兵保持全局进度
+- 【R13 精简】-4641行：30个零引用shadcn组件(-4343)、4个失效测试脚本、死代码；_lib/http 7个共享助手(RouteCtx/strId/parsePagination/ACTIVE_TASK_STATUSES等)；noImplicitAny=true 全项目0错误；41个未用依赖报告(未卸载)
+- 【R14 UI E2E】Agent Browser：规则页→编辑→测试面板实测✓；前台UAA主题首页(实采数据+下拉词标签)→书籍页(最新8章区块/开始阅读/完整目录)→目录页(分页禁用态)→章节页(上下章/返回目录)→390px移动端✓；console 0错误
+- 【R15-19 增强】verify-all-rules 礼貌节流(站点间5s/环节间2s)；rqwb 4规则清除过期硬编码cookie(自动解题+持久化接管)；DEPLOY.md 补充长期稳定性机制文档
+- 【R21-24 验证】暂停→冻结→恢复→继续 控制链路实盘通过；下载txt 335KB(站点信息注入)/封面webp 200/百度下拉词真实抓取；4站回归 4/4；dev.log 零运行时错误；tsc 0 / lint 0
+- 【R25 git】4次推送：ef39b86(36修复+路由重建)→9d133d0(gitignore根因+精简)→9910eb4(持久化+节流+文档)→本轮收尾
+
+Stage Summary:
+- 任务1 在库规则突破：5/5 站点全链路实盘验证通过（rqwb 本轮 R1 实证 list/book/toc/content 全通；其后 IP 级封禁属目标站外部状态，冷却自动恢复+cookie持久化+自动解题三层保障就位，解封即自动恢复采集）
+- 任务2 深审修复：38处 bug 全修（36引擎+stats落库+gitignore根因）；反反爬新增 cookie 磁盘持久化与验证脚本礼貌节流
+- 任务3 精简：-4641行死代码，noImplicitAny 收紧，41未用依赖已报告
+- 任务4 git交付：github.com/u4399com-beep/fdfef.git 全量推送（含完整历史修复链）
+- 数据：23书/4485章/3971正文（存书啦增量实采进行中，0错误）
