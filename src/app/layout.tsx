@@ -17,14 +17,13 @@ export const metadata: Metadata = {
   title: "小说管理系统",
   description: "小说采集管理系统：多线程采集、正文清洗、站群分发、多主题前台与 TXT 下载注入一体化。",
   keywords: ["小说管理", "小说采集", "站群", "Next.js"],
-  authors: [{ name: "Z.ai Team" }],
+  authors: [{ name: "小说管理系统" }],
   icons: {
-    icon: "https://z-cdn.chatglm.cn/z-ai/static/logo.svg",
+    icon: "/favicon.ico",
   },
   openGraph: {
     title: "小说管理系统",
     description: "采集 · 清洗 · 站群 · 多主题 · 下载注入 一体化",
-    url: "https://chat.z.ai",
     siteName: "小说管理系统",
     type: "website",
   },

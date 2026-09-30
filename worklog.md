@@ -541,3 +541,95 @@ Stage Summary:
 - 分支/边界修复 5 处：full 模式空值覆盖清库、incremental 分类分数错位、failed 进度误报 100%、maxPages≤0 空页集、sourceName 镜像域错写；另加范围模式 {page} 缺失告警与 testing 去重键对齐
 - 全部改动限于 5 个目标文件（collect-types/pipeline/paginated/testing/task-manager），task-manager 零改动；除 collectBookInfo 私有返回新增内部字段与 BookRuleConfig 新增可选 titleNormalize 外，导出签名与 API 契约零变更
 - 遗留风险：①存量 8 本 cunshu 脏数据不会自愈（增量按 sourceUrl+title 查旧脏键，重采将另建干净记录），建议一次性清理脚本或重采后手工删旧；②「全本/完本群/(1)」类后缀未剥（误伤风险，见上）；③cunshu 规则 author 选择器仍指上传者链接，无标题署名的书 author 依旧为上传者——根治需改该规则选择器（范围外）；④阶段名在多线程下存在『书籍采集/正文采集《X》』交替显示（纯展示）
+---
+Task ID: R7-iter-a
+Agent: data-quality-fixer
+Task: 消化 R6 三节遗留：cunshu 存量脏数据清理 + 规则 author 选择器纠偏 + SQLite LIKE 通配符转义 + 书籍删除孤儿文件清理
+
+Work Log:
+- 通读 worklog R6-a/b/c 遗留清单与 collect-types/pipeline/prisma schema/storage/books API 源码；实测库内 15 本 cunshu 书（author 多为上传者名、1 本标题带「 作者：xxx」后缀，与 R6-a 记录一致；注：任务简报中规则 id cmul1m04f000fp 为截断，实际为 cmul1m04f000fp1vjle888704）
+- 【遗留① 存量清理】新增可复用维护脚本 tests/clean-cunshu-dirty.ts（--dry-run / --blank-uploader-authors）：①列出 cunshu 来源书（sourceName/sourceUrl 含 cunshu）②逐本跑 normalizeBookMeta（与管线同款默认配置），有变化则更新 title/author ③撞键处理：规整后若撞 @@unique([sourceUrl,title])，现存记录章节更少则迁移脏记录章节（按 url 去重、P2002 兜底、txt 随删、现存 totalChapters 重算），否则删脏记录及其章节+txt+站群引用；删除计划全部打印并写日志（tests/clean-cunshu-dirty.log）④上传者甄别（opt-in）：同一 author 值出现在 ≥2 本 cunshu 书→判定上传者置空。甄别依据：利益至上×6、RL×3 横跨多本无关书=上传者；suggest 下拉词反证真作者（转生异世界→「作者:能猫日」、《上门儿婿》→「by放日歌」（该值恰为真作者故保留）、《没有名字的号码》→「by魏从良」而 author=不想上班不想上班 确系上传者）；土豆不爱吃鱼/青柠葡萄 等单书值呈「书名+作者名」搜索态疑似真作者，保守保留。全程 Prisma 写库零 SQL UPDATE；dry-run 复核后 cp db/custom.db db/custom.backup-r7a.db 再真跑：规整更新 1 本（《快穿：万人迷宿主又美又撩 作者：甜姜茶》→《快穿：万人迷宿主又美又撩》author RL→甜姜茶）、撞键迁移/删除 0 本（现库无重采干净记录冲突）、作者置空 8 本（利益至上×6、RL×2）；curl 复验「甜姜茶」可搜到且增量重采唯一键闭环（重采命中干净键不再分裂记录）
+- 【遗留③ author 选择器】实探 cunshu 书页被 GoEdge 拦（307 挑战页）无法确认更优选择器 → 按预案经 GET/PUT /api/rules/[id] 清空 author 字段 expr（保留字段本体，防 rules-page 编辑器对缺失字段回填默认选择器；parseFields 对 !sel.expr 直接跳过＝等同缺失）。回填闭环确认：pipeline.collectBookInfo 对 author 为空调 normalizeBookMeta(title,'')，标题有「 作者：xxx」时 authorFromTitle 回填；增量分支 if(info.author) 守卫使无署名书既不错抓上传者也不会清空库内已有作者。curl 复验落库 author.expr=""
+- 【遗留② LIKE 转义】双探针实测 Prisma 6.11/SQLite contains：①生成 LIKE 不带 ESCAPE 子句，%/_ 均为通配符（contains('100%') 等价 contains('100')，contains('a_c') 命中 'abc'）②简报预设「q 预转义 \%\_ 后仍走 contains」被实测否决：无 ESCAPE 时反斜杠按字面参与匹配，转义后查空 → books GET 带 q 改走参数化 raw SQL（Prisma.sql 模板，LIKE ? ESCAPE ? 逃逸符走绑定参数防模板反斜杠歧义；total 用 raw COUNT、BigInt→Number()），q 中 \ % _ 转义为字面；无 q 路径保持 Prisma findMany 原样零风险。live API 断言全过：q=100% 仅命中字面含 100% 的书、q=100 仍子串命中 2 本、q=a_c 仅命中字面、反斜杠输入/分类组合/无 q 均 200。chapters 路由核查：全文无 SQL LIKE（章节名筛选为 books-page 前端 String.includes），R6-b 遗留③④实指 books GET 一处，无需改动
+- 【遗留④ 删除清理】books/[id] DELETE：DB 三连改收进 $transaction（站群引用清空+章节删除+书删除原子化），事务成功后尽力清理磁盘：章节 txt（contentLocal 经 path.resolve+startsWith(NOVELS_DIR) 防路径穿越+.txt 后缀限定，不存在静默跳过）→ 空书目录 rmdir（仅空目录成功，同名书共享目录不误伤）→ 封面 webp（covers 路由同款 ^[\w-]+\.webp$ 白名单）；清理整体 try/catch console.warn，不影响删除返回。curl DELETE 实测（项目无 POST /api/books，测试书 Prisma 直写：3 章=真实 txt/纯 db 模式/contentLocal 指向不存在文件，+假封面 webp）：200 {ok:true}、txt/目录/封面全部消失、DB 行清零、缺失文件路径静默跳过
+- 验证：bunx tsc --noEmit 全项目 0 错误；bun run lint 0 错误；5 个临时探针/测试脚本全删，探针数据零残留（30 书/5309 章与清理前一致，本脚本未删任何书）
+
+Stage Summary:
+- R6 遗留 4 项全部消化：①cunshu 存量清理落地（tests/clean-cunshu-dirty.ts 可复用 + tests/clean-cunshu-dirty.log 全程日志 + 备份 db/custom.backup-r7a.db）：标题/作者规整 1 本（快穿书名净化、真作者甜姜茶回填）、上传者作者置空 8 本（利益至上×6、RL×2）、撞键 0；6 本单书作者值甄别后保守保留；《上门儿婿》《没有名字的号码》2 本 0 章「规则测试残料」（标题含《》/by作者/-番2全 后缀，normalizeBookMeta 保守设计不剥）留待人工处置（删或改）
+- ②cunshu book 规则 author 选择器已清空（数据变更非代码）：增量采集不再错抓上传者，作者依赖标题署名回填；取舍已记录——站点被 GoEdge 拦无法确认更优选择器，宁可空缺不错抓 ③LIKE 字面化：实测证明 Prisma contains 对 SQLite 既不自动转义、转义+contains 也不成立，books GET 带 q 改参数化 raw SQL+ESCAPE（含 %/_ 的搜索词不再泛化匹配），chapters 路由确认无 SQL LIKE 不改 ④DELETE 补齐磁盘清理（$transaction + txt/封面/空目录 + 路径白名单守卫，失败仅 warn 不 500）
+- 改动文件：src/app/api/books/route.ts、src/app/api/books/[id]/route.ts（代码）；tests/clean-cunshu-dirty.ts（新增脚本）、tests/clean-cunshu-dirty.log（日志）；DB：15 本 cunshu 书 9 本净化（1 规整+8 置空）、规则 cmul1m04f000fp1vjle888704 author.expr 清空、备份 db/custom.backup-r7a.db
+- tsc 0 错误 / lint 0 错误；临时产物零残留；未触碰 fetcher/components/layout/package.json，未 git commit，未重启 dev server，未跑 verify-all-rules
+---
+---
+Task ID: R7-iter-d
+Agent: ui-leftover-fixer
+Task: 消化 R6-iter-c 遗留观察 4 项（UAA 省略号分页 / rules-page 数字钳制 / layout 品牌残留 / UaaKeyword 引号）+ 顺带同类复查
+
+Work Log:
+- 通读 worklog R6-iter-c「遗留观察」清单与 R3/R5/R6 各轮已修项，逐项确认规避已修复内容（ISO 时间戳、面包屑、preview meta、openChapter 竞态等不再触碰）
+- 【①省略号分页】grep 确认全项目仅 theme-uaa 有页码按钮全量渲染（UaaHome 12/页、UaaToc 100/页两处 Array.from({length:totalPages})）；classic/noir/magazine/ink/neon 的目录分页均只有「第 X / Y 页」+ 上下页按钮、无页码钮，无需处理。theme-uaa 内新增 paginationPages()（total≤7 全显保持原样；>7 输出 1 … c-1 c c+1 … N：首尾恒显、当前页±1、间隔「…」）与 PageNumbers 组件（compact 双尺寸沿用原按钮类 h-9/36px 与 h-8/32px、aria-current 保留；「…」为 aria-hidden 非交互 span，规避双钮 key 冲突用 ellipsis-{i} 键），两处全量渲染替换为 <PageNumbers/>；UaaHome 分页 nav 补 flex-wrap 保 390px 可用。bun 实测 11 组边界（t=1/7/8/9/50 × c=首/中/尾）输出符合经典模式，按钮数≤7
+- 【②rules-page 钳制】核对引擎侧语义（fetcher timeout ?? 20000、paginated cap=max(1,min(maxPages,hardCap))、start=max(1,startPage)、end=max(start,endPage)、randomInt min>max 自钳、task-manager Math.max(1,…)）后：新增 clampNum（null/undefined/NaN→fallback 对齐 `??` 兜底，其余 max(min,round)）与 sanitizeRuleConfig（timeout≥1000——引擎侧 0 会让 AbortSignal.timeout 立即中止，是最实际的一处；pagination.maxPages/startPage≥1、endPage≥startPage），save() POST/PUT 前统一走 sanitize；timeout/maxPages/startPage/endPage 四输入补 onBlur 即时钳制（起始页抬升时同步托底结束页，对齐引擎 end=max(start,end)；undefined 字段不注入，避免改变存量 nextLink 规则行为）。UI 结构零变化。注：任务提到的 threadMin/threadMax/intervalMin/intervalMax/pageStart/pageEnd 实际位于 tasks-page.tsx 且已有保存前 clampInt+min/max 交换钳制（L191-209），语义已达标且超出本代理文件白名单，未动
+- 【③layout 品牌】authors「Z.ai Team」→「小说管理系统」；icons 外链 z-cdn.chatglm.cn logo（public/logo.svg 亦为 z-breathe 脚手架标，不可用）→ 指向 "/favicon.ico"（本地暂无 favicon 资源，浏览器默认请求行为不变，后续投放即自动生效）；顺带移除 openGraph.url=https://chat.z.ai（同类品牌残留）。R6 已改过的 title/description/keywords/og·twitter 文案未动
+- 【④引号风格】实码为「」（任务描述写『』）：UaaKeyword 标题「与「{keyword}」相关」→「与《{keyword}》相关」，与其余 5 套对齐；空态「暂无与「{keyword}」相关的书籍。」与 classic/magazine 空态同款「」保留（该处本就跨主题一致）
+- 【⑤顺带复查】6 主题 + admin 组件 grep 复查三类小遗留：硬编码 ISO 时间（themes 仅 updatedAt.slice(0,10) 三处已合规、admin 走 toLocaleString）、重复 key（books-page categories/keywords 已 Set 去重、preview API categories 服务端去重、uaa hotTags/tags/relatedKeywords 均 Set 去重、其余 index key 均为静态骨架/段落）、icon-only 按钮 aria（uaa 搜索钮 aria-label 在位、admin 无 size="icon" 裸钮）——未发现新问题，零改动
+- 【验证】bunx tsc --noEmit 除并行代理临时文件 tests/tmp-like-probe2.ts（非本代理产物，未触碰）外 0 错误；bun run lint 0 错误；curl /api/preview home/toc/keyword 三视图结构 keys 与分页语义核对未变；GET / 200、dev.log 无运行时错误；本会话 tool-results 临时读取缓存已清理
+
+Stage Summary:
+- R6-iter-c 遗留 4 项全部消化：①UAA 首页/目录页码收敛为省略号分页（5000 章 50 钮→≤7 钮+2 省略号，≤7 页视觉零迁移）②rules-page 数字输入 onBlur+保存前双钳制（timeout≥1000 修复清空得 0 导致请求瞬断的实际隐患）③layout authors/icons/og.url 品牌残留清零④UaaKeyword 对齐《》引号；同类复查无新增遗留
+- 改动 3 文件：theme-uaa.tsx（+62/-29：分页组件与两处替换、nav flex-wrap、引号）、rules-page.tsx（+37/-5：clampNum/sanitizeRuleConfig/4 处 onBlur/save 接线）、layout.tsx（+2/-3）；任务范围外文件零触碰，未 commit
+---
+Task ID: R7-iter-b
+Agent: base-modules-reviewer
+Task: 基础模块（lib/db/utils/client-api/theme-types）+ prisma schema 索引 + Docker/DEPLOY 部署链深审 + 41 未用依赖交叉复核
+
+Work Log:
+- 通读 worklog 全量（R13-simplify 41 依赖报告、R6 三节遗留清单、R3-bug-a/b 等），确定不重复项后逐文件深审。
+- 【lib 基础模块】① db.ts：globalThis 单例模式正确（dev 热重载无多实例泄漏，SQLite 单连接无需 pool 配置）；唯一问题 log:['query'] 在生产 standalone 也逐条打印 SQL → 改为 production 下 ['warn','error']、dev 保持 ['query']（日志洪水+每请求开销）。② utils.ts cn（clsx+tailwind-merge 标准实现，ui 组件在用）无问题。③ client-api.ts 复核：错误抛出/204 与非 JSON 响应兜底（res.json().catch→{}）、no-store、headers 合并语义均正确；重复请求防护已由各调用方竞态守卫承担（R3/R6 已修），无缺陷。④ theme-types.ts 契约完整性复核：SiteView 五视图（含 toc）、BookDetail.firstChapterId/最新12章倒序、ChapterDetail.prev/next/bookId/bookTitle 与 preview API 及 6 套主题 switch 全对齐，无缺失字段。
+- 【prisma schema 重点评审】全查询路径核对：books GET 与 preview home/keyword 均 orderBy updatedAt desc → Book 无任何排序索引，SQLite 全表扫描+排序（范围采集数千书时列表变慢）；后台分类筛选 where category + 排序。Chapter [bookId,order] 唯一/索引覆盖 preview book/toc/chapter 上下章与分页查询 ✓；TaskLog [taskId,createdAt] 覆盖 logs 增量查询 ✓；Chapter.content 在 SQLite 映射 TEXT（GB 级上限，无 MySQL 大文本截断问题）✓；onDelete Cascade 仅 Book→Chapter（TaskLog 无外键、由任务删除路由手动级联，一致）✓；Chapter @@unique([bookId,url]) 无空串冲突风险（pipeline 无 url 章节存 local:<hash>，标题先去重）✓。→ 新增非破坏性索引 @@index([updatedAt]) + @@index([category, updatedAt])（Book），bun run db:push 已应用，bun:sqlite 验证 Book_updatedAt_idx / Book_category_updatedAt_idx 已建。
+- 【Docker 部署链深审】静态推演 + /tmp 真机验证（本沙箱无 docker）：① 实证 bug A：runner 仅拷 node_modules/{prisma,@prisma,.bin}，而 prisma CLI 依赖闭包含 26 个非 @prisma 顶层包（@prisma/config→c12/deepmerge-ts/effect/empathic…），最小拷贝集实测 db push 即 MODULE_NOT_FOUND；首次 compose 部署 ./db 空卷（bind mount 不继承镜像内容）时 schema 无法初始化且 entrypoint 的 || echo 静默吞错。② 实证 bug B：node_modules/.bin/prisma 是 symlink→build/index.js（shebang #!/usr/bin/env node），oven/bun:1.2-slim 无 node，exec 必失败；实测 bun node_modules/prisma/build/index.js db push 正常（引擎为独立二进制子进程）。③ 实证 bug C：HEALTHCHECK/compose test 用 wget，debian slim 基底无 wget/curl → 永远 unhealthy；改用镜像自带 bun -e fetch 探活（本机 bun 1.3.14 实测 exit 0）。→ Dockerfile：补全 26 包依赖闭包 COPY（注释说明对应 bun.lock 锁定的 prisma 6.19.2，升级需同步核对）+ 显式 COPY node_modules/.prisma 双保险（生成客户端含 SQLite 引擎二进制）+ 移除无效 .bin 拷贝 + 健康检查改 bun；docker-entrypoint.sh 改用 bun 运行 CLI 入口；docker-compose.yml 健康检查同步。sh -n / yaml 解析校验通过。
+- 【DEPLOY.md 一致性】① 功能总览仍写「5 套主题」→ 更正为 6 套并补 UAA 蓝调（与 themes/index.ts 注册一致）。② 备份命令/定时任务补 download/（数据落盘表已列该卷）。③ systemd 示例补 Environment=DATABASE_URL，裸机启动步骤补 set -a; source .env 说明（standalone 以 .next/standalone 为工作目录，不读项目根 .env，缺 DATABASE_URL 会 PrismaClientInitializationError）。④ 其余核对一致：standalone 构建产物路径（build 脚本已拷 static/public）、db push 时机（entrypoint）、端口 3000、卷挂载覆盖 db/ storage/(covers+novels+waf-cookies) download/、hyperbrowser 环境变量、附录脚本均实际存在。next.config.ts output:standalone ✓（ignoreBuildErrors:true 仅记录未动，避免影响并行任务）。
+- 【41 未用依赖交叉复核】rg -F 双引号/单引号/裸名全量扫 src/tests/mini-services/examples/根配置 + 动态 import(变量) 调用点逐一核对（fetcher 3 处变量 import 实为 playwright/z-ai-web-dev-sdk/@hyperbrowser.sdk）：**R13 报告中 iconv-lite 为误报**——fetcher.ts:343 require('iconv-lite') 动态加载做 GBK/GB2312/Big5 解码（require 形式不在 R13 的 import 扫描范围），必须保留；其余 40 个仅出现在 package.json，确认未用。另发现 R13 清单遗漏 2 个零引用包：next-themes、react-resizable-panels（resizable.tsx 已删但依赖漏报）。tailwind.config.ts（仅 tailwindcss-animate）/postcss.config.mjs/components.json 无已删组件引用残留。按要求未执行卸载。
+- 【验证】bunx tsc --noEmit 除并行代理 R7-iter-a 未删的临时探针（tests/tmp-*.ts 自标注「用后即删」）外 0 错误；bun run lint 0 错误；dev server 冒烟 / /api/stats /api/books /api/preview /api/tasks 全 200；临时文件（/tmp 探针与闭包脚本）已清理；未 commit。
+
+Stage Summary:
+- 修复 6 处部署级 bug（全部经本机实证而非推演）：①Dockerfile prisma CLI 依赖闭包缺失（db push 必 MODULE_NOT_FOUND，首次部署静默失败）②entrypoint 依赖 node shebang 而 oven/bun 无 node ③④两处 wget 健康检查在 debian slim 上永远失败 ⑤DEPLOY.md 主题数 5→6 ⑥DEPLOY.md systemd/裸机缺 DATABASE_URL 注入说明；备份补 download/。
+- schema 决策：Book 新增 updatedAt 单列索引与 (category, updatedAt) 复合索引（列表/首页/关键词页排序与分类筛选的真实查询路径），均为非破坏性、已 db:push 落库验证；其余模型索引/级联/大文本类型经全查询路径核对均合理无需改动。
+- 依赖最终清单：**确认可安全卸载 42 个** = R13 的 41 个去掉 iconv-lite + 新增 next-themes / react-resizable-panels；**保留**：iconv-lite（fetcher require() GBK 解码，R13 误报）、playwright / z-ai-web-dev-sdk（变量动态 import）、tailwindcss-animate / tw-animate-css / class-variance-authority（配置与现存组件在用）。
+- 改动文件：src/lib/db.ts、prisma/schema.prisma、Dockerfile、docker-entrypoint.sh、docker-compose.yml、DEPLOY.md；未触碰约束禁区（api/collect/themes/admin/layout/package.json），未 commit。
+---
+
+
+---
+Task ID: R7-iter-c
+Agent: anti-crawl-engineer (主控接续收尾，前两任代理超时中断)
+Task: fetcher/反反爬二轮深审与增强 + WAF验证码解题链路致命bug根治
+
+Work Log:
+- 【前任(超时中断)已落地】UA池重构(Chromium/Edge品牌与sec-ch-ua严格配套,secChUaBrands导出)、WAF cookie原子写(tmp+rename+exit钩子+信号兜底+损坏容错+热重载保护)、站点级熔断器(连续3次网络级失败→2min冷却+抖动→半开复检,resetCircuitBreaker导出)、DomainThrottle修复(冷却不误删/FIFO链值传递/空闲域首请求零等待)、手动重定向跟随(逐跳Set-Cookie吸收/跨站cookie不泄漏/Referer降级/Sec-Fetch-Site逐跳重算/环检测+8跳上限/共享超时预算)、429/Retry-After尊重(秒+HTTP日期)+指数退避抖动、NoRetryError(缺Location/非法协议/重定向环不重试)、recognizeCaptcha VLM竞速定时器清理、Bun "Unable to connect"纳入网络不可达分类
+- 【离线回归】遗留探针扩展为47用例全过：ClientHints配套/固定UA/同站跳转逐跳cookie/跨域不泄漏/Referer降级/环与NoRetry快速失败/Retry-After双形式/指数退避/WAF 403升级/熔断+镜像接管/节流零等待与冷却不误删/原子写+exit flush+损坏容错/硬403语义
+- 【致命bug#1：VLM API契约变更致验证码解题全链路失效】recognizeCaptcha 仍用 image_url 格式→服务端已下线(400 code 1214「file必须传入file_id/file_url/file_data至少之一」)，且异常被 solveWafChallenge 空 catch 静默吞掉，无任何日志线索。穷举格式矩阵+红圆无歧义图实测确认现行唯一可行载荷：**{type:'image_url',image_url:{url:dataURL},file:{file_data:dataURL}} 双字段并存**（校验层查 file 对象、视觉后端实际消费 image_url；单 file_data 校验过但图片不达模型——模型回复「请上传图片」证实）→ 已修复并留注释
+- 【致命bug#2：解题异常静默】solveWafChallenge 空 catch 改为 console.warn 留痕（每 attempts 带 [waf-solve] 前缀），后续契约变更不再无声失联
+- 【致命bug#3：浏览器上下文静态 Sec-Fetch-* 指纹自相矛盾】fetchWithPlaywright 的 extraHTTPHeaders 强制注入 document/navigate/user 到验证码图片等全部子资源→GoEdge fetch-metadata 一致性校验拒绝供图（元素不可见→截图30s×4超时）→ 浏览器路径剥离 sec-fetch-*（Chromium 原生按资源类型下发），HTTP 路径保留
+- 【bug#4：goto 断链落 chrome-error 页被当 200】重定向链中途 TLS/网络断链时 playwright 不抛错而是落 chrome-error://chromewebdata/，错误页 HTML 交给解析器产出空结果 → 识别错误页落点→原地重试一次→仍失败按网络类错误抛出（触发镜像轮换）
+- 【卫生】kelexs 4 条规则过期硬编码 cookie ge_wc_20 清除（自动解题+jar持久化接管，与 rqwb 同款处置）；waf-cookies.json 中 kelexs 过期条目清除
+- 【真实现场】kelexs 今日对沙箱 IP 升级为连接级阻断（Unable to connect，与 rqwb GoEdge 封禁同类外部状态）；biqutu 网络级超时；熔断+冷却+半开复检按设计接管，解封即自动恢复
+- 【验证】mock GoEdge 挑战页端到端：挑战→截图→VLM 双字段格式首次尝试即读出 R7X9→填码→提交→302→通行cookie入jar→列表内容解析成功；47用例离线回归全过；bunx tsc 0错误；bun run lint 0错误；临时脚本全部清理
+
+Stage Summary:
+- WAF 验证码自动解题链路从「静默全灭」修复为「端到端可用」：VLM 双字段格式 + 异常留痕 + Sec-Fetch 剥离 + chrome-error 识别，四层修复（前两层为致命级）
+- 反反爬二轮增强：熔断器/镜像协同/429退避/重定向逐跳cookie/原子持久化全套落地并经47用例回归
+- 「稳定长期获取」保障链完整：挑战自动解题→通行cookie全局复用+磁盘持久化(原子写+退出flush)→限流退让(429/Retry-After)→网络故障熔断冷却→半开复检→镜像轮换，各层均实证
+
+---
+Task ID: R7-simplify
+Agent: orchestrator (Z.ai Code)
+Task: 依赖瘦身（42个零引用包卸载）
+
+Work Log:
+- 基于 R13 报告 + R7-iter-b 交叉复核结论（iconv-lite 保留：fetcher GBK 解码 require 引用，R13 误报；新增 next-themes/react-resizable-panels 零引用实锤）
+- 卸载前 42 包全量 grep 复核（src/tests/mini-services/examples + 4 个配置文件，含动态 import 防误报）：零引用
+- bun remove 42 包（@dnd-kit×3、@tanstack×2、framer-motion、zod、zustand、next-auth、next-intl、react-markdown、react-syntax-highlighter、@mdxeditor、uuid、date-fns、@reactuses、@hookform、sonner、cmdk、vaul、recharts、embla、input-otp、react-day-picker、react-hook-form、next-themes、react-resizable-panels、@radix-ui 15 个孤儿组件依赖）
+- 卸载后回归：bunx tsc 0 错误、bun run lint 0 错误、dev / 与 /api/stats 200
+
+Stage Summary:
+- node_modules 显著瘦身，lockfile 收敛；运行时零影响（tsc/lint/HTTP 冒烟全绿）

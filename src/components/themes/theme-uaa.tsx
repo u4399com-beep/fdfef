@@ -30,6 +30,63 @@ const ACCENT_BG = 'bg-[#1a72c4]'
 const CARD = 'rounded-md border border-[#d4e4f0] bg-white shadow-sm'
 const PAGE_BG = 'bg-[#e9f2f9]'
 
+/* ================= 分页页码（省略号收敛：首尾恒显 + 当前页±1，间隔以「…」占位） ================= */
+
+function paginationPages(current: number, total: number): (number | 'ellipsis')[] {
+  if (total <= 7) return Array.from({ length: total }, (_, i) => i + 1)
+  const pages = [...new Set([1, total, current - 1, current, current + 1])]
+    .filter((p) => p >= 1 && p <= total)
+    .sort((a, b) => a - b)
+  const items: (number | 'ellipsis')[] = []
+  let prev = 0
+  for (const p of pages) {
+    if (p - prev > 1) items.push('ellipsis')
+    items.push(p)
+    prev = p
+  }
+  return items
+}
+
+function PageNumbers({
+  current, total, onSelect, compact,
+}: {
+  current: number
+  total: number
+  onSelect: (page: number) => void
+  compact?: boolean
+}) {
+  const size = compact ? 'h-8 min-w-[32px] text-xs' : 'h-9 min-w-[36px] text-sm'
+  return (
+    <>
+      {paginationPages(current, total).map((item, i) =>
+        item === 'ellipsis' ? (
+          <span
+            key={`ellipsis-${i}`}
+            aria-hidden="true"
+            className={`flex items-center justify-center text-[#9db8cc] ${size}`}
+          >
+            …
+          </span>
+        ) : (
+          <button
+            key={item}
+            type="button"
+            onClick={() => onSelect(item)}
+            aria-current={current === item ? 'page' : undefined}
+            className={`${size} rounded transition-colors ${
+              current === item
+                ? `${ACCENT_BG} text-white`
+                : 'border border-[#c9dff0] bg-white text-[#4a6b85] hover:border-[#1a72c4] hover:text-[#1a72c4]'
+            }`}
+          >
+            {item}
+          </button>
+        ),
+      )}
+    </>
+  )
+}
+
 /* ================= 基础部件 ================= */
 
 function Cover({ book, className }: { book: Pick<BookCard, 'title' | 'coverUrl'>; className: string }) {
@@ -369,7 +426,7 @@ function UaaHome({ site, data, loading, onNavigate }: ThemeProps) {
 
             {/* 分页 */}
             {!loading && filtered.length > HOME_PAGE_SIZE && (
-              <nav aria-label="列表分页" className="mt-5 flex items-center justify-center gap-2">
+              <nav aria-label="列表分页" className="mt-5 flex flex-wrap items-center justify-center gap-2">
                 <button
                   type="button"
                   disabled={safePage <= 1}
@@ -379,21 +436,7 @@ function UaaHome({ site, data, loading, onNavigate }: ThemeProps) {
                   <ArrowLeft className="h-3.5 w-3.5" aria-hidden="true" />
                   上一页
                 </button>
-                {Array.from({ length: totalPages }).map((_, i) => (
-                  <button
-                    key={i}
-                    type="button"
-                    onClick={() => setPage(i + 1)}
-                    aria-current={safePage === i + 1 ? 'page' : undefined}
-                    className={`h-9 min-w-[36px] rounded text-sm transition-colors ${
-                      safePage === i + 1
-                        ? `${ACCENT_BG} text-white`
-                        : 'border border-[#c9dff0] bg-white text-[#4a6b85] hover:border-[#1a72c4] hover:text-[#1a72c4]'
-                    }`}
-                  >
-                    {i + 1}
-                  </button>
-                ))}
+                <PageNumbers current={safePage} total={totalPages} onSelect={setPage} />
                 <button
                   type="button"
                   disabled={safePage >= totalPages}
@@ -674,22 +717,7 @@ function UaaToc({ site, data, loading, onNavigate }: ThemeProps) {
               <span className="text-sm text-[#7d9cb5]">
                 第 {safePage} / {totalPages} 页
               </span>
-              {totalPages > 1 &&
-                Array.from({ length: totalPages }).map((_, i) => (
-                  <button
-                    key={i}
-                    type="button"
-                    onClick={() => setPage(i + 1)}
-                    aria-current={safePage === i + 1 ? 'page' : undefined}
-                    className={`h-8 min-w-[32px] rounded text-xs transition-colors ${
-                      safePage === i + 1
-                        ? `${ACCENT_BG} text-white`
-                        : 'border border-[#c9dff0] bg-white text-[#4a6b85] hover:border-[#1a72c4] hover:text-[#1a72c4]'
-                    }`}
-                  >
-                    {i + 1}
-                  </button>
-                ))}
+              {totalPages > 1 && <PageNumbers compact current={safePage} total={totalPages} onSelect={setPage} />}
               <button
                 type="button"
                 disabled={safePage >= totalPages}
@@ -850,7 +878,7 @@ function UaaKeyword({ site, data, loading, onNavigate, keyword }: ThemeProps & {
 
         <section className="py-8 text-center">
           <h1 className="text-2xl font-bold text-[#20517a] sm:text-3xl">{keyword}</h1>
-          <p className="mt-2 text-sm text-[#7d9cb5]">与「{keyword}」相关的书籍与内容</p>
+          <p className="mt-2 text-sm text-[#7d9cb5]">与《{keyword}》相关的书籍与内容</p>
         </section>
 
         {loading ? (

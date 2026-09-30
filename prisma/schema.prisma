@@ -36,6 +36,10 @@ model Book {
 
   @@unique([sourceUrl, title])
   @@index([title])
+  // 列表/首页/关键词页均按 updatedAt desc 排序取页，无索引时 SQLite 需全表扫描+排序
+  @@index([updatedAt])
+  // 后台按分类筛选列表时：category 等值 + updatedAt 排序可由该复合索引一并满足
+  @@index([category, updatedAt])
 }
 
 // 章节

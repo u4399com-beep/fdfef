@@ -14,21 +14,71 @@ import type { FetchConfig } from '../collect-types'
 // ============================================================
 
 const UA_LIST = [
+  // [0] 固定 UA（rotateUA=false / WAF 通行 cookie 绑定场景），字符串保持不变
   'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
-  'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0.0.0 Safari/537.36 Edg/123.0.0.0',
+  // Chromium 版本族（Win/Mac/Linux × 现代版本号，Client Hints 品牌随 UA 严格配套）
+  'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36',
+  'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36',
+  'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0.0.0 Safari/537.36',
+  // Edge：UA 的 Edg/ 版本必须与 sec-ch-ua 的 "Microsoft Edge" 品牌同现（真实 Edge 行为）
+  'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36 Edg/124.0.0.0',
+  // 非 Chromium 家族（Safari/Firefox 本就不发送 Client Hints，无需品牌配套）
   'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.4 Safari/605.1.15',
   'Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:125.0) Gecko/20100101 Firefox/125.0',
-  'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0.0.0 Safari/537.36',
   'Mozilla/5.0 (iPhone; CPU iPhone OS 17_4 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.4 Mobile/15E148 Safari/604.1',
   'Mozilla/5.0 (Linux; Android 14; Pixel 8) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Mobile Safari/537.36',
-  'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36 115browser/26.0.0',
-  'Mozilla/5.0 (Linux; U; Android 13; zh-cn; M2102J2SC Build/TKQ1.220829.002) AppleWebKit/537.36 (KHTML, like Gecko) Version/4.0 Chrome/114.0.0.0 Mobile Safari/537.36 XiaoMi/MiuiBrowser/17.5.11',
 ]
 
 /** 从 UA 推断主版本号（生成匹配的 Client Hints） */
 function chromeMajorVersion(ua: string): string | null {
   const m = /Chrome\/(\d+)/.exec(ua)
   return m ? m[1] : null
+}
+
+/**
+ * 从 UA 推导 sec-ch-ua 品牌列表（与 UA 家族严格配套，防指纹自相矛盾）：
+ * - Chrome 系 → "Chromium"+"Google Chrome" 同版本号
+ * - Edge（UA 含 Edg/EdgA/EdgiOS）→ 以 "Microsoft Edge" 为首品牌（真实 Edge 发送的组合，
+ *   此前 UA 报 Edg/ 而 hints 报 "Google Chrome" 是自相矛盾的爬虫特征）
+ * - 非 Chromium 家族（Safari/Firefox）→ null（不发送 Client Hints）
+ */
+export function secChUaBrands(ua: string): string | null {
+  const ver = chromeMajorVersion(ua)
+  if (!ver) return null
+  if (/Edg(e|A|iOS)?\//.test(ua)) {
+    return `"Microsoft Edge";v="${ver}", "Chromium";v="${ver}", "Not-A.Brand";v="99"`
+  }
+  return `"Chromium";v="${ver}", "Google Chrome";v="${ver}", "Not-A.Brand";v="99"`
+}
+
+/** 由 sec-ch-ua 品牌推导 UA 对应的移动/平台 hints（仅 Chromium 家族调用） */
+function secChUaPlatformHints(ua: string): { mobile: string; platform: string } {
+  return {
+    mobile: /Mobile|Android|iPhone/.test(ua) ? '?1' : '?0',
+    platform: /Windows/i.test(ua)
+      ? '"Windows"'
+      : /Macintosh/i.test(ua)
+        ? '"macOS"'
+        : /Android/i.test(ua)
+          ? '"Android"'
+          : /iPhone|iPad/i.test(ua)
+            ? '"iOS"'
+            : '"Linux"',
+  }
+}
+
+/** 两主机是否同站（父子域互认，用于 Cookie 作用域与 Sec-Fetch-Site 推导） */
+function sameSiteHost(a: string, b: string): boolean {
+  return !!a && !!b && (a === b || a.endsWith('.' + b) || b.endsWith('.' + a))
+}
+
+/** 取 URL 主机名（非法 URL 返回空串） */
+function urlHost(url: string): string {
+  try {
+    return new URL(url).hostname
+  } catch {
+    return ''
+  }
 }
 
 export function randomUA(): string {
@@ -81,6 +131,7 @@ class CookieJar {
 
   /** 解析 Set-Cookie 响应头并入 jar */
   absorbFromFetch(host: string, headers: Headers): void {
+    if (!host) return
     const raw = typeof headers.getSetCookie === 'function' ? headers.getSetCookie() : []
     if (!raw.length) return
     const list = this.store.get(host) ?? []
@@ -177,27 +228,100 @@ export const cookieJar = new CookieJar(jarState.store)
 // 这是“稳定长期获取”的关键一环。
 // ------------------------------------------------------------
 const COOKIE_PERSIST_PATH = path.join(process.cwd(), 'storage', 'waf-cookies.json')
-const globalForJarPersist = globalThis as unknown as { __novelJarPersistTimer?: ReturnType<typeof setTimeout> | null }
+const globalForJarPersist = globalThis as unknown as {
+  __novelJarPersistTimer?: ReturnType<typeof setTimeout> | null
+  __novelJarDirty?: boolean
+  __novelJarExitHooked?: boolean
+  __novelJarSignalHooked?: boolean
+}
+
+/**
+ * 原子写盘：先写同目录唯一临时文件再 rename。
+ * 直接 writeFileSync 目标文件时，进程崩溃/磁盘异常会留下半个 JSON（损坏后只能空 jar 重启，
+ * 解题成果全丢）；rename 在同一文件系统上原子生效，读侧永远看到完整旧版或完整新版。
+ * 临时文件名含 pid+时间戳：多进程（dev server + 脚本）同时写盘也不会互相覆盖同一个临时文件。
+ */
+function writeJarFileAtomic(): void {
+  const now = Date.now()
+  const hosts: Record<string, { name: string; value: string; expires?: number }[]> = {}
+  for (const [host, cookies] of jarState.store) {
+    const valid = cookies.filter((c) => !c.expires || c.expires <= 0 || c.expires * 1000 > now)
+    if (valid.length) hosts[host] = valid
+  }
+  fs.mkdirSync(path.dirname(COOKIE_PERSIST_PATH), { recursive: true })
+  const tmp = `${COOKIE_PERSIST_PATH}.${process.pid}.${now.toString(36)}.tmp`
+  let renamed = false
+  try {
+    fs.writeFileSync(tmp, JSON.stringify({ savedAt: now, hosts }))
+    fs.renameSync(tmp, COOKIE_PERSIST_PATH)
+    renamed = true
+  } finally {
+    if (!renamed) {
+      try {
+        fs.unlinkSync(tmp)
+      } catch {
+        /* 清理失败无碍：残留 .tmp 不影响读侧 */
+      }
+    }
+  }
+}
+
+/** 同步刷盘（仅在确有未落盘变更时写）；磁盘失败不影响采集主链路 */
+function flushJarPersistSync(): void {
+  if (!globalForJarPersist.__novelJarDirty) return
+  globalForJarPersist.__novelJarDirty = false
+  try {
+    writeJarFileAtomic()
+  } catch {
+    /* 磁盘写入失败不影响采集主链路 */
+  }
+}
 
 function scheduleJarPersist(): void {
+  globalForJarPersist.__novelJarDirty = true
   if (globalForJarPersist.__novelJarPersistTimer) return
   const timer = setTimeout(() => {
     globalForJarPersist.__novelJarPersistTimer = null
-    try {
-      const now = Date.now()
-      const hosts: Record<string, { name: string; value: string; expires?: number }[]> = {}
-      for (const [host, cookies] of jarState.store) {
-        const valid = cookies.filter((c) => !c.expires || c.expires <= 0 || c.expires * 1000 > now)
-        if (valid.length) hosts[host] = valid
-      }
-      fs.mkdirSync(path.dirname(COOKIE_PERSIST_PATH), { recursive: true })
-      fs.writeFileSync(COOKIE_PERSIST_PATH, JSON.stringify({ savedAt: now, hosts }))
-    } catch {
-      /* 磁盘写入失败不影响采集主链路 */
-    }
+    flushJarPersistSync()
   }, 2000)
   timer.unref?.()
   globalForJarPersist.__novelJarPersistTimer = timer
+  // 防抖窗口内进程退出会丢掉未落盘的通行 cookie（下次重启又要重新解验证码）——
+  // exit 钩子只能同步操作，writeFileSync 满足；globalThis 守卫防热重载重复注册
+  if (!globalForJarPersist.__novelJarExitHooked) {
+    globalForJarPersist.__novelJarExitHooked = true
+    process.once('exit', flushJarPersistSync)
+  }
+  // SIGTERM/SIGINT 默认终止不走 'exit' 事件，补信号级刷盘兜底（见 hookSignalFlush 注释）
+  hookSignalFlush()
+}
+
+// 信号场景兜底：SIGTERM/SIGINT 在无监听者时按默认行为终止，**不触发 'exit' 事件**，
+// 防抖窗口内未落盘的通行 cookie 会丢（solve 验证码后立即被运维重启是最伤场景）。
+// 接管策略保守：注册前快照 listeners——已有其他监听者（如 Next 的优雅退出，最终会走
+// process.exit → 'exit' 钩子）时只刷盘、绝不抢终止权；无监听者时刷盘后向自身重发信号
+// 恢复默认终止语义，行为与未挂钩子前完全一致。once 语义：消费后解除挂载并复位标记，
+// 允许下次模块加载重新注册（globalThis 守卫防热重载重复挂载）。
+const JAR_FLUSH_SIGNALS = ['SIGTERM', 'SIGINT'] as const
+function hookSignalFlush(): void {
+  if (globalForJarPersist.__novelJarSignalHooked) return
+  globalForJarPersist.__novelJarSignalHooked = true
+  for (const sig of JAR_FLUSH_SIGNALS) {
+    const hadOtherListeners = process.listeners(sig).length > 0
+    const handler = (): void => {
+      flushJarPersistSync()
+      process.removeListener(sig, handler)
+      globalForJarPersist.__novelJarSignalHooked = false
+      if (!hadOtherListeners) {
+        try {
+          process.kill(process.pid, sig)
+        } catch {
+          /* 平台不支持自发信号时忽略：flush 已完成，仅终止语义可能滞后 */
+        }
+      }
+    }
+    process.on(sig, handler)
+  }
 }
 
 function loadPersistedJar(): void {
@@ -207,19 +331,31 @@ function loadPersistedJar(): void {
       savedAt?: number
       hosts?: Record<string, { name: string; value: string; expires?: number }[]>
     }
+    // 形状校验：损坏/被手改的存档（hosts 非对象等）直接放弃，而不是把垃圾灌进 jar
+    if (!parsed || typeof parsed !== 'object' || !parsed.hosts || typeof parsed.hosts !== 'object' || Array.isArray(parsed.hosts)) return
     // 超过 7 天的存档整体放弃（陈旧通行 cookie 是脏数据）
-    if (!parsed?.hosts || (parsed.savedAt && Date.now() - parsed.savedAt > 7 * 86_400_000)) return
+    if (parsed.savedAt && Date.now() - parsed.savedAt > 7 * 86_400_000) return
     const now = Date.now()
     for (const [host, cookies] of Object.entries(parsed.hosts)) {
-      if (!Array.isArray(cookies)) continue
-      const valid = cookies.filter((c) => c?.name && (!c.expires || c.expires <= 0 || c.expires * 1000 > now))
+      if (!host || !Array.isArray(cookies)) continue
+      const valid = cookies.filter(
+        (c) =>
+          c &&
+          typeof c.name === 'string' &&
+          typeof c.value === 'string' &&
+          (!c.expires || c.expires <= 0 || c.expires * 1000 > now)
+      )
       if (valid.length) jarState.store.set(host, valid)
     }
   } catch {
-    /* 文件不存在/损坏：空 jar 启动 */
+    /* 文件不存在/损坏（截断 JSON 等）：空 jar 启动，下次防抖写盘自愈 */
   }
 }
-loadPersistedJar()
+
+// 仅冷启动（jar 为空）时从磁盘恢复：globalThis 使 jarState 跨热重载存活，
+// 热重载时再读盘会用磁盘旧快照覆盖内存中防抖窗口内（<2s）刚吸收的新通行 cookie。
+// 进程重启时 store 必为空，磁盘恢复路径不受影响。
+if (jarState.store.size === 0) loadPersistedJar()
 
 // ============================================================
 // 全局同域节流器：无论任务线程数如何，同一域名的请求间隔不小于最小值，
@@ -228,8 +364,10 @@ loadPersistedJar()
 
 // 状态数据挂 globalThis（跨热重载保留），类实例每次模块加载新建（类代码始终最新）——
 // 从根上避免 dev 热重载后旧实例缺少新方法的问题
+// queues：host → 链尾 Promise<number>，resolve 值 = 该链上最后一次放行请求的时刻
+// （老状态热重载后为 Promise<void>，resolve 值 undefined → 等待计算优雅降级为不等待）
 interface ThrottleState {
-  queues: Map<string, Promise<void>>
+  queues: Map<string, Promise<number>>
   blockedUntil: Map<string, number>
 }
 const THROTTLE_STATE_KEY = '__novelThrottleState'
@@ -245,6 +383,7 @@ class DomainThrottle {
   /**
    * 同域串行化：每个请求至少间隔 minGapMs。
    * 若该域处于封禁冷却期（reportBlock），自动等待冷却结束后再入队。
+   * 放行时刻沿链传递（Promise 链值），天然 FIFO 无饥饿；域空闲时首个请求零等待放行。
    */
   async wait(url: string, customGap?: number): Promise<void> {
     let host = ''
@@ -253,22 +392,37 @@ class DomainThrottle {
     } catch {
       return
     }
-    // 封禁冷却期：等待解除后继续（避免在封禁期继续请求加剧封禁）
-    const blockedUntil = this.blockedUntil.get(host) ?? 0
-    const now = Date.now()
-    if (now < blockedUntil) {
-      await sleep(blockedUntil - now + 200)
-      this.blockedUntil.delete(host)
+    // 封禁冷却期：等待解除后继续（避免在封禁期继续请求加剧封禁）。
+    // 循环处理「等待期间又收到更长冷却」的情形；reportBlock 只会延长冷却（until 单调递增），
+    // 因此仅当存储值仍是等过的那个值时才清除——修复：早先实现无条件 delete，
+    // 等待期间新设置的更长冷却会被误删，导致封禁期放行请求加剧封禁
+    for (;;) {
+      const until = this.blockedUntil.get(host)
+      if (!until) break
+      const now = Date.now()
+      if (now < until) await sleep(until - now + 200)
+      if ((this.blockedUntil.get(host) ?? 0) <= until) this.blockedUntil.delete(host)
     }
     const gap = Math.max(0, customGap ?? 1200)
     if (gap <= 0) return
-    const prev = this.queues.get(host) ?? Promise.resolve()
-    const next = prev.then(
-      () => new Promise<void>((r) => setTimeout(r, gap)),
-      () => new Promise<void>((r) => setTimeout(r, gap))
+    const prev = this.queues.get(host)
+    if (!prev) {
+      // 域空闲：首个请求零等待放行（此前实现对新域也空等一整个 gap，白白拖慢冷启动），
+      // 仅记录放行时刻供后续请求推算间隔
+      this.queues.set(host, Promise.resolve(Date.now()))
+      return
+    }
+    const release = prev.then(
+      async (prevFire: number) => {
+        const waitMs = prevFire + gap - Date.now()
+        if (Number.isFinite(waitMs) && waitMs > 0) await sleep(waitMs)
+        return Date.now()
+      },
+      // 链尾理论上不会 reject，此分支纯防御（取当前时刻继续，保持链不断）
+      () => Date.now()
     )
-    this.queues.set(host, next)
-    await next
+    this.queues.set(host, release)
+    await release
   }
 
   /** 目标站封禁（硬 403）：设置同域全局冷却期 */
@@ -285,6 +439,89 @@ class DomainThrottle {
 }
 
 export const domainThrottle = new DomainThrottle()
+
+// ============================================================
+// 站点级熔断器：同域连续 N 次网络级失败（DNS 解析/连接拒绝/超时）后
+// 冷却 M 分钟，期间请求快速失败、不再打站点（避免对已死/正在封禁的站点
+// 反复消耗重试预算并加重风控）。冷却结束进入半开状态放行探测请求，
+// 成功即复位，失败立即重新熔断。
+// 与镜像轮换协同：熔断错误按「网络不可达」分类（见错误文案），
+// fetchPage 捕获后自动转试 cfg.mirrorUrls，主域停摆期间采集无缝切镜像。
+// 状态挂 globalThis：跨热重载保留（磁盘不持久化，重启即清零，属合理瞬态）。
+// ============================================================
+interface BreakerEntry {
+  fails: number // 当前连续失败计数
+  openUntil: number // >0 表示熔断打开，至此时刻
+  lastFailAt: number // 上次失败时刻（用于陈旧失败衰减）
+}
+const BREAKER_STATE_KEY = '__novelCircuitBreakerState'
+const CIRCUIT_FAIL_THRESHOLD = 3
+const CIRCUIT_COOLDOWN_MS = 120_000
+const CIRCUIT_FAIL_DECAY_MS = 10 * 60_000
+const CIRCUIT_MAX_ENTRIES = 500
+const globalForBreaker = globalThis as unknown as { [BREAKER_STATE_KEY]?: Map<string, BreakerEntry> }
+const breakerState: Map<string, BreakerEntry> = globalForBreaker[BREAKER_STATE_KEY] ?? new Map()
+globalForBreaker[BREAKER_STATE_KEY] = breakerState
+
+/** 请求前检查：熔断打开且未到冷却期 → 快速失败（错误文案按网络不可达分类，可触发镜像轮换） */
+function assertCircuitClosed(url: string): void {
+  const host = urlHost(url)
+  if (!host) return
+  const entry = breakerState.get(host)
+  if (!entry || !entry.openUntil) return
+  if (Date.now() >= entry.openUntil) return // 半开：放行探测请求
+  const remainSec = Math.ceil((entry.openUntil - Date.now()) / 1000)
+  throw new Error(
+    `请求失败: ${host} 连续 ${entry.fails} 次网络不可达（network unreachable）已熔断，${remainSec}s 后自动半开复检`
+  )
+}
+
+function recordNetworkFailure(url: string): void {
+  const host = urlHost(url)
+  if (!host) return
+  // 容量保险：长期运行防无限增长（正常远小于该值：每站一条）
+  if (breakerState.size >= CIRCUIT_MAX_ENTRIES && !breakerState.has(host)) {
+    const now = Date.now()
+    for (const [k, rec] of breakerState) if (!rec.openUntil && now - rec.lastFailAt > CIRCUIT_FAIL_DECAY_MS) breakerState.delete(k)
+    while (breakerState.size >= CIRCUIT_MAX_ENTRIES) {
+      const oldest = breakerState.keys().next().value
+      if (oldest === undefined) break
+      breakerState.delete(oldest)
+    }
+  }
+  const now = Date.now()
+  const entry = breakerState.get(host) ?? { fails: 0, openUntil: 0, lastFailAt: 0 }
+  if (entry.openUntil && now >= entry.openUntil) {
+    // 半开探测失败：立即重新熔断（不给已死站点再消耗完整 N 次失败预算）
+    entry.openUntil = now + CIRCUIT_COOLDOWN_MS + randomInt(0, 30_000)
+    entry.lastFailAt = now
+    breakerState.set(host, entry)
+    return
+  }
+  // 久远的失败不累计：新故障周期从零开始计数，避免偶发失败永久垫高熔断敏感度
+  if (entry.lastFailAt && now - entry.lastFailAt > CIRCUIT_FAIL_DECAY_MS) entry.fails = 0
+  entry.fails += 1
+  entry.lastFailAt = now
+  if (entry.fails >= CIRCUIT_FAIL_THRESHOLD) {
+    entry.openUntil = now + CIRCUIT_COOLDOWN_MS + randomInt(0, 30_000)
+  }
+  breakerState.set(host, entry)
+}
+
+function recordNetworkSuccess(url: string): void {
+  const host = urlHost(url)
+  if (host) breakerState.delete(host)
+}
+
+/** 重置熔断状态（管理/测试用；不传 url 清空全部） */
+export function resetCircuitBreaker(url?: string): void {
+  if (url) {
+    const host = urlHost(url)
+    if (host) breakerState.delete(host)
+    return
+  }
+  breakerState.clear()
+}
 
 // ============================================================
 // WAF 挑战页识别
@@ -382,19 +619,12 @@ function mergeCookieStrings(base: string, override: string): string {
 function rotateFingerprint(headers: Record<string, string>): Record<string, string> {
   const ua = randomUA()
   const out: Record<string, string> = { ...headers, 'User-Agent': ua }
-  const chromeVer = chromeMajorVersion(ua)
-  if (chromeVer) {
-    out['sec-ch-ua'] = `"Chromium";v="${chromeVer}", "Google Chrome";v="${chromeVer}", "Not-A.Brand";v="99"`
-    out['sec-ch-ua-mobile'] = /Mobile|Android|iPhone/.test(ua) ? '?1' : '?0'
-    out['sec-ch-ua-platform'] = /Windows/i.test(ua)
-      ? '"Windows"'
-      : /Macintosh/i.test(ua)
-        ? '"macOS"'
-        : /Android/i.test(ua)
-          ? '"Android"'
-          : /iPhone|iPad/i.test(ua)
-            ? '"iOS"'
-            : '"Linux"'
+  const brands = secChUaBrands(ua)
+  if (brands) {
+    const hints = secChUaPlatformHints(ua)
+    out['sec-ch-ua'] = brands
+    out['sec-ch-ua-mobile'] = hints.mobile
+    out['sec-ch-ua-platform'] = hints.platform
   } else {
     delete out['sec-ch-ua']
     delete out['sec-ch-ua-mobile']
@@ -413,20 +643,13 @@ function buildHeaders(cfg: FetchConfig, url: string, uaOverride?: string): Recor
     Pragma: 'no-cache',
     'Upgrade-Insecure-Requests': '1',
   }
-  // Chrome 系 UA 注入配套 Client Hints（真实浏览器指纹）
-  const chromeVer = chromeMajorVersion(ua)
-  if (chromeVer) {
-    headers['sec-ch-ua'] = `"Chromium";v="${chromeVer}", "Google Chrome";v="${chromeVer}", "Not-A.Brand";v="99"`
-    headers['sec-ch-ua-mobile'] = /Mobile|Android|iPhone/.test(ua) ? '?1' : '?0'
-    headers['sec-ch-ua-platform'] = /Windows/i.test(ua)
-      ? '"Windows"'
-      : /Macintosh/i.test(ua)
-        ? '"macOS"'
-        : /Android/i.test(ua)
-          ? '"Android"'
-          : /iPhone|iPad/i.test(ua)
-            ? '"iOS"'
-            : '"Linux"'
+  // Chrome 系 UA 注入配套 Client Hints（品牌与版本号严格随 UA 家族，见 secChUaBrands）
+  const brands = secChUaBrands(ua)
+  if (brands) {
+    const hints = secChUaPlatformHints(ua)
+    headers['sec-ch-ua'] = brands
+    headers['sec-ch-ua-mobile'] = hints.mobile
+    headers['sec-ch-ua-platform'] = hints.platform
   }
   if (cfg.referer) headers.Referer = cfg.referer
   else {
@@ -438,18 +661,21 @@ function buildHeaders(cfg: FetchConfig, url: string, uaOverride?: string): Recor
     }
   }
   // Sec-Fetch 导航指纹（现代浏览器导航请求必带，缺失同样是爬虫特征）；
-  // Sec-Fetch-Site 与 Referer 的同源/跨源关系保持一致，避免自相矛盾
+  // Sec-Fetch-Site 与 Referer 的同源/同站/跨源关系保持一致，避免自相矛盾；
+  // 无 Referer 时按地址栏直达导航指纹处理（none），而非误报 cross-site
   {
-    let refHost = ''
-    try {
-      refHost = new URL(headers.Referer).hostname
-    } catch {
-      /* Referer 缺失时按跨源处理 */
-    }
+    const refHost = urlHost(headers.Referer)
+    const targetHost = urlHost(url)
     try {
       headers['Sec-Fetch-Dest'] = 'document'
       headers['Sec-Fetch-Mode'] = 'navigate'
-      headers['Sec-Fetch-Site'] = refHost && refHost === new URL(url).hostname ? 'same-origin' : 'cross-site'
+      headers['Sec-Fetch-Site'] = !refHost
+        ? 'none'
+        : refHost === targetHost
+          ? 'same-origin'
+          : sameSiteHost(refHost, targetHost)
+            ? 'same-site'
+            : 'cross-site'
       headers['Sec-Fetch-User'] = '?1'
     } catch {
       /* 非法 URL 已在入口拦 */
@@ -486,21 +712,40 @@ export async function fetchPage(url: string, cfg: FetchConfig = {}): Promise<Fet
   // 镜像加速：主域名近期网络不可达时直接改写到可用镜像（域名轮换是小说站常态）
   const mirrored = rerouteToMirror(url)
   try {
-    return await fetchPageInner(mirrored.url, cfg)
+    const r = await fetchPageInner(mirrored.url, cfg)
+    recordNetworkSuccess(mirrored.url)
+    return r
   } catch (e) {
-    if (!mirrored.swapped && isNetworkUnreachableError(e) && cfg.mirrorUrls?.length) {
+    const networkErr = isNetworkUnreachableError(e)
+    if (networkErr) recordNetworkFailure(mirrored.url)
+    if (networkErr && cfg.mirrorUrls?.length) {
+      // 已在用的记忆镜像也死了：清除记忆，下次请求复检主域
+      if (mirrored.swapped) {
+        try {
+          mirrorState.active.delete(new URL(url).hostname)
+        } catch {
+          /* ignore */
+        }
+      }
       let lastErr: unknown = e
       for (const mirror of cfg.mirrorUrls) {
         const alt = swapOrigin(url, mirror)
+        // swapped 时 alt === mirrored.url 即刚失败的那个镜像，跳过
         if (!alt || alt === mirrored.url) continue
         try {
           const r = await fetchPageInner(alt, cfg)
+          recordNetworkSuccess(alt)
           // 记忆可用镜像：后续请求跳过已死主域，直至冷却期结束复检
           markMirrorAlive(url, alt)
           return r
         } catch (err) {
+          if (isNetworkUnreachableError(err)) recordNetworkFailure(alt)
           lastErr = err
         }
+      }
+      // 透传最后一个错误；已有「请求失败:」前缀的不重复叠加
+      if (lastErr instanceof Error && !lastErr.message.startsWith('请求失败:')) {
+        throw new Error(`请求失败: ${lastErr.message}`)
       }
       throw lastErr instanceof Error ? lastErr : e
     }
@@ -522,6 +767,8 @@ globalForMirror[MIRROR_STATE_KEY] = mirrorState
 
 /** 主域死亡冷却期（期间请求直接走镜像，到期后复检主域） */
 const MIRROR_DEAD_MS = 10 * 60_000
+/** 镜像记忆表容量上限（过期条目惰性删除之外的硬保险，防长期运行无限增长） */
+const MIRROR_MAX_ENTRIES = 200
 
 function rerouteToMirror(url: string): { url: string; swapped: boolean } {
   try {
@@ -545,19 +792,35 @@ function markMirrorAlive(originalUrl: string, mirrorUrl: string): void {
     const orig = new URL(originalUrl)
     const mir = new URL(mirrorUrl)
     if (orig.hostname === mir.hostname) return
+    // 容量保险：超限先清理已过期记忆，仍超限则按插入序淘汰最旧一条
+    if (mirrorState.active.size >= MIRROR_MAX_ENTRIES && !mirrorState.active.has(orig.hostname)) {
+      const now = Date.now()
+      for (const [k, rec] of mirrorState.active) if (now >= rec.deadUntil) mirrorState.active.delete(k)
+      while (mirrorState.active.size >= MIRROR_MAX_ENTRIES) {
+        const oldest = mirrorState.active.keys().next().value
+        if (oldest === undefined) break
+        mirrorState.active.delete(oldest)
+      }
+    }
     mirrorState.active.set(orig.hostname, { mirrorOrigin: mir.origin, deadUntil: Date.now() + MIRROR_DEAD_MS })
   } catch {
     /* ignore */
   }
 }
 
-/** 识别网络层不可达错误（区别于 WAF/HTTP 状态错误——后者换域名无意义） */
+/** 识别网络层不可达错误（区别于 WAF/HTTP 状态错误——后者换域名无意义）；
+ *  重定向环/跳数超限也按网络类处理：镜像通常能提供不同的跳转链路。
+ *  运行时差异必配：Node(undici) 报 "fetch failed"（ECONNREFUSED 等在 cause 里），
+ *  Bun 报 "Unable to connect. Is the computer able to access the url?"（无 cause，
+ *  DNS 失败与连接拒绝同文案）——生产 Docker 以 bun 运行，漏配会导致熔断器/镜像
+ *  轮换在 Bun 下整体失明（连接类失败不再被记录，也不会触发镜像切换）。 */
 export function isNetworkUnreachableError(e: unknown): boolean {
   const msg = e instanceof Error ? e.message : String(e)
   return (
     /fetch failed|ENOTFOUND|EAI_AGAIN|ECONNREFUSED|ECONNRESET|ETIMEDOUT|EHOSTUNREACH|ENETUNREACH/i.test(msg) ||
+    /unable to (connect|resolve)/i.test(msg) ||
     /ERR_ADDRESS_UNREACHABLE|ERR_CONNECTION_(REFUSED|RESET|TIMED_OUT)|ERR_NAME_NOT_RESOLVED|ERR_NETWORK/i.test(msg) ||
-    /请求失败.*(timed?\s*out|abort|socket|terminated|unreachable)/i.test(msg) ||
+    /请求失败.*(重定向|timed?\s*out|abort|socket|terminated|unreachable)/i.test(msg) ||
     /(operation was aborted|operation timed out|network error|connection (closed|terminated|error))/i.test(msg)
   )
 }
@@ -578,6 +841,9 @@ export function swapOrigin(url: string, mirror: string): string | null {
 
 async function fetchPageInner(url: string, cfg: FetchConfig): Promise<FetchResult> {
   if (!/^https?:\/\//i.test(url)) throw new Error(`非法 URL：${url}`)
+  // 熔断检查（含 playwright/hyperbrowser 策略）：打开则快速失败，
+  // 错误按网络不可达分类，fetchPage 会转试镜像而非继续打已死站点
+  assertCircuitClosed(url)
   const strategy = cfg.strategy ?? 'http'
   const timeout = cfg.timeout ?? 20000
   const started = Date.now()
@@ -591,13 +857,21 @@ async function fetchPageInner(url: string, cfg: FetchConfig): Promise<FetchResul
   let status = 0
   let finalUrl = url
   for (let attempt = 0; attempt < 2; attempt++) {
-    const res = await fetchWithRetry(url, buildHeaders(cfg, url), timeout, 2, cfg.rotateUA === false)
+    const { res, finalUrl: fetchedUrl } = await fetchWithRetry(
+      url,
+      buildHeaders(cfg, url),
+      timeout,
+      2,
+      cfg.rotateUA === false,
+      cfg.cookies
+    )
+    const effectiveFinal = fetchedUrl || url
     const buffer = Buffer.from(await res.arrayBuffer())
-    cookieJar.absorbFromFetch(new URL(res.url || url).hostname, res.headers)
+    cookieJar.absorbFromFetch(urlHost(effectiveFinal), res.headers)
     const charset = detectCharset(buffer, res.headers.get('content-type') ?? '', cfg.encoding ?? 'auto')
     html = decodeBuffer(buffer, charset)
     status = res.status
-    finalUrl = res.url || url
+    finalUrl = effectiveFinal
     if (isHardDeniedHtml(html)) {
       // IP 已被目标站拉黑（硬 403）：全局冷却后向调用方明确报告
       domainThrottle.reportBlock(finalUrl, 180_000)
@@ -623,30 +897,159 @@ async function fetchPageInner(url: string, cfg: FetchConfig): Promise<FetchResul
   return { html, status, finalUrl, strategy: 'http', elapsedMs: Date.now() - started, wafChallenged: true }
 }
 
+/** 不可重试错误：结构性的请求/响应问题（重定向缺 Location、非法跳转协议等），重试无意义 */
+class NoRetryError extends Error {}
+
+/** 视为重定向的响应状态 */
+const REDIRECT_STATUSES = new Set([301, 302, 303, 307, 308])
+/** 手动跟随重定向的跳数上限（真实浏览器 20 跳；小说站链路极短，收紧上限换取更快的环检测） */
+const MAX_REDIRECT_HOPS = 8
+
+/** Retry-After 头解析（RFC 7231）：秒数或 HTTP 日期，返回应等待的 ms；缺失/非法返回 null */
+function parseRetryAfter(headerValue: string | null): number | null {
+  if (!headerValue) return null
+  const s = headerValue.trim()
+  if (/^\d+$/.test(s)) {
+    const sec = Number.parseInt(s, 10)
+    return sec >= 0 ? sec * 1000 : null
+  }
+  const t = Date.parse(s)
+  return Number.isFinite(t) ? Math.max(0, t - Date.now()) : null
+}
+
+/**
+ * 重试退避曲线：指数增长 + 随机抖动（多线程/多实例同时重试时避免同步踩踏同站点）。
+ * 429 从更高基线起步（限流信号优先退让，退让不足只会加重限流）。
+ */
+function retryBackoffMs(attempt: number, baseMs: number, capMs = 20_000): number {
+  const exp = baseMs * Math.pow(2, Math.max(0, attempt))
+  const jitter = Math.random() * baseMs
+  return Math.min(exp + jitter, capMs)
+}
+
+interface FetchRetryResult {
+  res: Response
+  /** 跟随重定向后的最终 URL（manual 模式下不再依赖 res.url） */
+  finalUrl: string
+}
+
+/**
+ * 单次请求（手动重定向跟随，总超时预算跨全部跳共享）：
+ * - 逐跳吸收 Set-Cookie：redirect:'follow' 模式下中间 302 下发的 WAF 通行 cookie 会整体丢失
+ * - 逐跳按目标 host 重算 Cookie 头：显式 cookie 仅随同站跳转携带，绝不跨站泄漏
+ *   （真实浏览器按目标域作用域发 cookie；follow 模式会把原站 Cookie 头原样发给跨域跳转目标）
+ * - Referer/Sec-Fetch 等导航指纹保持发起时的原值（浏览器在重定向链上不重写这些头）
+ * - visited 集合环检测 + 跳数上限
+ */
+async function fetchFollowingRedirects(
+  startUrl: string,
+  headers: Record<string, string>,
+  explicitCookies: string,
+  timeout: number
+): Promise<FetchRetryResult> {
+  let current = startUrl
+  const visited = new Set<string>()
+  const deadline = Date.now() + timeout
+  for (let hop = 0; hop <= MAX_REDIRECT_HOPS; hop++) {
+    if (visited.has(current)) {
+      // 环是确定性的：同 URL 重试只会重复同样的跳转链（对目标站白打 3 倍请求），按不可重试抛出；
+      // 错误文案仍按网络类分类，fetchPage 层依旧会转试镜像（不同链路可解）
+      throw new NoRetryError(`请求失败: 重定向环（${current.slice(0, 120)}）`)
+    }
+    visited.add(current)
+    // 逐跳重算 Cookie：jar 会话 cookie 按跳转目标域下发；显式 cookie 仅同站跳转携带
+    const hopHeaders: Record<string, string> = { ...headers }
+    const jarCookie = cookieJar.header(current)
+    const carryExplicit = sameSiteHost(urlHost(current), urlHost(startUrl)) ? explicitCookies : ''
+    const merged = carryExplicit && jarCookie ? mergeCookieStrings(carryExplicit, jarCookie) : carryExplicit || jarCookie
+    if (merged) hopHeaders.Cookie = merged
+    else delete hopHeaders.Cookie
+    // 跨站跳转按浏览器默认 referrer 策略（strict-origin-when-cross-origin）降级 Referer：
+    // 重定向链上浏览器保留的仍是原始 referrer，但本跳目标与 referrer 跨站时只发其 origin，
+    // 不把原始页面的完整路径/查询参数泄漏给跨站跳转目标（小说站常经广告/统计域中转）
+    const refHost = urlHost(headers.Referer ?? '')
+    if (hop > 0 && refHost && !sameSiteHost(urlHost(current), refHost)) {
+      try {
+        hopHeaders.Referer = new URL(headers.Referer).origin
+      } catch {
+        /* 保持原 Referer */
+      }
+    }
+    // Sec-Fetch-Site 逐跳按「原始 referrer ↔ 本跳目标」重算（Fetch Metadata 语义：
+    // 导航重定向不更新请求 origin，比较基准始终是发起文档），与上面的 Referer 降级自洽
+    if ('Sec-Fetch-Site' in hopHeaders) {
+      const hopTargetHost = urlHost(current)
+      hopHeaders['Sec-Fetch-Site'] = !refHost
+        ? 'none'
+        : refHost === hopTargetHost
+          ? 'same-origin'
+          : sameSiteHost(refHost, hopTargetHost)
+            ? 'same-site'
+            : 'cross-site'
+    }
+    // 总超时预算跨跳共享（而非每跳重新计时）：8 跳 × 20s 不会把总耗时放大 8 倍
+    const remain = deadline - Date.now()
+    if (remain <= 500) throw new Error(`请求失败: 重定向链超时（${startUrl.slice(0, 120)}）`)
+    const res = await fetch(current, {
+      headers: hopHeaders,
+      redirect: 'manual',
+      signal: AbortSignal.timeout(remain),
+      cache: 'no-store',
+    })
+    // 逐跳吸收 Set-Cookie：WAF 通行 cookie 常在 302 响应上下发
+    cookieJar.absorbFromFetch(urlHost(current), res.headers)
+    if (!REDIRECT_STATUSES.has(res.status)) return { res, finalUrl: current }
+    const loc = res.headers.get('location')
+    if (!loc) {
+      // 3xx 无 Location：无法跟随且重试无意义，按不可重试错误抛出
+      await res.body?.cancel().catch(() => undefined)
+      throw new NoRetryError(`HTTP ${res.status}（重定向缺少 Location）: ${current.slice(0, 120)}`)
+    }
+    let next: URL
+    try {
+      next = new URL(loc, current)
+    } catch {
+      await res.body?.cancel().catch(() => undefined)
+      throw new NoRetryError(`请求失败: 重定向 Location 非法（${loc.slice(0, 120)}）`)
+    }
+    if (next.protocol !== 'http:' && next.protocol !== 'https:') {
+      await res.body?.cancel().catch(() => undefined)
+      throw new NoRetryError(`请求失败: 不支持的重定向协议（${next.protocol}）`)
+    }
+    // 释放未读 body，归还连接
+    await res.body?.cancel().catch(() => undefined)
+    current = next.href
+  }
+  throw new NoRetryError(
+    `请求失败: 重定向超过 ${MAX_REDIRECT_HOPS} 跳上限（可能重定向环）: ${startUrl.slice(0, 120)}`
+  )
+}
+
 async function fetchWithRetry(
   url: string,
   headers: Record<string, string>,
   timeout: number,
   retries = 2,
-  keepUA = false
-): Promise<Response> {
+  keepUA = false,
+  explicitCookies = ''
+): Promise<FetchRetryResult> {
   let lastErr: unknown = null
   for (let i = 0; i <= retries; i++) {
     try {
       // 每次重试轮换 UA（模拟多用户）；keepUA=true 时固定 UA（WAF 通行 cookie 与 UA 绑定，换 UA 即失效）
-      const res = await fetch(url, {
-        headers: i === 0 || keepUA ? headers : rotateFingerprint(headers),
-        redirect: 'follow',
-        signal: AbortSignal.timeout(timeout),
-        cache: 'no-store',
-      })
+      const { res, finalUrl } = await fetchFollowingRedirects(
+        url,
+        i === 0 || keepUA ? headers : rotateFingerprint(headers),
+        explicitCookies,
+        timeout
+      )
       if (!res.ok) {
         // 403（WAF 拒绝）：重试只会加剧封禁，直接抛出
         if (res.status === 403) {
           const body = await res.text().catch(() => '')
           if (isHardDeniedHtml(body)) {
-            domainThrottle.reportBlock(url, 180_000)
-            throw new Error(`目标站拒绝访问（IP 临时封禁，HTTP 403）：${url}。已自动冷却 3 分钟`)
+            domainThrottle.reportBlock(finalUrl, 180_000)
+            throw new Error(`目标站拒绝访问（IP 临时封禁，HTTP 403）：${finalUrl}。已自动冷却 3 分钟`)
           }
           if (isWafChallengeHtml(body)) {
             // 挑战页常以 403 状态下发：body 原样交回调用方，由 isWafChallengeHtml
@@ -654,18 +1057,18 @@ async function fetchWithRetry(
             const h = new Headers(res.headers)
             h.delete('content-encoding')
             h.delete('content-length')
-            return new Response(body, { status: 403, headers: h })
+            return { res: new Response(body, { status: 403, headers: h }), finalUrl }
           }
           lastErr = new Error(`HTTP 403`)
           break
         }
         if (i < retries) {
-          // 429/5xx：更长退避（尊重 Retry-After 头）+ 轮换 UA
+          // 429/5xx：指数退避 + 抖动，尊重 Retry-After（秒数或 HTTP 日期两种形式都支持）
           lastErr = new Error(`HTTP ${res.status}`)
           await res.body?.cancel().catch(() => undefined) // 释放未读 body，归还连接
-          let backoff = res.status === 429 ? 1500 + Math.random() * 2000 : 600 + Math.random() * 800
-          const ra = Number.parseFloat(res.headers.get('retry-after') ?? '')
-          if (Number.isFinite(ra) && ra >= 0) backoff = Math.min(ra * 1000 + 250, 30_000)
+          const ra = parseRetryAfter(res.headers.get('retry-after'))
+          const backoff =
+            ra !== null ? Math.min(ra + 250, 30_000) : retryBackoffMs(i, res.status === 429 ? 2000 : 700)
           await sleep(backoff)
           continue
         }
@@ -673,14 +1076,18 @@ async function fetchWithRetry(
         await res.body?.cancel().catch(() => undefined)
         throw new Error(`HTTP ${res.status}（${url.slice(0, 120)}）`)
       }
-      return res
+      return { res, finalUrl }
     } catch (e) {
+      if (e instanceof NoRetryError) throw e
       if (e instanceof Error && e.message.includes('IP 临时封禁')) throw e
       lastErr = e
-      if (i < retries) await sleep(600 + Math.random() * 800)
+      // 网络错/超时：指数退避（首轮短退避快速恢复，连续失败逐步拉长）
+      if (i < retries) await sleep(retryBackoffMs(i, 600))
     }
   }
-  throw new Error(`请求失败: ${lastErr instanceof Error ? lastErr.message : String(lastErr)}`)
+  throw lastErr instanceof Error && lastErr.message.startsWith('请求失败:')
+    ? lastErr
+    : new Error(`请求失败: ${lastErr instanceof Error ? lastErr.message : String(lastErr)}`)
 }
 
 // ============================================================
@@ -776,6 +1183,14 @@ async function fetchWithPlaywright(url: string, cfg: FetchConfig, timeout: numbe
   // Cookie 单独经 addCookies 注入（context 级会话），避免 extraHTTPHeaders 里的静态 Cookie 头
   // 与浏览器 cookie 罐重复发送同名字段造成 WAF 判定异常
   const { Cookie: _cookieHeader, ...extraHeaders } = headers
+  // Sec-Fetch-* 必须从浏览器上下文剥离：Chromium 会按每类子资源自动下发真实
+  // Fetch Metadata（document 导航 vs image 子资源各不相同）；静态注入的
+  // document/navigate/user 会被强加到验证码图片等所有子资源请求上，
+  // GoEdge 校验 fetch-metadata 一致性时判定矛盾 → 拒供验证码图（元素不可见，
+  // 截图 30s×4 超时、解题链全灭）。HTTP 策略路径无原生元数据，保留注入不变。
+  for (const key of Object.keys(extraHeaders)) {
+    if (key.toLowerCase().startsWith('sec-fetch-')) delete extraHeaders[key]
+  }
   const context = await browser.newContext({
     userAgent: headers['User-Agent'],
     viewport: { width: 1366, height: 850 },
@@ -829,6 +1244,21 @@ async function fetchWithPlaywright(url: string, cfg: FetchConfig, timeout: numbe
 
     let html = await page.content()
     let finalUrl = page.url()
+
+    // 重定向链中途断链（TLS/HTTP2/瞬时网络错）时 goto 不抛错，而是落在浏览器错误页：
+    // 必须显式识别，否则错误页 HTML 会被当作正常 200 交给解析器产出空结果。
+    // 先原地重试一次（瞬时网络抖动常见），仍失败按网络类错误抛出（fetchPage 层触发镜像轮换）
+    if (/^chrome-error/i.test(finalUrl) || finalUrl === 'about:blank') {
+      await page.waitForTimeout(1200)
+      await page.goto(url, { waitUntil: 'domcontentloaded', timeout }).catch(() => undefined)
+      await page.waitForLoadState('networkidle', { timeout: 6000 }).catch(() => undefined)
+      await page.waitForTimeout(500)
+      html = await page.content()
+      finalUrl = page.url()
+      if (/^chrome-error/i.test(finalUrl) || finalUrl === 'about:blank') {
+        throw new Error(`请求失败: 浏览器导航失败（network unreachable，${finalUrl}）: ${url.slice(0, 120)}`)
+      }
+    }
 
     // WAF 挑战页 → 自动求解验证码
     if (isWafChallengeHtml(html) && !isHardDeniedHtml(html)) {
@@ -936,27 +1366,44 @@ async function recognizeCaptcha(pngBuffer: Buffer): Promise<string> {
   if (!mod) throw new Error('z-ai-web-dev-sdk 不可用，无法自动识别验证码')
   const zai = await mod.default.create()
   const base64 = pngBuffer.toString('base64')
-  // VLM 调用带 25s 超时保护，避免网络异常时请求挂起
-  const response = await Promise.race([
-    zai.chat.completions.createVision({
-      messages: [
-        {
-          role: 'user',
-          content: [
-            {
-              type: 'text',
-              text: '图片中是一个网站验证码。请准确识别其中的全部字符（可能包含数字与英文字母，注意区分大小写与易混字符如 0/O、1/l/I、6/b、8/B）。只输出识别出的验证码字符本身，不要任何解释、标点或空格。',
-            },
-            { type: 'image_url', image_url: { url: `data:image/png;base64,${base64}` } },
-          ],
-        },
-      ],
-      thinking: { type: 'disabled' },
-    }),
-    new Promise<never>((_, reject) => setTimeout(() => reject(new Error('VLM 验证码识别超时')), 25000)),
-  ])
-  const content = response.choices?.[0]?.message?.content ?? ''
-  return content.replace(/[^a-zA-Z0-9]/g, '').slice(0, 8)
+  // VLM 调用带 25s 超时保护，避免网络异常时请求挂起；竞速结束后必须清定时器，
+  // 否则成功路径下事件循环被无用的 25s 定时器拖住
+  let vlmTimer: ReturnType<typeof setTimeout> | undefined
+  try {
+    const response = await Promise.race([
+      zai.chat.completions.createVision({
+        messages: [
+          {
+            role: 'user',
+            content: [
+              {
+                type: 'text',
+                text: '图片中是一个网站验证码。请准确识别其中的全部字符（可能包含数字与英文字母，注意区分大小写与易混字符如 0/O、1/l/I、6/b、8/B）。只输出识别出的验证码字符本身，不要任何解释、标点或空格。',
+              },
+              // Vision API 迁移期兼容格式（2026-10 实测）：校验层要求 file 对象
+              // （file_id/file_url/file_data 至少其一，缺任一报 400 code 1214），
+              // 而视觉后端实际消费 image_url——单独 image_url 被校验拒绝、单独
+              // file_data 校验通过但图片不会送达模型（模型回复「请上传图片」）。
+              // 双字段并存为唯一可行载荷，此结论经红圆无歧义图实测确认。
+              {
+                type: 'image_url',
+                image_url: { url: `data:image/png;base64,${base64}` },
+                file: { file_data: `data:image/png;base64,${base64}` },
+              },
+            ],
+          },
+        ],
+        thinking: { type: 'disabled' },
+      }),
+      new Promise<never>((_, reject) => {
+        vlmTimer = setTimeout(() => reject(new Error('VLM 验证码识别超时')), 25000)
+      }),
+    ])
+    const content = response.choices?.[0]?.message?.content ?? ''
+    return content.replace(/[^a-zA-Z0-9]/g, '').slice(0, 8)
+  } finally {
+    if (vlmTimer) clearTimeout(vlmTimer)
+  }
 }
 
 /**
@@ -983,8 +1430,12 @@ async function solveWafChallenge(page: PlaywrightPage): Promise<boolean> {
       await page.waitForTimeout(1500)
       const html = await page.content()
       if (!isWafChallengeHtml(html)) return true
-    } catch {
-      // 下一轮刷新重试
+    } catch (e) {
+      // 解题环节异常必须留痕（此前静默吞掉导致 VLM API 契约变更后解题
+      // 全链路失效且无任何日志线索），warn 级不打断重试节奏
+      console.warn(
+        `[waf-solve] 第 ${attempt + 1}/4 次解题异常: ${e instanceof Error ? e.message.slice(0, 200) : String(e)}`
+      )
     }
     // 刷新验证码后重试
     await page.reload({ waitUntil: 'domcontentloaded', timeout: 15000 }).catch(() => undefined)
@@ -1083,7 +1534,7 @@ export async function fetchImage(url: string, referer?: string, timeout = 20000,
   const jarCookie = cookieJar.header(url)
   const mergedCookie = cookies && jarCookie ? mergeCookieStrings(cookies, jarCookie) : cookies || jarCookie
   if (mergedCookie) headers.Cookie = mergedCookie
-  const res = await fetchWithRetry(url, headers, timeout, 1, Boolean(ua))
+  const { res } = await fetchWithRetry(url, headers, timeout, 1, Boolean(ua), cookies)
   const buf = Buffer.from(await res.arrayBuffer())
   if (!res.ok || buf.length === 0) {
     throw new Error(`图片下载失败：HTTP ${res.status}（${url.slice(0, 120)}）`)

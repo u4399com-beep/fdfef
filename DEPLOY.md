@@ -32,7 +32,7 @@
 | 增量/全量 | 「完全覆盖重采集」与「增量更新」双模式按钮级切换 |
 | 双存储 | 章节正文可**直接写数据库**或**生成 txt 文件**到指定目录（storage/novels/），或两者同时 |
 | 下拉词 | 书名自动抓取百度/必应/360/DuckDuckGo/谷歌**多搜索引擎下拉词**，作为辅助标签；每个关键词拥有**独立落地页且全部指向主关键词（主书籍信息页）** |
-| 主题模板 | **5 套完全不同**（样式/配色/布局）的主题：经典书香 / 暗夜极简 / 清新杂志 / 古典水墨 / 现代炫彩；全主题适配 TDK、JSON-LD 结构化数据（SEO/GEO） |
+| 主题模板 | **6 套完全不同**（样式/配色/布局）的主题：经典书香 / 暗夜极简 / 清新杂志 / 古典水墨 / 现代炫彩 / UAA 蓝调；全主题适配 TDK、JSON-LD 结构化数据（SEO/GEO） |
 | 站群系统 | 添加域名、站名、主题模板、TDK、偏移量即可生成新站点；后台+数据库+本地文件共用一套 |
 | 下载系统 | 整书 TXT 下载；后台可配置插入**站点信息 / 广告 / 混淆**（零宽字符、同形字、干扰行三种方式+密度可调） |
 
@@ -130,13 +130,17 @@ bun run db:push
 bun run build
 
 # 6. 启动（建议 pm2/systemd 守护）
-bun run start          # 等价于 bun .next/standalone/server.js
+#    注意：standalone 产物启动后以 .next/standalone 为工作目录，不会读取项目根目录的 .env，
+#    因此 DATABASE_URL 必须显式注入环境变量，否则启动后接口报 PrismaClientInitializationError：
+set -a; source .env; set +a
+bun run start          # 等价于 NODE_ENV=production bun .next/standalone/server.js
 
 # systemd 示例（/etc/systemd/system/novel.service）
 # [Service]
 # WorkingDirectory=/opt/novel-system
 # ExecStart=/root/.bun/bin/bun .next/standalone/server.js
 # Environment=NODE_ENV=production PORT=3000
+# Environment=DATABASE_URL=file:/opt/novel-system/db/custom.db
 # Restart=always
 ```
 
@@ -215,8 +219,8 @@ docker build -f Dockerfile.playwright -t novel-system:pw .
 ## 6. 数据备份与恢复
 
 ```bash
-# 备份（数据库 + 文件）
-tar czf novel-backup-$(date +%F).tar.gz db/ storage/
+# 备份（数据库 + 文件；download/ 为生成产物，可选备份）
+tar czf novel-backup-$(date +%F).tar.gz db/ storage/ download/
 
 # 恢复
 tar xzf novel-backup-YYYY-MM-DD.tar.gz -C /opt/novel-system/
@@ -226,7 +230,7 @@ docker compose restart
 建议加入 crontab 每日备份：
 
 ```cron
-0 3 * * * cd /opt/novel-system && tar czf /backup/novel-$(date +\%F).tar.gz db/ storage/
+0 3 * * * cd /opt/novel-system && tar czf /backup/novel-$(date +\%F).tar.gz db/ storage/ download/
 ```
 
 ---

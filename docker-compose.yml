@@ -19,7 +19,8 @@ services:
       - ./storage:/app/storage
       - ./download:/app/download
     healthcheck:
-      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:3000/"]
+      # debian slim 基底无 wget/curl，用容器内自带的 bun 发起探活（与 Dockerfile 保持一致）
+      test: ["CMD", "bun", "-e", "fetch('http://127.0.0.1:3000/').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
       interval: 30s
       timeout: 5s
       start_period: 20s

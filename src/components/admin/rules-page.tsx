@@ -50,6 +50,38 @@ function toNumOr(raw: string, fallback: number): number {
   return Number.isFinite(n) ? n : fallback
 }
 
+/**
+ * 数字字段钳制（onBlur 与保存前共用）：null/undefined/NaN 归 fallback（对齐引擎侧 `??` 兜底），
+ * 其余压到 min 下限并取整（对齐引擎 Math.max(1, …) 类 clamp），
+ * 避免输入清空得 0 后静默依赖引擎纠偏产生困惑。
+ */
+function clampNum(value: unknown, min: number, fallback: number): number {
+  if (value === null || value === undefined) return fallback
+  const n = Number(value)
+  return Number.isFinite(n) ? Math.max(min, Math.round(n)) : fallback
+}
+
+/**
+ * 保存前统一钳制规则数字字段（与 onBlur 同规则，兜住未触发 blur 的路径）：
+ * fetch.timeout≥1000（引擎侧 0 会让 AbortSignal.timeout 立即中止）；
+ * pagination.maxPages/startPage≥1、endPage≥startPage（对齐 paginated.ts 的 Math.max(1,…)/end=Math.max(start,…) 语义）。
+ */
+function sanitizeRuleConfig(config: Record<string, unknown>): Record<string, unknown> {
+  const out: Record<string, unknown> = { ...config, timeout: clampNum(config.timeout, 1000, 20000) }
+  const pg = out.pagination
+  if (pg && typeof pg === 'object' && !Array.isArray(pg)) {
+    const p = { ...(pg as Record<string, unknown>) }
+    if (p.maxPages !== undefined) p.maxPages = clampNum(p.maxPages, 1, 10)
+    if (p.startPage !== undefined) p.startPage = clampNum(p.startPage, 1, 1)
+    if (p.endPage !== undefined) {
+      const start = clampNum(p.startPage, 1, 1)
+      p.endPage = clampNum(p.endPage, start, start)
+    }
+    out.pagination = p
+  }
+  return out
+}
+
 function defaultConfig(type: RuleType): Record<string, unknown> {
   const base = { strategy: 'http', encoding: 'auto', timeout: 20000 }
   switch (type) {
@@ -256,7 +288,8 @@ function FetchFields({ cfg, onChange }: { cfg: Record<string, unknown>; onChange
         <div className="space-y-1">
           <Label className="text-xs">超时(ms)</Label>
           <Input className="h-8 text-xs" type="number" value={Number(cfg.timeout ?? 20000)}
-            onChange={(e) => onChange({ timeout: toNumOr(e.target.value, 20000) })} />
+            onChange={(e) => onChange({ timeout: toNumOr(e.target.value, 20000) })}
+            onBlur={() => onChange({ timeout: clampNum(cfg.timeout, 1000, 20000) })} />
         </div>
         <div className="space-y-1">
           <Label className="text-xs">Referer</Label>
@@ -304,7 +337,8 @@ function PaginationFields({ cfg, onChange }: { cfg: Record<string, unknown>; onC
             <div className="space-y-1">
               <Label className="text-xs">最大页数</Label>
               <Input className="h-8 text-xs" type="number" min={1} value={Number(pg.maxPages ?? 10)}
-                onChange={(e) => setPg({ maxPages: toNumOr(e.target.value, 10) })} />
+                onChange={(e) => setPg({ maxPages: toNumOr(e.target.value, 10) })}
+                onBlur={() => { if (pg.maxPages !== undefined) setPg({ maxPages: clampNum(pg.maxPages, 1, 10) }) }} />
             </div>
           </div>
           {pg.mode === 'template' && (
@@ -317,12 +351,19 @@ function PaginationFields({ cfg, onChange }: { cfg: Record<string, unknown>; onC
               <div className="space-y-1">
                 <Label className="text-xs">起始页</Label>
                 <Input className="h-8 text-xs" type="number" value={Number(pg.startPage ?? 1)}
-                  onChange={(e) => setPg({ startPage: toNumOr(e.target.value, 1) })} />
+                  onChange={(e) => setPg({ startPage: toNumOr(e.target.value, 1) })}
+                  onBlur={() => {
+                    if (pg.startPage === undefined) return
+                    const start = clampNum(pg.startPage, 1, 1)
+                    // 引擎侧 end=Math.max(start,end)：起始页抬升时同步托底结束页
+                    setPg(Number(pg.endPage) < start ? { startPage: start, endPage: start } : { startPage: start })
+                  }} />
               </div>
               <div className="space-y-1">
                 <Label className="text-xs">结束页</Label>
                 <Input className="h-8 text-xs" type="number" value={Number(pg.endPage ?? 5)}
-                  onChange={(e) => setPg({ endPage: toNumOr(e.target.value, 5) })} />
+                  onChange={(e) => setPg({ endPage: toNumOr(e.target.value, 5) })}
+                  onBlur={() => { if (pg.endPage !== undefined) setPg({ endPage: clampNum(pg.endPage, clampNum(pg.startPage, 1, 1), 5) }) }} />
               </div>
             </div>
           )}
@@ -626,10 +667,11 @@ export function RulesPage() {
     }
     setSaving(true)
     try {
+      const payload = sanitizeRuleConfig(config)
       if (editingId) {
-        await api(`/api/rules/${editingId}`, { method: 'PUT', body: JSON.stringify({ name, config }) })
+        await api(`/api/rules/${editingId}`, { method: 'PUT', body: JSON.stringify({ name, config: payload }) })
       } else {
-        await api('/api/rules', { method: 'POST', body: JSON.stringify({ name, type: tab, config }) })
+        await api('/api/rules', { method: 'POST', body: JSON.stringify({ name, type: tab, config: payload }) })
       }
       toast({ title: editingId ? '规则已更新' : '规则已创建' })
       setDialogOpen(false)
