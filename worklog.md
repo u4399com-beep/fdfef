@@ -633,3 +633,35 @@ Work Log:
 
 Stage Summary:
 - node_modules 显著瘦身，lockfile 收敛；运行时零影响（tsc/lint/HTTP 冒烟全绿）
+
+---
+Task ID: R7-verify
+Agent: orchestrator (Z.ai Code)
+Task: Agent Browser E2E + 390px溢出修复
+
+Work Log:
+- E2E 全绿：管理后台仪表盘/采集规则/采集任务入口/书籍管理(搜索+分页)/站群管理(书香阁+UAA)；前台 UAA 首页(最近更新榜10书+热门标签+浅蓝底)→书籍页(最新12章区块✓/无全量目录✓/「查看全部124章目录」入口✓)→目录页(100条/页+分页钮)→章节页(正文/上下章/返回目录)；390px 移动端 UAA 首页/分类筛选/卡片布局无破版；console/page errors 0
+- 【修复】数字钳制实测：规则编辑 timeout 填 0 → blur → 自动钳 1000 ✓
+- 【修复】390px 仪表盘横向溢出(scrollW 444>390)：根因两层——①最近任务卡 flex 子项缺 min-w-0(flex 默认 min-width:auto 不收缩)→补 min-w-0 flex-1 + 阶段行 truncate；②grid 隐式 auto 轨道按内容 min-content 收缩(Truncate 的 nowrap 反而放大 min-content)→三个网格补 grid-cols-1 显式 minmax(0,1fr) 轨道封顶。复测 scrollW=390=clientW ✓
+
+Stage Summary:
+- 全站 E2E 通过（桌面 1440 + 移动 390）；发现并修复移动端横向溢出 1 处（dashboard.tsx 两层根因）
+- 页脚行为符合规范：短页贴底、长页自然下推（footerBottom=2232 无遮挡）
+
+---
+Task ID: R7-rule-adapt
+Agent: orchestrator (Z.ai Code)
+Task: biqutu 镜像结构漂移适配 + 全库规则 5/5 突破验证
+
+Work Log:
+- 【现场】biqutu 主域网络级超时；镜像 bqgbe.com 已更换为另一套笔趣阁模板（老 s1-s5 列表结构消失→ul.sort-book-list + og:novel 元数据 + slug 章节链 + document.write base64 正文）
+- 【结构考古】镜像现行结构全量映射：首页 ul.sort-book-list li(a+span作者)、书籍页 .details h2/og:novel 五件套/og:image、目录页 /xxx/ml1.html（ml2 分页+select）、章节 _N.html 分页、正文 document.writeln(fn('base64')) 标准编码
+- 【离线实测】老 toc/content 规则原样兼容（125章/1929字解码成功）——此前 verify 失败根因仅为 LIST 规则结构漂移断链（book 测试落到首页→书名空）
+- 【规则修复】LIST 重写为镜像现行结构正则（57项）；BOOK cover #fmimg→og:image、tocLink 笔误 aref$→a[href$="ml1.html"]；TOC/CONTENT 保持不动
+- 【API 实测】list 57项 ✓ / book 全字段+智能分类(玄幻 0.95)+完结判定(连载 0.9) ✓ / toc 366章含分页 ✓ / content 3372字2页 base64 解码 ✓
+- 【全库回归】verify-all-rules **5/5 全过**：mock ✓、kelexs 20项→100章→2456字 ✓（连接阻断解除，熔断半开复检自动恢复）、cunshu 15项→418章→2285字 ✓、rqwb 6项→72章→3137字 ✓、biqutu 57项→366章/去重51→2049字 ✓
+
+Stage Summary:
+- 在库 5 站点 20 条规则全部突破且全链路实盘通过（「全部突破、稳定长期获取」达成）
+- 稳定性四层保障全部实证：WAF 挑战自动解题（VLM 双字段格式修复）→ 通行 cookie 持久化（原子写+退出flush）→ 限流退让（429/Retry-After+指数退避）→ 网络故障熔断+半开复检自动恢复（kelexs/cunshu 解除即恢复为实证）
+- 临时诊断脚本全部清理
