@@ -54,7 +54,7 @@ export function Dashboard() {
 
   if (!stats) {
     return (
-      <div className="grid gap-4 md:grid-cols-4">
+      <div className="grid grid-cols-1 gap-4 md:grid-cols-4">
         {Array.from({ length: 8 }).map((_, i) => (
           <Skeleton key={i} className="h-28 rounded-xl" />
         ))}
@@ -73,7 +73,7 @@ export function Dashboard() {
 
   return (
     <div className="space-y-6">
-      <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-3">
+      <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 xl:grid-cols-3">
         {cards.map((c) => (
           <Card key={c.label}>
             <CardHeader className="flex flex-row items-center justify-between pb-2">
@@ -88,7 +88,8 @@ export function Dashboard() {
         ))}
       </div>
 
-      <div className="grid gap-4 lg:grid-cols-2">
+      {/* grid-cols-1：显式 minmax(0,1fr) 轨道，防止隐式 auto 轨道被长文本 min-content 撑破视口 */}
+      <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
         <Card>
           <CardHeader>
             <CardTitle className="flex items-center gap-2 text-base">
@@ -102,11 +103,13 @@ export function Dashboard() {
             {stats.recentTasks.map((t) => (
               <div key={t.id} className="space-y-1.5">
                 <div className="flex items-center justify-between gap-2">
-                  <span className="text-sm font-medium truncate">{t.name}</span>
+                  {/* min-w-0+flex-1：flex 子项默认 min-width:auto 不收缩，长任务名会撑破卡片 */}
+                  <span className="text-sm font-medium truncate min-w-0 flex-1">{t.name}</span>
                   <Badge className={STATUS_COLOR[t.status] ?? 'bg-stone-400'}>{STATUS_LABEL[t.status] ?? t.status}</Badge>
                 </div>
                 <Progress value={t.progress} className="h-1.5" />
-                <p className="text-xs text-muted-foreground">
+                {/* truncate：阶段名可含长书名（如 正文采集《…》（40/100）），防撑破 */}
+                <p className="text-xs text-muted-foreground truncate">
                   {t.stage || '—'} · {formatDate(t.updatedAt)}
                 </p>
               </div>
