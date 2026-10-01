@@ -1,6 +1,6 @@
-import { NextRequest, NextResponse } from 'next/server'
+import { NextRequest } from 'next/server'
 import { buildBookTxt } from '@/lib/collect/download-builder'
-import { RouteCtx } from '../../../_lib/http'
+import { json, RouteCtx } from '../../../_lib/http'
 
 export const runtime = 'nodejs'
 export const dynamic = 'force-dynamic'
@@ -13,7 +13,7 @@ export async function GET(req: NextRequest, { params }: RouteCtx<{ id: string }>
   const domain = req.nextUrl.searchParams.get('domain') ?? undefined
   const built = await buildBookTxt(id, siteName, domain)
   if (!built) {
-    return NextResponse.json({ error: '书籍不存在' }, { status: 404 })
+    return json({ error: '书籍不存在' }, { status: 404 })
   }
   return new Response(built.content, {
     headers: {

@@ -1,5 +1,5 @@
-import { NextResponse } from 'next/server'
 import { db } from '@/lib/db'
+import { json } from '../_lib/http'
 
 export const runtime = 'nodejs'
 export const dynamic = 'force-dynamic'
@@ -21,7 +21,7 @@ export async function GET() {
       db.collectTask.findMany({ orderBy: { updatedAt: 'desc' }, take: 5 }),
       db.book.findMany({ orderBy: { updatedAt: 'desc' }, take: 5 }),
     ])
-  return NextResponse.json({
+  return json({
     books,
     chapters,
     contents: collected,

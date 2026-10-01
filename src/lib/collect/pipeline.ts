@@ -8,12 +8,13 @@ import type {
 } from '../collect-types'
 import type { FieldSelector } from '../collect-types'
 import { mergeCleaning, normalizeBookMeta } from '../collect-types'
-import { fetchPage, FIXED_UA, randomInt, sleep } from './fetcher'
+import { fetchPage, FIXED_UA, randomInt } from './fetcher'
 import { parseFields, parseListEntries, resolveUrl, selectValue } from './parser'
 import { detectCompletion, extractChapterNumber, smartMatchCategory } from './matcher'
 import { fetchSuggestKeywords, mergeSuggestKeywords } from './suggest'
-import { downloadCoverAsWebp, hashText, saveChapterTxt } from './storage'
-import { runRandomPool, taskLog, taskManager } from './task-manager'
+import { downloadCoverAsWebp, hashText, removeChapterTxt, saveChapterTxt } from './storage'
+import { interruptibleSleep, runRandomPool, taskLog, taskManager } from './task-manager'
+import type { TaskRuntime } from './task-manager'
 import { fetchCleanedContent, fetchPaginated } from './paginated'
 
 // ============================================================
@@ -226,6 +227,16 @@ class TaskStoppedError extends Error {
   }
 }
 
+/**
+ * 可中断睡眠：底层由 task-manager.interruptibleSleep 按 400ms 切片轮询暂停/停止信号。
+ * 长时间 sleep（如书籍信息重试跨 WAF 冷却的 150s 等待、阶段间隔）若不可中断，
+ * 停止指令要等整段 sleep 结束才生效——控制路由 8s 兕底已把任务标为 stopped，
+ * 而管线仍在后台请求目标站（外站风控暴露面 + 阶段名回写覆盖已停止状态）。
+ */
+async function stoppableSleep(rt: TaskRuntime, ms: number): Promise<void> {
+  if ((await interruptibleSleep(rt, ms)) === 'stopping') throw new TaskStoppedError()
+}
+
 /** 主入口：执行采集任务 */
 export async function executeTask(taskId: string): Promise<void> {
   const task = await db.collectTask.findUnique({ where: { id: taskId } })
@@ -301,7 +312,7 @@ export async function executeTask(taskId: string): Promise<void> {
           for (const e of entries) if (e.url && /^https?:\/\//.test(e.url)) bookUrls.push(e.url)
         }
         await taskLog(taskId, 'info', `列表第 ${p} 页解析完成，累计 ${bookUrls.length} 本候选`)
-        await sleep(randomInt(task.intervalMin, task.intervalMax))
+        await stoppableSleep(rt, randomInt(task.intervalMin, task.intervalMax))
       }
     } else {
       try {
@@ -335,8 +346,9 @@ export async function executeTask(taskId: string): Promise<void> {
     const poolResult = await runRandomPool({
       items: bookUrls,
       taskId,
-      threadMin: task.threadMin,
-      threadMax: task.threadMax,
+      // 与内容阶段线程池同款钉底：非法/越界的线程数配置不致产生 0 线程（randomInt 非有限值回退 min）
+      threadMin: Math.max(1, task.threadMin),
+      threadMax: Math.max(1, task.threadMax),
       intervalMin: task.intervalMin,
       intervalMax: task.intervalMax,
       onProgress: async (completed, total) => {
@@ -353,7 +365,8 @@ export async function executeTask(taskId: string): Promise<void> {
           }
           let info = await collectBookInfo(bookUrl, bookCfg, infoOpts)
           if (!info) {
-            await sleep(randomInt(task.intervalMin, task.intervalMax) + 150_000)
+            // 跨 WAF 冷却期的长等待必须可被暂停/停止打断（150s 不可中断会拖延停止指令数分钟）
+            await stoppableSleep(rt, randomInt(task.intervalMin, task.intervalMax) + 150_000)
             info = await collectBookInfo(bookUrl, bookCfg, infoOpts)
           }
           if (!info) {
@@ -394,11 +407,16 @@ export async function executeTask(taskId: string): Promise<void> {
                 categoryScore: info.category ? info.categoryScore : existing.categoryScore,
                 keywords: info.keywords || existing.keywords,
                 intro: info.intro || existing.intro,
-                status: info.status,
-                statusConfidence: info.statusConfidence,
-                statusSource: info.statusSource,
                 latestChapter: info.latestChapter || existing.latestChapter,
               })
+              // 状态置信度守卫（与增量分支同语义）：本次解析降级为低置信猜测
+              // （状态字段选择器失配时 detectCompletion 默认给 0.5 的连载）不回退库内高置信状态，
+              // 避免完结书被误翻回连载
+              if (info.statusConfidence >= (existing.statusConfidence ?? 0)) {
+                updateData.status = info.status
+                updateData.statusConfidence = info.statusConfidence
+                updateData.statusSource = info.statusSource
+              }
               if (info.suggestKeywords) updateData.suggestKeywords = info.suggestKeywords
             } else {
               if (info.author) updateData.author = info.author
@@ -465,7 +483,7 @@ export async function executeTask(taskId: string): Promise<void> {
           }
 
           // ---- 封面下载 webp（阶段间隔限频） ----
-          await sleep(randomInt(task.intervalMin, task.intervalMax))
+          await stoppableSleep(rt, randomInt(task.intervalMin, task.intervalMax))
           if ((bookCfg.downloadCover ?? true) && info.coverUrl) {
             try {
               const coverUA = bookCfg.rotateUA === false ? (bookCfg.headers?.['User-Agent'] ?? FIXED_UA) : undefined
@@ -477,7 +495,7 @@ export async function executeTask(taskId: string): Promise<void> {
           }
 
           // ---- 章节目录（阶段间隔限频） ----
-          await sleep(randomInt(task.intervalMin, task.intervalMax))
+          await stoppableSleep(rt, randomInt(task.intervalMin, task.intervalMax))
           const toc = await collectTocEntries(info.tocUrl, tocCfg)
           if (toc.entries.length === 0) {
             await taskLog(taskId, 'warn', `目录解析为空《${info.title}》：${info.tocUrl}`)
@@ -492,7 +510,7 @@ export async function executeTask(taskId: string): Promise<void> {
           // （原逐条 findUnique+create/update 对千章书是 2400+ 次串行 DB 往返）
           const existingChapters = await db.chapter.findMany({
             where: { bookId },
-            select: { id: true, url: true, title: true, order: true },
+            select: { id: true, url: true, title: true, order: true, contentLocal: true },
           })
           const byUrl = new Map(existingChapters.map((c) => [c.url, c]))
           let order = 0
@@ -535,12 +553,32 @@ export async function executeTask(taskId: string): Promise<void> {
           for (const u of toUpdate) {
             await db.chapter.update({ where: { id: u.id }, data: { title: u.title, order: u.order } })
           }
+          // 全量重采清理失效章节：源目录已不再列出的旧章节（连同其 txt 文件）一并移除，
+          // 否则残留旧 order 与新目录序号冲突（目录/上下章导航错乱）、totalChapters 与实际行数漂移。
+          // 防御目录瞬时残缺（反爬半页/选择器失配）：仅当本次目录条目数 ≥ 现有章节数才清理，
+          // 目录变少（解析残缺）一律保留旧章节不动
+          if (task.mode === 'full' && toc.entries.length >= existingChapters.length) {
+            const freshKeys = new Set(toc.entries.map((e) => e.url || `local:${hashText(e.title)}`))
+            const stale = existingChapters.filter((c) => !freshKeys.has(c.url))
+            if (stale.length > 0) {
+              for (let i = 0; i < stale.length; i += 500) {
+                await db.chapter.deleteMany({ where: { id: { in: stale.slice(i, i + 500).map((c) => c.id) } } })
+              }
+              await Promise.all(stale.map((c) => (c.contentLocal ? removeChapterTxt(c.contentLocal) : undefined)))
+              await taskLog(taskId, 'info', `《${info.title}》全量重采清理失效章节 ${stale.length} 条（源目录已不列出）`)
+            }
+          }
           await db.book.update({
             where: { id: bookId },
             data: {
               // 目录为空（瞬时反爬拦截等）时不清零已有统计，仅在有章节时覆盖
               totalChapters: order > 0 ? order : undefined,
-              latestChapter: toc.entries.length ? toc.entries[toc.entries.length - 1].title : undefined,
+              // 乱序目录（未开启重排）的末条不可信（可能是「最新章节置顶」布局下的最旧章），
+              // 此时保留库内 latestChapter，避免把最新章节回写成旧章节
+              latestChapter:
+                toc.entries.length && (!toc.scrambled || tocCfg.reorder?.enabled)
+                  ? toc.entries[toc.entries.length - 1].title
+                  : undefined,
             },
           })
 
@@ -613,6 +651,9 @@ export async function executeTask(taskId: string): Promise<void> {
             },
           })
         } catch (e) {
+          // 停止信号必须向上传播：由线程池循环顶部的 shouldStop 检查统一退出（stopped 语义），
+          // 否则单本书的停止会被误记为「书籍采集失败」
+          if (e instanceof TaskStoppedError) throw e
           stats.errors++
           await taskLog(taskId, 'error', `书籍采集失败 ${bookUrl}：${e instanceof Error ? e.message : String(e)}`)
         }

@@ -1,9 +1,9 @@
-import { NextRequest, NextResponse } from 'next/server'
+import { NextRequest } from 'next/server'
 import path from 'path'
 import fs from 'fs/promises'
 import { db } from '@/lib/db'
 import { COVERS_DIR, NOVELS_DIR } from '@/lib/collect/storage'
-import { RouteCtx } from '../../_lib/http'
+import { json, RouteCtx } from '../../_lib/http'
 
 export const runtime = 'nodejs'
 export const dynamic = 'force-dynamic'
@@ -11,8 +11,8 @@ export const dynamic = 'force-dynamic'
 export async function GET(_req: NextRequest, { params }: RouteCtx<{ id: string }>) {
   const { id } = await params
   const book = await db.book.findUnique({ where: { id } })
-  if (!book) return NextResponse.json({ error: '书籍不存在' }, { status: 404 })
-  return NextResponse.json({ book })
+  if (!book) return json({ error: '书籍不存在' }, { status: 404 })
+  return json({ book })
 }
 
 export async function DELETE(_req: NextRequest, { params }: RouteCtx<{ id: string }>) {
@@ -21,7 +21,7 @@ export async function DELETE(_req: NextRequest, { params }: RouteCtx<{ id: strin
     where: { id },
     select: { id: true, coverLocal: true, chapters: { select: { contentLocal: true } } },
   })
-  if (!existing) return NextResponse.json({ error: '书籍不存在' }, { status: 404 })
+  if (!existing) return json({ error: '书籍不存在' }, { status: 404 })
   // 站群可能多处引用该书作为主书籍：全部清空 dangling 引用后再删除
   await db.$transaction([
     db.siteConfig.updateMany({ where: { mainBookId: id }, data: { mainBookId: '' } }),
@@ -31,7 +31,7 @@ export async function DELETE(_req: NextRequest, { params }: RouteCtx<{ id: strin
   // 事务成功后尽力清理磁盘孤儿文件：章节 txt（storageMode=txt/both 的书）+ 封面 webp。
   // 文件不存在静默跳过；清理失败不回滚删除（主体已删成功），仅记 warn 不向调用方报 500
   await cleanupBookFiles(existing.chapters.map((c) => c.contentLocal), existing.coverLocal)
-  return NextResponse.json({ ok: true })
+  return json({ ok: true })
 }
 
 /** 删除书籍后的磁盘清理（尽力而为）：章节 txt + 封面 webp + 清空后的书目录 */

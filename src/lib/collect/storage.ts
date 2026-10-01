@@ -45,6 +45,18 @@ export async function readChapterTxt(relPath: string): Promise<string> {
   return fs.readFile(full, 'utf-8')
 }
 
+/** 尽力删除章节 txt 文件（全量重采清理失效章节时使用）：路径越界/非 .txt 一律拒绝，失败静默不影响采集流程 */
+export async function removeChapterTxt(relPath: string): Promise<void> {
+  if (!relPath || !relPath.endsWith('.txt')) return
+  const full = path.resolve(NOVELS_DIR, relPath)
+  if (full !== NOVELS_DIR && !full.startsWith(NOVELS_DIR + path.sep)) return
+  try {
+    await fs.unlink(full)
+  } catch {
+    /* 文件不存在/被占用等：忽略 */
+  }
+}
+
 /** 封面下载并转换为 webp，返回文件名 */
 export async function downloadCoverAsWebp(
   coverUrl: string,

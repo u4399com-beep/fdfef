@@ -74,6 +74,10 @@ export function BooksPage() {
       if (reqId !== listReqRef.current) return
       setBooks(r.books)
       setTotal(r.total)
+      // 删除/外部变更使当前页越过最后一页时回退到有效页，避免停在空页误示「暂无书籍」
+      if (r.books.length === 0 && r.total > 0 && page > 1) {
+        setPage(Math.max(1, Math.ceil(r.total / pageSize)))
+      }
     } catch (e) {
       if (reqId !== listReqRef.current) return
       toast({ title: '加载失败', description: e instanceof Error ? e.message : String(e), variant: 'destructive' })
@@ -197,7 +201,9 @@ export function BooksPage() {
         <Card>
           <CardContent className="flex flex-col items-center gap-2 py-12">
             <BookOpen className="h-8 w-8 text-muted-foreground" />
-            <p className="text-sm text-muted-foreground">暂无书籍，先运行采集任务入库。</p>
+            <p className="text-sm text-muted-foreground">
+              {(q.trim() || category) ? '未找到匹配的书籍，请调整搜索词或分类筛选。' : '暂无书籍，先运行采集任务入库。'}
+            </p>
           </CardContent>
         </Card>
       ) : (

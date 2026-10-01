@@ -18,6 +18,7 @@ import { Separator } from '@/components/ui/separator'
 import { Textarea } from '@/components/ui/textarea'
 import { useToast } from '@/hooks/use-toast'
 import { api, formatDate } from '@/lib/client-api'
+import { toNumOr } from '@/lib/utils'
 import type { RuleType } from '@/lib/collect-types'
 import {
   CirclePause, CirclePlay, CircleStop, FileDown, ListChecks, Loader2,
@@ -91,12 +92,6 @@ function parseStats(raw: string): Record<string, number> {
   }
 }
 
-/** 数字输入防 NaN 注入（输入中间态如 "1e"/"-" 时 Number() 会得到 NaN） */
-function toNumOr(raw: string, fallback: number): number {
-  const n = Number(raw)
-  return Number.isFinite(n) ? n : fallback
-}
-
 /** 保存前将数字统一钳制到合法区间并保证 min<=max */
 function clampInt(v: number, lo: number, hi: number): number {
   return Math.min(hi, Math.max(lo, Math.round(Number.isFinite(v) ? v : lo)))
@@ -117,6 +112,9 @@ export function TasksPage() {
   const logsStickRef = useRef(true)
   const lastLogAt = useRef<string>('')
   const seenLogIds = useRef<Set<string>>(new Set())
+  // 首次加载失败反馈：轮询失败静默合理，但首次失败必须提示（否则接口故障被误读为「暂无任务」）
+  const everLoadedRef = useRef(false)
+  const loadErrToastedRef = useRef(false)
 
   // 编辑器表单
   const [form, setForm] = useState({
@@ -137,8 +135,16 @@ export function TasksPage() {
       ])
       setTasks(t.tasks)
       setRules(r.rules)
-    } catch { /* polling errors ignored */ }
-  }, [])
+      everLoadedRef.current = true
+      loadErrToastedRef.current = false
+    } catch (e) {
+      // 轮询失败静默；首次加载失败提示一次（防 2.5s 轮询刷屏）
+      if (!everLoadedRef.current && !loadErrToastedRef.current) {
+        loadErrToastedRef.current = true
+        toast({ title: '任务加载失败', description: e instanceof Error ? e.message : String(e), variant: 'destructive' })
+      }
+    }
+  }, [toast])
 
   useEffect(() => { void load() }, [load])
   useEffect(() => {
@@ -251,6 +257,8 @@ export function TasksPage() {
   useEffect(() => {
     if (!logsFor) return
     let alive = true
+    // 每次打开抽屉重置贴底跟随：上一任务的「已上翻」状态不应带入新任务
+    logsStickRef.current = true
     lastLogAt.current = ''
     seenLogIds.current = new Set()
     const pull = async () => {

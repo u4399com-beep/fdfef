@@ -1,7 +1,7 @@
-import { NextRequest, NextResponse } from 'next/server'
+import { NextRequest } from 'next/server'
 import { db } from '@/lib/db'
 import { DEFAULT_CLEANING, DEFAULT_DOWNLOAD } from '@/lib/collect-types'
-import { badRequest, isPlainObject, readJson } from '../_lib/http'
+import { json, badRequest, isPlainObject, readJson } from '../_lib/http'
 
 export const runtime = 'nodejs'
 export const dynamic = 'force-dynamic'
@@ -17,7 +17,7 @@ export async function GET() {
   try {
     if (row?.download) download = { ...download, ...JSON.parse(row.download) }
   } catch { /* keep defaults */ }
-  return NextResponse.json({ cleaning, download })
+  return json({ cleaning, download })
 }
 
 /** 保存系统配置 */
@@ -41,5 +41,5 @@ export async function PUT(req: NextRequest) {
     create: { id: 'main', ...data },
     update: data,
   })
-  return NextResponse.json({ ok: true })
+  return json({ ok: true })
 }

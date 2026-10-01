@@ -1,7 +1,22 @@
 import type { CleaningConfig, ContentRuleConfig, FetchConfig, PaginationConfig } from '../collect-types'
 import { fetchPage, randomInt, sleep } from './fetcher'
-import { parseContentHtml, selectValue } from './parser'
+import { parseContentHtml, resolveUrl, selectValue } from './parser'
 import { cleanContent } from './cleaner'
+
+/**
+ * 分页链接取值归一化（三处共用）：绝对地址原样返回；相对地址（page_2.html、/list-2.html、//cdn/x.html）
+ * 按当前页补全——regex/xpath 捕获与 select option value 不满足 selectValue 的 looksUrl 门控
+ * （^https?|^//|^/ 才解析），需在此补全，否则多页目录会被截成单页。
+ * 纯页码数字等非地址值无法安全解释（resolveUrl 会拼出 base 目录下错误地址），返回空串由调用方跳过。
+ */
+function normalizePageLink(raw: string, baseUrl: string): string {
+  const v = (raw || '').trim()
+  if (!v) return ''
+  if (/^https?:\/\//i.test(v)) return v
+  // 可安全解释为相对地址：含路径分隔符或带文件扩展名（.html/.php/...）
+  if (!/\/[/?]|[.][a-z]{2,8}$/i.test(v)) return ''
+  return resolveUrl(v, baseUrl)
+}
 
 /** 分页抓取：nextLink 跟随 / URL 模板区间 / select 下拉枚举（列表页、目录页、内容页通用） */
 export async function fetchPaginated(
@@ -42,11 +57,14 @@ export async function fetchPaginated(
     const queue: string[] = []
     if (Array.isArray(rawVals)) {
       for (const v of rawVals) {
-        const key = v.replace(/\/$/, '')
-        if (!v || seen.has(key) || seen.has(v)) continue
-        seen.add(key)
-        seen.add(v)
-        queue.push(v)
+        // 非地址值（纯页码数字等）跳过而非让 fetchPage 抛「非法 URL」使整书目录采集失败；
+        // 相对地址（list-2.html 等）按当前页补全后再去重入队
+        const abs = normalizePageLink(v, r0.finalUrl)
+        if (!abs) continue
+        if (seen.has(abs) || seen.has(abs.replace(/\/$/, ''))) continue
+        seen.add(abs)
+        seen.add(abs.replace(/\/$/, ''))
+        queue.push(abs)
       }
     }
     for (const url of queue) {
@@ -66,9 +84,10 @@ export async function fetchPaginated(
     pages.push({ url: r.finalUrl, html: r.html })
     visited.add(r.finalUrl)
     if (!pagination.nextLink?.expr) break
-    const next = String(selectValue(r.html, { ...pagination.nextLink, multiple: false }, { baseUrl: r.finalUrl }) || '')
+    const nextRaw = String(selectValue(r.html, { ...pagination.nextLink, multiple: false }, { baseUrl: r.finalUrl }) || '')
+    const next = normalizePageLink(nextRaw, r.finalUrl)
     // 已访问页再次出现（站点分页 bug：末页下一页指回前页成环）时终止，避免空转到上限浪费请求
-    if (!next || !/^https?:\/\//.test(next) || next === r.finalUrl || visited.has(next)) break
+    if (!next || next === r.finalUrl || visited.has(next)) break
     url = next
     await sleepBetween()
   }
@@ -120,11 +139,12 @@ export async function fetchCleanedContent(
       parts.push(cleaned.text)
     }
     if (!pagination?.enabled || !pagination.nextLink?.expr) break
-    const next = String(
+    const nextRaw = String(
       selectValue(res.html, { ...pagination.nextLink, multiple: false }, { baseUrl: res.finalUrl }) || ''
     )
+    const next = normalizePageLink(nextRaw, res.finalUrl)
     // 环检测：指向已抓取过的页（分页 bug / 末页回指）时终止，防止重复拼接同一段正文
-    if (!next || !/^https?:\/\//.test(next) || next === res.finalUrl || visited.has(next)) break
+    if (!next || next === res.finalUrl || visited.has(next)) break
     // 防跨章保护：下一页必须与当前页同 base（剥去 _N.html 后缀一致），否则立即终止
     // （部分站点把"下一章"伪装成"下一页"，误跟会把整本书正文合并进一章）
     if (pagination.sameChapterOnly && pageBase(next) !== pageBase(res.finalUrl)) break

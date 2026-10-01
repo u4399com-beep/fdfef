@@ -22,7 +22,19 @@ export async function readJson(req: Request): Promise<Record<string, unknown> | 
 
 /** 400 统一响应 */
 export function badRequest(message: string) {
-  return NextResponse.json({ error: message }, { status: 400 })
+  return json({ error: message }, { status: 400 })
+}
+
+/**
+ * JSON 统一响应：显式 no-store。
+ * 实测（curl -D -）动态路由不回任何 Cache-Control 头——预览数据源/统计/任务列表等
+ * 轮询型 GET 可能被浏览器或中间层按启发式缓存，拿到陈旧数据；统一显式禁缓存。
+ * （covers/download 等文件型响应自带缓存语义，不走此助手）
+ */
+export function json(data: unknown, init?: ResponseInit) {
+  const headers = new Headers(init?.headers)
+  headers.set('Cache-Control', 'no-store')
+  return NextResponse.json(data, { ...init, headers })
 }
 
 /**
@@ -84,3 +96,5 @@ export async function chapterContentText(c: { content: string; contentLocal: str
   }
   return c.content
 }
+
+// R8-a: json() 响应助手统一注入 Cache-Control: no-store

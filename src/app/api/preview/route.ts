@@ -1,6 +1,6 @@
-import { NextRequest, NextResponse } from 'next/server'
+import { NextRequest } from 'next/server'
 import { db } from '@/lib/db'
-import { chapterContentText } from '../_lib/http'
+import { json, chapterContentText } from '../_lib/http'
 
 export const runtime = 'nodejs'
 export const dynamic = 'force-dynamic'
@@ -70,14 +70,14 @@ export async function GET(req: NextRequest) {
     const rotated = all.length > 1 ? [...all.slice(offset % all.length), ...all.slice(0, offset % all.length)] : all
     const books = rotated.slice(0, 36).map(toCard)
     const categories = [...new Set(all.map((b) => b.category).filter(Boolean))]
-    return NextResponse.json({ site: siteMeta, view: { type: 'home' }, data: { books, categories } })
+    return json({ site: siteMeta, view: { type: 'home' }, data: { books, categories } })
   }
 
   if (type === 'book' || type === 'toc') {
     // || 而非 ??：bookId=（空串）同样视为未传，回退主书籍（与注释语义一致）
     const bookId = sp.get('bookId') || siteMeta.mainBookId
     const book = bookId ? await db.book.findUnique({ where: { id: bookId } }) : null
-    if (!book) return NextResponse.json({ error: '书籍不存在' }, { status: 404 })
+    if (!book) return json({ error: '书籍不存在' }, { status: 404 })
 
     if (type === 'toc') {
       const chapters = await db.chapter.findMany({
@@ -86,7 +86,7 @@ export async function GET(req: NextRequest) {
         select: { id: true, title: true, order: true },
         take: 5000,
       })
-      return NextResponse.json({
+      return json({
         site: siteMeta,
         view: { type: 'toc', bookId: book.id },
         data: { book: { ...toCard(book), chapters, firstChapterId: chapters[0]?.id ?? null, updatedAt: book.updatedAt.toISOString() } },
@@ -102,7 +102,7 @@ export async function GET(req: NextRequest) {
       }),
       db.chapter.findFirst({ where: { bookId: book.id }, orderBy: { order: 'asc' }, select: { id: true } }),
     ])
-    return NextResponse.json({
+    return json({
       site: siteMeta,
       view: { type: 'book', bookId: book.id },
       data: { book: { ...toCard(book), chapters: latest, firstChapterId: first?.id ?? null, updatedAt: book.updatedAt.toISOString() } },
@@ -112,14 +112,14 @@ export async function GET(req: NextRequest) {
   if (type === 'chapter') {
     const chapterId = sp.get('chapterId') ?? ''
     const chapter = await db.chapter.findUnique({ where: { id: chapterId } })
-    if (!chapter) return NextResponse.json({ error: '章节不存在' }, { status: 404 })
+    if (!chapter) return json({ error: '章节不存在' }, { status: 404 })
     const book = await db.book.findUnique({ where: { id: chapter.bookId } })
     const [prev, next] = await Promise.all([
       db.chapter.findFirst({ where: { bookId: chapter.bookId, order: { lt: chapter.order } }, orderBy: { order: 'desc' }, select: { id: true } }),
       db.chapter.findFirst({ where: { bookId: chapter.bookId, order: { gt: chapter.order } }, orderBy: { order: 'asc' }, select: { id: true } }),
     ])
     const content = await chapterContentText(chapter)
-    return NextResponse.json({
+    return json({
       site: siteMeta,
       view: { type: 'chapter', chapterId: chapter.id },
       data: {
@@ -151,12 +151,12 @@ export async function GET(req: NextRequest) {
           .slice(0, 12)
           .map(toCard)
       : []
-    return NextResponse.json({
+    return json({
       site: siteMeta,
       view: { type: 'keyword', keyword },
       data: { keywordBooks: matched, books: all.slice(0, 12).map(toCard) },
     })
   }
 
-  return NextResponse.json({ error: '未知视图' }, { status: 400 })
+  return json({ error: '未知视图' }, { status: 400 })
 }

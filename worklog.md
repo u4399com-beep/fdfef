@@ -665,3 +665,61 @@ Stage Summary:
 - 在库 5 站点 20 条规则全部突破且全链路实盘通过（「全部突破、稳定长期获取」达成）
 - 稳定性四层保障全部实证：WAF 挑战自动解题（VLM 双字段格式修复）→ 通行 cookie 持久化（原子写+退出flush）→ 限流退让（429/Retry-After+指数退避）→ 网络故障熔断+半开复检自动恢复（kelexs/cunshu 解除即恢复为实证）
 - 临时诊断脚本全部清理
+---
+Task ID: R8-a
+Agent: api-routes-reviewer
+Task: API路由层逐行深审+修复
+
+Work Log:
+- 通读 worklog 全量，锁定 R3-bug-a（API 首轮 16 处加固）、R13-simplify（_lib/http 7 助手收敛）、R6-iter-b（PUT null→"null"、settings 纯对象、preview 空串、download RFC5987）、R7-iter-a（books raw SQL LIKE ESCAPE、books/[id] DELETE 事务+磁盘清理）既有修复清单，逐项规避不重复不回退
+- 逐行审查 src/app/api 全部 22 个 route 文件（books×4/chapters/rules×3/tasks×4/sites×2/settings/stats/preview/covers/clean-test/根路由）+ _lib/http.ts，交叉核对 task-manager（pause/resume/ensure/finally remove）、pipeline（executeTask try/catch/finally 结构、stoppableSleep 为并行代理新增）、testing.testRule（自带 try/catch）、collect-types（mergeCleaning/mergeDownload）契约
+- 【修复① 缓存头缺失】curl -D - 实证全部动态 JSON 路由不回任何 Cache-Control 头——preview（六主题数据源）/stats（4s 轮询）/tasks（2.5s 轮询）等可能被浏览器或中间层按启发式缓存拿到陈旧数据 → _lib/http.ts 新增 json() 助手（NextResponse.json 包装 + Cache-Control: no-store），badRequest 同步改走；21 个路由文件 70 处 NextResponse.json 统一替换，covers（自带 public, max-age=86400）与 download（文件流）有意不走助手保持原语义；响应体/状态码/字段零变化，仅新增响应头
+- 【修复② tasks GET stale 竞态】stale 检测在 findMany 与 update 之间存在窗口：任务刚被 start 拉起（runtime 已建、DB 已回写 running）会被无条件 update 覆盖成 stopped，且此后 stale 检测因 runtime 存在永不纠正（UI 永久显示已停止实则采集中）→ 改 updateMany 条件更新 where {id, status: {in: ACTIVE_TASK_STATUSES}}，count>0 才改写响应对象；DB 直写 running 模拟重启残留实测：GET 后正确变为 stopped/已中断（服务重启），probe 数据已清理
+- 【修复③ control start 占位泄漏死锁】void executeTask(id).catch(() => undefined) 静默吞错：executeTask 在进入自身 try 前抛错（如首个任务查询失败）不会走到其 finally remove，control start 已占位的 runtime 永驻 globalThis Map → 任务永久卡「已在运行中」400 且重启前无法自愈 → catch 改为 taskManager.remove(id)（正常路径其 finally 已 remove，幂等）+ console.error 留痕
+- 【修复④ clean-test 超长输入 CPU 占死】cleanContent 为逐行×27 条正则同步处理，无长度上限的 html（恶意/误粘超大 body）会长时间阻塞事件循环 → html>5,000,000 字符 400（正常一章 ≈10KB，上限宽裕）；边界实测 4,999,999→200（1.3s）、5,000,001→400
+- 【环境事故·非代码 bug】扫描期间 /api/rules 独发 500（其余 19 路由同改全绿）：dev.log 显示 Turbopack 热更新将该路由 module graph 钉在旧版 _lib/http 实例（无 json 导出）→ 对 _lib/http.ts 做真实内容变更触发 HMR 失效后恢复 200；tsc/lint 始终为 0，属 dev server 进程内缓存陈旧，非代码缺陷，未重启 dev server
+- 【确认无恙·复核不改动】toInt/parsePagination（page=1e999→skip 精度丢失仍为有限整数→SQLite 返回空页不 500）、books raw SQL 路径（BigInt→Number、Prisma.sql 参数化）、covers 白名单 ^[\w-]+\.webp$（\w 不含点/斜杠无穿越）、books DELETE cleanupBookFiles（resolve+startsWith+.txt 双守卫）、rules/test（testRule 自带 catch 不会 500）、preview home 负 offset 数学安全、settings GET 损坏 JSON 回退默认、logs after 非法日期回退全量、stop 8s 兜底后终态保护（实测 failed 后 stop 不覆盖）、task-manager 全文件、THEMES[themeId] ?? classic（非法 themeId 安全回退）
+- 验证：bunx tsc --noEmit 退出码 0（无管道掩码，全项目含并行代理已落地的 pipeline/task-manager/storage 改动）；bun run lint 退出码 0；curl 全量冒烟矩阵 31 个 GET 路径（200/400/404/405 语义不变 + 全部携带 no-store）+ 破坏性/写路径实测：tasks POST 非法 JSON/空名 400、pageStart="abc"→1 落库、targetUrls 混入非字符串项被过滤；tasks PUT 改名/空名 400/假 id 404；control start 实跑（无规则任务快速 failed 双次启动验证占位清理）+ stop 终态保护 + 假 id 404 + 未知 action 400 + 非运行态 pause 400；rules POST/PUT/DELETE 全分支（含 enabled:"yes" 400）；rules/test 三类 400；sites POST/PUT/DELETE 全分支；settings PUT 幂等回写/非法 400/空 body 400；clean-test 四态含 5M 边界；books suggest 实采（baidu:10/bing:2/google:1 合计 18）；books/[id]/download 200/404；全部测试实体（1 任务+1 规则+1 站点）已删且级联清日志；临时脚本/探针（/tmp/r8*、仓库根 probe-*）零残留；未 commit、未重启 dev server
+
+Stage Summary:
+- 修复 4 项：①全 API 层显式 Cache-Control: no-store（json() 助手 + 70 处收敛，预览/统计/任务轮询接口不再可能被浏览器缓存）②tasks stale 检测竞态（条件 updateMany 根治「活任务被误标已停止且永不自愈」）③control start 占位泄漏死锁（executeTask 前 try 抛错时 runtime 永驻 → 兜底 remove+留痕）④clean-test 5M 输入上限（防同步 CPU 占死）；响应契约零变化（仅新增响应头与畸形输入 400）
+- 全部改动限 src/app/api/** 22 文件（_lib/http.ts +4 助手、21 个 route 导入与调用替换）；R1~R7 已修项（raw SQL LIKE ESCAPE、DELETE 事务+磁盘清理、P2025→404、readJson/toInt 体系、双开竞态、stop 终态保护等）逐项回归确认未被破坏
+- 范围外发现（仅记录不修）：①books/[id]/suggest POST 读-改-写非原子（并发触发丢关键词，SQLite 低频管理操作影响可忽略）②rules/sites PUT 的 catch 全量归 404（非 P2025 错误被误标；JSON 来源 config 不可能令 stringify 抛错，实际风险≈0）③tasks PUT 与 control start 间 TOCTOU（状态互踩瞬时，管线自身写库最终一致，UI 有运行中禁编辑守卫）④readJson 无 body 大小上限（全局 DoS 兜底需触达全部路由，本轮仅 clean-test 落地）⑤settings GET 会原样下发库内已污染类型配置（引擎 mergeCleaning 同源，根治需动 src/lib/collect-types）⑥并行代理正在改 src/lib/collect/pipeline.ts（interruptibleSleep/removeChapterTxt，01:23~01:24 落盘）——与其 control 8s 兜底语义相关，本代理未触碰
+
+---
+Task ID: R8-b
+Agent: engine-reviewer（主控接续收尾：代理完成代码后超时中断，worklog 与回归修复由主控补完）
+Task: 采集引擎非fetcher文件逐行深审+修复
+
+Work Log:
+- 代理中断前已落地 4 文件改动（主控逐行复核 diff 确认完整自洽、无半成品）：①task-manager 新增 interruptibleSleep（400ms 切片轮询停止/暂停信号，返回 done/stopping）+ runRandomPool 收尾前末次 shouldStop 检查（单条目池/末条 early-return 路径漏检会让处理期间到达的停止信号丢失致任务误标 done）+ 条目间随机间隔改走 interruptibleSleep（intervalMax 大时停止指令不再等整段睡完）②pipeline 新增 stoppableSleep（stopping 抛 TaskStoppedError）并替换全部 sleep 调用点（列表页间隔/书籍信息重试跨 WAF 冷却 150s 长等待/封面与目录阶段间隔）+ 阶段池 threadMin/threadMax Math.max(1,…) 钉底（非法配置不产生 0 线程）+ TaskStoppedError 在书籍 catch 内向上传播（单本停止不再误记为采集失败）③storage 新增 removeChapterTxt（.txt 后缀+resolve+startsWith 双守卫，失败静默）④全量重采清理失效章节：task.mode==='full' 且本次目录条目数≥现有章节数时，删除源目录已不再列出的旧章节（deleteMany 分批 500 + txt 尽力清理 + taskLog 留痕；目录瞬时残缺防御——条目数变少一律不清理）+ latestChapter 乱序守卫（!toc.scrambled || reorder.enabled 才信末条，防「最新章节置顶」布局把最新章回写成旧章）+ 全量模式状态置信度守卫（低置信猜测不回退库内高置信完结状态）+ existingChapters select 补 contentLocal
+- 【主控修复 R8-b 遗留回归·paginated.ts】代理对三处分页链接加了 ^https?:// 门控（跳过纯页码值防「非法 URL」整书失败），但 selectValue 的 looksUrl 门控（^https?|^//|^/ 才自动解析）不会解析 list-2.html 类无斜杠相对值——新门控会把它静默丢弃截断多页目录；纯页码经 resolveUrl 也会拼出 base 目录下错误地址。→ 收敛为共享 normalizePageLink 助手：绝对地址原样、相对地址（含 / /? 或 .ext 后缀）按当前页补全、纯页码等不可安全解释值返回空串跳过；select 枚举/nextLink 跟随/内容分页三处统一接入
+- 【离线实测】mock 3031：regex 相对链捕获 2 页跟随✓、纯页码值终止不抓垃圾 URL✓、css 绝对路径回归✓；本地 3199 静态服务：select 混合值（相对 2.html 补全✓/纯页码 9 跳过✓/绝对 /pg/3.html 保留✓）3 页全中。探针均用后即删（含代理残留 tests/tmp-r8b-verify.ts）
+- 验证：bunx tsc --noEmit 0 错误、bun run lint 0 错误；toc.scrambled 语义复核（原始序号降序检测在重排前、reorder.enabled 时末条可信）与 R8-b latestChapter 守卫逻辑一致
+
+Stage Summary:
+- 引擎任务控制质变：停止/暂停指令 400ms 内生效（原最长可被 150s+ 不可中断睡眠拖延，且外站请求暴露面同步收窄）；线程池停止信号三路径全覆盖
+- 全量重采闭环补全：失效章节（含 txt 文件）自动清理 + 残缺目录防御 + 乱序 latestChapter 守卫 + 状态置信度不回退
+- 分页链接归一化三态语义（绝对/相对/非地址）收敛单助手并离线实测；R8-b 代码改动全部验证通过后计入本轮交付
+
+---
+Task ID: R8-c
+Agent: admin-ui-reviewer（审查完成后工具链中断，补丁由主控逐字落地）
+Task: 管理后台UI逐行深审+修复
+
+Work Log:
+- 通读 worklog R1~R7 全部条目，规避已修项（openChapter 竞态/350ms 防抖/clampInt/rules-page clampNum/dashboard 390px/ISO时间/重复key/aria 均未重查重修）
+- 逐行审 6 个 admin 组件 + themes/index.ts + client-api.ts + page.tsx（只读）+ 14 个 /api route 契约核对；curl 实测 tasks/sites/books/settings 响应逐字段对齐
+- 【F1 settings-page 三输入框逐键吞字符（最严重）】onChange 内 filter(Boolean)/filter(s=>s.trim()) 与受控渲染 join 形成回环：removeTags 输入「a,」逗号被吞（永远打不出第二个标签）、adPatterns/adTemplates 回车失效无法换行（node 探针实证）。修复：onChange 保留空段/空行，新增 compactCleaning/compactDownload 在 save 与 clean-test 提交前统一剔除空段（空串 adPattern 会 match-all，故 clean-test 同走压缩；落库格式与原稳态一致）
+- 【F2 books-page 删除后页码越界空页】30 书/12 每页删光第 3 页后 total=24、page=3 停留空页误示「暂无书籍」。修复：books 空且 total>0 且 page>1 时回退 Math.ceil(total/pageSize)；空态文案区分搜索/筛选未命中 vs 真无书
+- 【F3 tasks-page 首次加载失败静默】catch 对首次加载同样生效，接口故障被误读为「暂无任务」。修复：everLoadedRef/loadErrToastedRef 两 ref，首次失败 toast 一次（防 2.5s 轮询刷屏），成功路径复位
+- 【F4 tasks-page 日志抽屉贴底状态跨任务残留】logsStickRef 仅初始化 true、开抽屉不复位，任务 A 上翻后开任务 B 不再自动跟底。修复：打开抽屉 effect 内重置 true
+- 【F5 sites-page 加载中误显「暂无站点」】新增 loaded state，finally 置 true，空态文案按 loaded 切换「加载中…」
+- 【F6 sites-page 绑定书籍不在前 60 误显「未绑定」+ Select 空白】卡片文案改「已绑定（不在列表）」；SelectContent 补「当前绑定（不在列表内）」选项防 Radix 触发器空白（保存不丢值仅显示问题）
+- 【确认无恙】任务创建/编辑 saving 禁用防双击✓、books reqId 竞态守卫+350ms 防抖✓、tasks clampInt+min/max 交换✓（R6/R7 已修未动）、两处 setInterval 均 cleanup 无泄漏✓、DB status 永不落 stopping（grep pipeline/task-manager 实证）✓
+- 【范围外发现（仅记录）】①toNumOr 在 sites/settings/tasks 三处逐字重复（建议收敛 lib）②books downloadTxt 用 window.open 失败时新标签展示原始 JSON（改 fetch+blob 改动大未动）③分类 chips 由当前页 12 本书派生不全（需后端聚合）④弹窗 Label 无 htmlFor/id 关联（30+ 输入，a11y 系统债）⑤>500 章书籍详情只加载前 500（后端钳制）⑥TaskRow.total 字段从未渲染（dead field）
+- 主控落地后验证：bunx tsc --noEmit 0 错误、bun run lint 0 错误
+
+Stage Summary:
+- 修复 6 项 UI 缺陷：settings 多段输入逐键吞字符（功能性缺陷，用户无法连续输入标签/换行）、books 删除后空页、tasks 首次加载静默、日志贴底残留、sites 加载态误显空态、绑定书籍列表外误显未绑定
+- 契约核对：tasks/sites/books/settings/logs/control/suggest/clean-test/preview 前后端字段全对齐

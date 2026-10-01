@@ -1,6 +1,6 @@
-import { NextRequest, NextResponse } from 'next/server'
+import { NextRequest } from 'next/server'
 import { db } from '@/lib/db'
-import { chapterContentText, RouteCtx } from '../../_lib/http'
+import { json, chapterContentText, RouteCtx } from '../../_lib/http'
 
 export const runtime = 'nodejs'
 export const dynamic = 'force-dynamic'
@@ -9,7 +9,7 @@ export const dynamic = 'force-dynamic'
 export async function GET(_req: NextRequest, { params }: RouteCtx<{ id: string }>) {
   const { id } = await params
   const chapter = await db.chapter.findUnique({ where: { id } })
-  if (!chapter) return NextResponse.json({ error: '章节不存在' }, { status: 404 })
+  if (!chapter) return json({ error: '章节不存在' }, { status: 404 })
   const content = await chapterContentText(chapter)
-  return NextResponse.json({ chapter: { id: chapter.id, title: chapter.title, order: chapter.order, content, wordCount: chapter.wordCount, collected: chapter.collected } })
+  return json({ chapter: { id: chapter.id, title: chapter.title, order: chapter.order, content, wordCount: chapter.wordCount, collected: chapter.collected } })
 }

@@ -99,6 +99,22 @@ export class TaskManagerImpl {
   }
 }
 
+/**
+ * 可被暂停/停止信号打断的睡眠：按 400ms 切片轮询，停止/暂停中不再消耗等待时长之外的阻塞。
+ * 返回 'stopping' 表示收到终止信号（调用方可据此提前退出/抛出停止哨兵），'done' 表示完整等待结束。
+ * 线程池的条目间随机间隔此前为整段 sleep：intervalMax 较大时（如 30s）停止指令要等整段睡完才生效。
+ */
+export async function interruptibleSleep(rt: TaskRuntime, ms: number): Promise<'done' | 'stopping'> {
+  const deadline = Date.now() + Math.max(0, ms)
+  while (true) {
+    if (taskManager.shouldStop(rt)) return 'stopping'
+    if (!(await taskManager.waitWhilePaused(rt))) return 'stopping'
+    const remain = deadline - Date.now()
+    if (remain <= 0) return 'done'
+    await sleep(Math.min(400, remain))
+  }
+}
+
 // 实例每次模块加载新建，共享 globalThis 状态
 export const taskManager = new TaskManagerImpl()
 
@@ -152,9 +168,16 @@ export async function runRandomPool<T>(opts: PoolOptions<T>): Promise<{ stopped:
           /* ignore */
         }
       }
+      // 收尾前最后一次停止检查：单条目池/末条完成的 early-return 不经过循环顶部，
+      // 漏掉这次检查会让处理期间到达的停止信号丢失（任务被误标 done 而非 stopped）
+      if (taskManager.shouldStop(rt)) {
+        stopped = true
+        return
+      }
       if (counter >= total && completed >= total) return
-      // 随机间隔：每次请求后按 [intervalMin, intervalMax] 随机等待
-      await sleep(randomInt(opts.intervalMin, opts.intervalMax))
+      // 随机间隔：每次请求后按 [intervalMin, intervalMax] 随机等待；
+      // 睡眠期间收到停止/暂停信号立即打断（由循环顶部统一退出）
+      await interruptibleSleep(rt, randomInt(opts.intervalMin, opts.intervalMax))
     }
   }
 

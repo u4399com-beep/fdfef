@@ -12,12 +12,15 @@ import { Switch } from '@/components/ui/switch'
 import { Textarea } from '@/components/ui/textarea'
 import { useToast } from '@/hooks/use-toast'
 import { api } from '@/lib/client-api'
+import { toNumOr } from '@/lib/utils'
 import { Beaker, Loader2, Save } from 'lucide-react'
 
-/** 数字输入防 NaN 注入 */
-function toNumOr(raw: string, fallback: number): number {
-  const n = Number(raw)
-  return Number.isFinite(n) ? n : fallback
+/** 输入过程保留空段/空行（否则逗号、换行会被 onChange 过滤吞掉，无法连续输入多段），提交前统一剔除空段 */
+function compactCleaning(c: CleaningCfg): CleaningCfg {
+  return { ...c, removeTags: c.removeTags.map((s) => s.trim()).filter(Boolean), adPatterns: c.adPatterns.filter((s) => s.trim()) }
+}
+function compactDownload(d: DownloadCfg): DownloadCfg {
+  return { ...d, adTemplates: d.adTemplates.filter(Boolean) }
 }
 
 interface CleaningCfg {
@@ -64,7 +67,7 @@ export function SettingsPage() {
     if (!cleaning || !download) return
     setSaving(true)
     try {
-      await api('/api/settings', { method: 'PUT', body: JSON.stringify({ cleaning, download }) })
+      await api('/api/settings', { method: 'PUT', body: JSON.stringify({ cleaning: compactCleaning(cleaning), download: compactDownload(download) }) })
       toast({ title: '设置已保存' })
     } catch (e) {
       toast({ title: '保存失败', description: e instanceof Error ? e.message : String(e), variant: 'destructive' })
@@ -79,7 +82,7 @@ export function SettingsPage() {
     try {
       const r = await api<{ text: string; wordCount: number; removedLines: number }>('/api/clean-test', {
         method: 'POST',
-        body: JSON.stringify({ html: testHtml, cleaning }),
+        body: JSON.stringify({ html: testHtml, cleaning: compactCleaning(cleaning) }),
       })
       setTestOut(r.text || '（清洗后为空）')
       toast({ title: `清洗完成：${r.wordCount} 字，移除 ${r.removedLines} 行` })
@@ -103,12 +106,12 @@ export function SettingsPage() {
           <div className="space-y-1.5">
             <Label className="text-xs">移除标签（逗号分隔）</Label>
             <Input className="h-8 font-mono text-xs" value={cleaning.removeTags.join(', ')}
-              onChange={(e) => setCleaning({ ...cleaning, removeTags: e.target.value.split(/[,，]/).map((s) => s.trim()).filter(Boolean) })} />
+              onChange={(e) => setCleaning({ ...cleaning, removeTags: e.target.value.split(/[,，]/).map((s) => s.trim()) })} />
           </div>
           <div className="space-y-1.5">
             <Label className="text-xs">广告清洗正则（每行一条，命中行剔除或行内删除）</Label>
             <Textarea className="h-36 font-mono text-[11px]" value={cleaning.adPatterns.join('\n')}
-              onChange={(e) => setCleaning({ ...cleaning, adPatterns: e.target.value.split('\n').filter((s) => s.trim()) })} />
+              onChange={(e) => setCleaning({ ...cleaning, adPatterns: e.target.value.split('\n') })} />
           </div>
           <div className="grid gap-2 sm:grid-cols-2">
             <div className="flex items-center justify-between rounded-md border p-2.5">
@@ -183,7 +186,7 @@ export function SettingsPage() {
               <div className="space-y-1.5">
                 <Label className="text-xs">广告模板（每行一条，支持占位符）</Label>
                 <Textarea className="h-20 text-xs" value={download.adTemplates.join('\n')}
-                  onChange={(e) => setDownload({ ...download, adTemplates: e.target.value.split('\n').filter(Boolean) })} />
+                  onChange={(e) => setDownload({ ...download, adTemplates: e.target.value.split('\n') })} />
               </div>
               <div className="space-y-1.5">
                 <Label className="text-xs">每 N 章插入一条</Label>

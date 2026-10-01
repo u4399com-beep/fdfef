@@ -1,6 +1,6 @@
-import { NextRequest, NextResponse } from 'next/server'
+import { NextRequest } from 'next/server'
 import { db } from '@/lib/db'
-import { parsePagination, RouteCtx } from '../../../_lib/http'
+import { json, parsePagination, RouteCtx } from '../../../_lib/http'
 
 export const runtime = 'nodejs'
 export const dynamic = 'force-dynamic'
@@ -24,5 +24,5 @@ export async function GET(req: NextRequest, { params }: RouteCtx<{ id: string }>
     }),
     db.chapter.count({ where: { bookId: id } }),
   ])
-  return NextResponse.json({ chapters, total, page, pageSize })
+  return json({ chapters, total, page, pageSize })
 }

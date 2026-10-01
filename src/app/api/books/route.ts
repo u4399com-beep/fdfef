@@ -1,7 +1,7 @@
-import { NextRequest, NextResponse } from 'next/server'
+import { NextRequest } from 'next/server'
 import { Prisma, type Book } from '@prisma/client'
 import { db } from '@/lib/db'
-import { parsePagination } from '../_lib/http'
+import { json, parsePagination } from '../_lib/http'
 
 export const runtime = 'nodejs'
 export const dynamic = 'force-dynamic'
@@ -35,7 +35,7 @@ export async function GET(req: NextRequest) {
       db.$queryRaw<Book[]>`SELECT * FROM Book WHERE ${cond} ORDER BY "updatedAt" DESC LIMIT ${pageSize} OFFSET ${skip}`,
       db.$queryRaw<[{ n: bigint }]>`SELECT COUNT(*) AS n FROM Book WHERE ${cond}`,
     ])
-    return NextResponse.json({ books, total: Number(countRows[0]?.n ?? 0), page, pageSize })
+    return json({ books, total: Number(countRows[0]?.n ?? 0), page, pageSize })
   }
 
   const where = {
@@ -50,5 +50,5 @@ export async function GET(req: NextRequest) {
     }),
     db.book.count({ where }),
   ])
-  return NextResponse.json({ books, total, page, pageSize })
+  return json({ books, total, page, pageSize })
 }

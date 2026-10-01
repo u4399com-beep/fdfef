@@ -1,5 +1,5 @@
-import { NextResponse, NextRequest } from 'next/server'
-import { badRequest, readJson, RULE_TYPES } from '../../_lib/http'
+import { NextRequest } from 'next/server'
+import { json, badRequest, readJson, RULE_TYPES } from '../../_lib/http'
 import { testRule } from '@/lib/collect/testing'
 import type { RuleType } from '@/lib/collect-types'
 
@@ -24,5 +24,5 @@ export async function POST(req: NextRequest) {
     return badRequest('规则配置必须为对象')
   }
   const result = await testRule(type as RuleType, body.config, url)
-  return NextResponse.json(result)
+  return json(result)
 }

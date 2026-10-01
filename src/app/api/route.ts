@@ -1,6 +1,6 @@
-import { NextResponse } from 'next/server'
+import { json } from './_lib/http'
 
 /** 系统 API 根：健康检查 */
 export async function GET() {
-  return NextResponse.json({ ok: true, name: 'novel-manager-api', time: new Date().toISOString() })
+  return json({ ok: true, name: 'novel-manager-api', time: new Date().toISOString() })
 }

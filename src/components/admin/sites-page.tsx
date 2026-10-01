@@ -11,6 +11,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@
 import { Textarea } from '@/components/ui/textarea'
 import { useToast } from '@/hooks/use-toast'
 import { api } from '@/lib/client-api'
+import { toNumOr } from '@/lib/utils'
 import { THEME_LIST } from '@/components/themes'
 import { ExternalLink, Globe, Loader2, Pencil, Plus, Trash2 } from 'lucide-react'
 
@@ -35,12 +36,6 @@ const emptyForm = {
   offset: 0, mainBookId: '', footerText: '',
 }
 
-/** 数字输入防 NaN 注入 */
-function toNumOr(raw: string, fallback: number): number {
-  const n = Number(raw)
-  return Number.isFinite(n) ? n : fallback
-}
-
 export function SitesPage({ onPreview }: { onPreview: (siteId: string) => void }) {
   const { toast } = useToast()
   const [sites, setSites] = useState<SiteRow[]>([])
@@ -49,6 +44,7 @@ export function SitesPage({ onPreview }: { onPreview: (siteId: string) => void }
   const [editingId, setEditingId] = useState<string | null>(null)
   const [form, setForm] = useState(emptyForm)
   const [saving, setSaving] = useState(false)
+  const [loaded, setLoaded] = useState(false)
 
   const load = useCallback(async () => {
     try {
@@ -60,6 +56,8 @@ export function SitesPage({ onPreview }: { onPreview: (siteId: string) => void }
       setBooks(b.books)
     } catch (e) {
       toast({ title: '加载失败', description: e instanceof Error ? e.message : String(e), variant: 'destructive' })
+    } finally {
+      setLoaded(true)
     }
   }, [toast])
 
@@ -124,7 +122,7 @@ export function SitesPage({ onPreview }: { onPreview: (siteId: string) => void }
           <Card className="md:col-span-2 xl:col-span-3">
             <CardContent className="flex flex-col items-center gap-2 py-10">
               <Globe className="h-8 w-8 text-muted-foreground" />
-              <p className="text-sm text-muted-foreground">暂无站点，点击「添加站点」生成第一个分站。</p>
+              <p className="text-sm text-muted-foreground">{loaded ? '暂无站点，点击「添加站点」生成第一个分站。' : '加载中…'}</p>
             </CardContent>
           </Card>
         )}
@@ -144,7 +142,7 @@ export function SitesPage({ onPreview }: { onPreview: (siteId: string) => void }
                   <p className="truncate">T：{site.title || site.siteName}</p>
                   <p className="truncate">D：{site.description || '（未设置）'}</p>
                   <p className="truncate">K：{site.keywords || '（未设置）'}</p>
-                  <p>偏移量：{site.offset} · 主书籍：{books.find((b) => b.id === site.mainBookId)?.title ?? '未绑定'}</p>
+                  <p>偏移量：{site.offset} · 主书籍：{books.find((b) => b.id === site.mainBookId)?.title ?? (site.mainBookId ? '已绑定（不在列表）' : '未绑定')}</p>
                 </div>
                 <div className="flex gap-2">
                   <Button size="sm" variant="outline" className="flex-1" onClick={() => onPreview(site.id)}>
@@ -211,6 +209,9 @@ export function SitesPage({ onPreview }: { onPreview: (siteId: string) => void }
                 <SelectTrigger className="h-8 text-xs"><SelectValue placeholder="未绑定" /></SelectTrigger>
                 <SelectContent>
                   <SelectItem value="none">未绑定</SelectItem>
+                  {form.mainBookId && !books.some((b) => b.id === form.mainBookId) && (
+                    <SelectItem value={form.mainBookId}>当前绑定（不在列表内）</SelectItem>
+                  )}
                   {books.map((b) => (
                     <SelectItem key={b.id} value={b.id}>《{b.title}》</SelectItem>
                   ))}
