@@ -1532,6 +1532,28 @@ async function fetchWithHyperbrowser(url: string, cfg: FetchConfig, timeout: num
 // 图片抓取（封面下载）：带会话 cookie + Referer 伪装
 // ============================================================
 
+/**
+ * 图片魔数校验：JPEG/PNG/WebP/GIF/BMP/TIFF/SVG。
+ * 背景（生产实证）：封面 URL 被 WAF 劫持或指向错误页时返回 200 + HTML，
+ * 此前直接交给 sharp 报「Input buffer contains unsupported image format」——
+ * 错误信息完全无法定位问题；在此处拦截并给出可行动的报错。
+ */
+export function looksLikeImage(buf: Buffer): boolean {
+  if (buf.length < 12) return false
+  // JPEG / PNG / GIF87a+89a / BMP / TIFF(II|MM)
+  if (buf[0] === 0xff && buf[1] === 0xd8) return true
+  if (buf[0] === 0x89 && buf[1] === 0x50 && buf[2] === 0x4e && buf[3] === 0x47) return true
+  if (buf[0] === 0x47 && buf[1] === 0x49 && buf[2] === 0x46) return true
+  if (buf[0] === 0x42 && buf[1] === 0x4d) return true
+  if (buf[0] === 0x49 && buf[1] === 0x49 && (buf[2] === 0x2a || buf[2] === 0x49)) return true
+  if (buf[0] === 0x4d && buf[1] === 0x4d && (buf[2] === 0x00 || buf[2] === 0x2a)) return true
+  // WebP: RIFF....WEBP
+  if (buf.subarray(0, 4).toString('latin1') === 'RIFF' && buf.subarray(8, 12).toString('latin1') === 'WEBP') return true
+  // SVG：文本开头（WAF 挑战页开头是 <!DOCTYPE/<html/<form，不会命中）
+  const head = buf.subarray(0, 200).toString('utf8').trimStart()
+  return head.startsWith('<svg') || head.startsWith('<?xml')
+}
+
 export async function fetchImage(url: string, referer?: string, timeout = 20000, ua?: string, cookies?: string): Promise<Buffer> {
   await domainThrottle.wait(url)
   const headers: Record<string, string> = {
@@ -1549,6 +1571,12 @@ export async function fetchImage(url: string, referer?: string, timeout = 20000,
   const buf = Buffer.from(await res.arrayBuffer())
   if (!res.ok || buf.length === 0) {
     throw new Error(`图片下载失败：HTTP ${res.status}（${url.slice(0, 120)}）`)
+  }
+  // 内容校验：HTML 响应（WAF 挑战/防盗链错误页常以 200 下发）不进 sharp，报错可定位
+  const contentType = (res.headers.get('content-type') ?? '').toLowerCase()
+  const htmlLike = contentType.includes('text/html') || contentType.includes('application/json')
+  if (htmlLike || !looksLikeImage(buf)) {
+    throw new Error(`图片地址返回了非图片内容（可能被 WAF 拦截、防盗链或链接已失效，content-type=${contentType || '未知'}）：${url.slice(0, 120)}`)
   }
   return buf
 }

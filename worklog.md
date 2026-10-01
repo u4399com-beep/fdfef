@@ -831,3 +831,24 @@ Work Log:
 
 Stage Summary:
 - 分类筛选从「当前页局部派生」升级为「全库聚合」；写操作错误从「一律 404」升级为「P2025→404/其余→500+留痕」——API 契约向后兼容（books 响应新增可选字段 categories）
+
+---
+Task ID: R12
+Agent: orchestrator (Z.ai Code)
+Task: 封面重取专项（按采集任务日志重新获取全库封面）+ 采集/反反爬深审修复
+
+Work Log:
+- 【恢复·封面全库盘点】30 本书中 15 本无封面且 coverUrl 为空（全部来自存书啦 cunshu.la），15 本本地 webp 完好（kelexs 历史日志中的 403/sharp 失败均已自愈）；存书啦书籍规则被点名排查：intro 字段存着双重转义的正则（`\\\\s` 落库为字面双反斜杠，regex 语义为「匹配字面反斜杠」），且实探真实页面确认该站已改版为 TXT 分享站——书籍页根本没有「简介」区块、没有任何封面图（仅 SVG 图标占位）、无 og:image，intro 0/15 全空的根因是「正则失效 + 页面结构变化」叠加
+- 【反反爬链路实盘验证】curl 直连存书啦返回 GoEdge WAF 挑战页（307 → /WAF/VERIFY/CAPTCHA）；fetchPage 自动升级 Playwright + VLM 解题链路全流程实测有效——90s 内完成解题并把通行 cookie（ge_wc_20，2h 有效期）持久化到 storage/waf-cookies.json，后续请求直连通过；cookie 合并方向复核（jar 覆盖规则快照）正确
+- 【封面重取体系落地】新增 src/lib/collect/cover.ts：①generatePlaceholderCover——sharp SVG→webp 占位封面（Noto Serif SC 中文渲染实证可用，标题 7 字/行自适应换行最多 5 行、按书名 hash 从 8 套暖色/中性调色板取色（避开蓝靛系）、作者/来源落款、防 XML 注入转义）②coverFileValid——sharp metadata 校验本地文件可解码③refetchBookCover——三级策略（本地完好→skip / 有 coverUrl→重下载（referer 指向来源页防防盗链）、失败降级占位 / 无源→占位）④refetchAllCovers 全库顺序扫描（limit≤500 上限）
+- 【API+UI】新增 POST /api/covers/refetch（force/bookId 参数，500 语义+console 留痕）；管理后台书籍管理页工具栏新增「封面补全」按钮（confirm 确认→API→toast 汇总下载/占位/跳过/失败计数→列表刷新、loading 防重复点击）
+- 【实盘执行结果】checked=30 skipped=15 placeholder=15 downloaded=0 failed=0 → 全库封面 100% 覆盖（30/30 本地 webp 完好）；幂等性复核（再跑一遍全 skip）✓；长标题换行视觉验证✓、前台 UAA 主题书籍页占位封面渲染✓
+- 【深审·fetcher.ts 全文（1555 行）+ 修复】发现生产日志「Input buffer contains unsupported image format」（《光之国》封面）的根因：封面 URL 被 WAF 劫持/返回错误页时以 200 + HTML 下发，fetchImage 不校验内容直接喂 sharp，报错完全无法定位 → 新增 looksLikeImage 魔数校验（JPEG/PNG/GIF/BMP/TIFF/WebP/SVG）+ content-type 双重拦截，报错改为「图片地址返回了非图片内容（可能被 WAF 拦截、防盗链或链接已失效，content-type=…）」；WAF 挑战页开头 <!DOCTYPE/<html/<form 不会误判为 SVG
+- 【深审·testing.ts 全文】修复测试面板与管线的无 URL 章节去重键不一致（测试面板 local:${title} vs 管线 local:${hashText(title)}，统一为 hash 键使去重数完全一致）；testList/testBook/testToc/testContent 四链路逐行复核（重排/去重/乱序判定/清洗配置接线）均与管线语义对齐
+- 【数据修复】存书啦书籍规则失效的 intro 双转义正则清除（置空禁用，防止后续采集/测试再消费垃圾正则）；title/latestChapter 字段保持有效
+- 【验证】bunx tsc --noEmit 0 错误、bun run lint 0 错误；Agent Browser E2E：后台书籍管理页按钮渲染+confirm+API 调用链✓、后台 12/12 封面图加载零破损✓、前台 UAA 主题 12 图零破损+占位封面视觉正确✓、console/page errors 0、dev.log 零错误；探针脚本（.tmp-probe-cunshu/.tmp-probe2/.tmp-cover-run）用后即删零残留
+
+Stage Summary:
+- 任务1达成：「根据采集任务日志重新获取所有在库书籍封面」——日志中所有历史封面失败项已核验自愈，无源封面书籍（存书啦 15 本，源站为 TXT 分享站不发封面）由新增的占位封面生成体系补全，全库 30/30 封面 100% 覆盖且可解码
+- 反反爬能力实证+增强：WAF 解题→cookie 持久化→复用直连全链路实测通过；fetchImage 新增图片内容校验把「sharp 无法解码」类静默失败变为可定位报错（并阻止 HTML 进 sharp）
+- 新增封面维护能力（cover.ts + /api/covers/refetch + UI 按钮）成为长期稳定性保障链的一环：未来任何封面下载失败都可在后台一键补全

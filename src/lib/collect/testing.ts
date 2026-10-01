@@ -5,6 +5,7 @@ import { parseFields, parseListEntries, resolveUrl, selectValue } from './parser
 import { cleanIntro } from './cleaner'
 import { loadSystemCleaningRaw } from './system-config'
 import { detectCompletion, extractChapterNumber, smartMatchCategory } from './matcher'
+import { hashText } from './storage'
 
 // ============================================================
 // 规则测试引擎：每个规则编写页面均带测试能力
@@ -153,8 +154,8 @@ async function testToc(cfg: TocRuleConfig, url: string, started: number): Promis
   if (cfg.dedup?.byUrl !== false) {
     const seen = new Set<string>()
     ordered = ordered.filter((e) => {
-      // 与管线 collectTocEntries 同键规则：无 url 章节按标题派生键（local:hash(title)）参与去重
-      const k = e.url ? normalizeTocUrlKey(e.url) : `local:${e.title}`
+      // 与管线 collectTocEntries 同键规则：无 url 章节按标题 hash 派生键参与去重
+      const k = e.url ? normalizeTocUrlKey(e.url) : `local:${hashText(e.title)}`
       if (seen.has(k)) return false
       seen.add(k)
       return true

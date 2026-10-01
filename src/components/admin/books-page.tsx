@@ -10,7 +10,7 @@ import { ScrollArea } from '@/components/ui/scroll-area'
 import { Skeleton } from '@/components/ui/skeleton'
 import { useToast } from '@/hooks/use-toast'
 import { api, formatDate, formatNumber } from '@/lib/client-api'
-import { BookOpen, Download, ExternalLink, Loader2, Search, Sparkles, Tag, Trash2 } from 'lucide-react'
+import { BookOpen, Download, ExternalLink, ImagePlus, Loader2, Search, Sparkles, Tag, Trash2 } from 'lucide-react'
 
 interface BookRow {
   id: string
@@ -58,6 +58,7 @@ export function BooksPage() {
   const [chapterQ, setChapterQ] = useState('')
   const [suggesting, setSuggesting] = useState(false)
   const [downloadingId, setDownloadingId] = useState<string | null>(null)
+  const [refetchingCovers, setRefetchingCovers] = useState(false)
   const [chapterContent, setChapterContent] = useState<{ title: string; content: string } | null>(null)
   const pageSize = 12
 
@@ -177,6 +178,28 @@ export function BooksPage() {
     }
   }
 
+  // 封面补全：有源封面重新下载，无源/失败生成占位封面（维护操作，全库扫描）
+  const refetchCovers = async () => {
+    if (refetchingCovers) return
+    if (!confirm('扫描全库书籍并补全封面？\n有源封面地址的将重新下载，无源或下载失败的将生成本地占位封面。')) return
+    setRefetchingCovers(true)
+    try {
+      const r = await api<{ checked: number; skipped: number; downloaded: number; placeholder: number; failed: number; items: { ok: boolean; detail: string }[] }>(
+        '/api/covers/refetch', { method: 'POST', body: JSON.stringify({}) }
+      )
+      toast({
+        title: `封面补全完成：共检查 ${r.checked} 本`,
+        description: `下载 ${r.downloaded} · 占位生成 ${r.placeholder} · 跳过 ${r.skipped}${r.failed ? ` · 失败 ${r.failed}（${r.items.filter((i) => !i.ok).map((i) => i.detail).join('；').slice(0, 120)}）` : ''}`,
+        variant: r.failed ? 'destructive' : 'default',
+      })
+      await load()
+    } catch (e) {
+      toast({ title: '封面补全失败', description: e instanceof Error ? e.message : String(e), variant: 'destructive' })
+    } finally {
+      setRefetchingCovers(false)
+    }
+  }
+
   const openChapter = async (chapterId: string) => {
     chapterReqRef.current = chapterId
     try {
@@ -203,6 +226,10 @@ export function BooksPage() {
           <Input className="pl-8" placeholder="搜索书名 / 作者 / 关键词" value={qInput}
             onChange={(e) => setQInput(e.target.value)} />
         </div>
+        <Button size="sm" variant="outline" disabled={refetchingCovers} onClick={() => void refetchCovers()}>
+          {refetchingCovers ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <ImagePlus className="h-3.5 w-3.5" />}
+          封面补全
+        </Button>
         <div className="flex flex-wrap gap-1.5">
           <button
             onClick={() => { setCategory(''); setPage(1) }}
