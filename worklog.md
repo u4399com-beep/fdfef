@@ -798,3 +798,22 @@ Work Log:
 
 Stage Summary:
 - 「后台清洗配置存而不用」功能级 bug 根治：设置页保存的清洗规则现被采集管线、规则测试、清洗测试三条链路真实消费（端到端实证）；R9-a（主题4项）+ R9-b（引擎8类15处，含 xpath 引擎复活、CSS 选择器容错、mergeCleaning/mergeDownload 字段级类型收敛）一并计入本轮交付
+
+---
+Task ID: R10
+Agent: orchestrator (Z.ai Code)
+Task: R10轮——消化各代理报告遗留项（资源上限/体验/清理）
+
+Work Log:
+- 【fetcher 响应体上限】fetchPage 页面 HTML 8MB（content-length 预检+读取后复核，超限按网络类错误抛出可触发镜像轮换）、封面图片 10MB 预检——防超大/恶意页面全量进解码与 cheerio 的内存放大（R9-b 发现项）
+- 【readJson 全局 body 上限】_lib/http.ts 加 content-length 预检 24MB（上限由 clean-test 合法最大值推导：1M 字符×UTF-8 4B/字符），防任意路由被超大 body 打内存/解析 CPU（R8-a 点名的全局兜底）
+- 【clean-test 上限收紧 5M→1M 字符】R10 实测揭示 R8-a 未暴露的性能真相：多行大文本清洗为 O(行数×27正则) 同步 CPU，实测 2M~4M 字符合法输入阻塞事件循环 25.8s~99s（dev.log 实证，期间所有其他请求饥饿）——1M 仍为真实章节（10~30KB）的 30~100 倍；深层优化候选项（分片/worker 线程化）已记录暂不动
+- 【theme-uaa 完结徽章】两处 includes('完') 补「未」排除（R9-a 点名的 uaa 对齐项，StatusPill+筛选器同语义）
+- 【封面 lazy 加载】5 主题共 8 处 <img> 补 loading="lazy"（noir 无图；首页批量卡片图不再急加载）
+- 【books-page 下载体验】downloadTxt 由 window.open（失败在新标签裸展示 JSON）改 fetch+blob+toast（成功「已开始下载」/失败 destructive 详情），按钮 disabled+loading 防重复（R8-c 点名项）
+- 【死字段】tasks-page TaskRow.total 移除（API 返回含此字段但 UI 从未消费，留注释说明）
+- 验证：tsc 0 错误/lint 0 错误；mock rules/test list 3 项 ✓、download 端点 200（902KB 流）✓、clean-test 500K 字符 200 ✓、超限 400 ✓、探活 ✓
+
+Stage Summary:
+- 资源兜底三件套补全（fetcher 页面/图片、API body 全局上限）+ 事件循环阻塞面收窄（clean-test 1M）+ uaa 徽章对齐 + lazy 加载 + 下载体验 + 死字段清理，全部为各审查轮报告遗留项的定点消化
+- 本轮改动文件：fetcher.ts、_lib/http.ts、clean-test/route.ts、theme-uaa.tsx、theme-classic/ink/magazine/neon.tsx、books-page.tsx、tasks-page.tsx

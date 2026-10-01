@@ -180,7 +180,7 @@ function BookCard({ book, onNavigate }: { book: BookCard; onNavigate: Nav }) {
       />
       <div className="relative aspect-[16/10] overflow-hidden bg-stone-100 sm:aspect-[3/4]">
         {book.coverUrl ? (
-          <img
+          <img loading="lazy"
             src={book.coverUrl}
             alt={`《${book.title}》封面`}
             className="h-full w-full object-cover transition-transform duration-300 group-hover:scale-105"
@@ -348,7 +348,7 @@ function MagazineBook({ site, data, loading, onNavigate }: ThemeProps) {
             <article className="mt-2 rounded-3xl bg-white p-6 shadow-sm ring-1 ring-stone-200/70 sm:p-10">
               <div className="flex flex-col gap-6 md:flex-row md:gap-10">
                 {book.coverUrl ? (
-                  <img
+                  <img loading="lazy"
                     src={book.coverUrl}
                     alt={`《${book.title}》封面`}
                     className="aspect-[3/4] w-40 shrink-0 self-center rounded-2xl object-cover shadow-md md:self-start"

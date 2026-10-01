@@ -55,6 +55,7 @@ export function BooksPage() {
   const [chapters, setChapters] = useState<ChapterRow[]>([])
   const [chapterQ, setChapterQ] = useState('')
   const [suggesting, setSuggesting] = useState(false)
+  const [downloadingId, setDownloadingId] = useState<string | null>(null)
   const [chapterContent, setChapterContent] = useState<{ title: string; content: string } | null>(null)
   const pageSize = 12
 
@@ -135,8 +136,30 @@ export function BooksPage() {
     }
   }
 
-  const downloadTxt = (book: BookRow) => {
-    window.open(`/api/books/${book.id}/download`, '_blank')
+  // fetch+blob 下载：失败时 toast 明确报错（window.open 失败会在新标签页裸展示 JSON 错误体）
+  const downloadTxt = async (book: BookRow) => {
+    setDownloadingId(book.id)
+    try {
+      const res = await fetch(`/api/books/${book.id}/download`)
+      if (!res.ok) {
+        const body = (await res.json().catch(() => ({}))) as { error?: string }
+        throw new Error(body.error || `HTTP ${res.status}`)
+      }
+      const blob = await res.blob()
+      const url = URL.createObjectURL(blob)
+      const a = document.createElement('a')
+      a.href = url
+      a.download = `${book.title}.txt`
+      document.body.appendChild(a)
+      a.click()
+      a.remove()
+      URL.revokeObjectURL(url)
+      toast({ title: '已开始下载' })
+    } catch (e) {
+      toast({ title: '下载失败', description: e instanceof Error ? e.message : String(e), variant: 'destructive' })
+    } finally {
+      setDownloadingId(null)
+    }
   }
 
   const removeBook = async (book: BookRow) => {
@@ -307,7 +330,7 @@ export function BooksPage() {
                     {suggesting ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Sparkles className="h-3.5 w-3.5" />}
                     抓取搜索引擎下拉词
                   </Button>
-                  <Button size="sm" variant="outline" onClick={() => downloadTxt(detail)}>
+                  <Button size="sm" variant="outline" disabled={downloadingId === detail.id} onClick={() => void downloadTxt(detail)}>
                     <Download className="h-3.5 w-3.5" /> 下载 TXT
                   </Button>
                   {detail.sourceUrl && (

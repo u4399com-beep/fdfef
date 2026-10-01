@@ -46,7 +46,7 @@ interface TaskRow {
   status: string
   stage: string
   progress: number
-  total: number
+  // 注：API 响应含 total 字段（任务总目标数），UI 已由 stats JSON 与进度条承载，接口层不再声明
   stats: string
   updatedAt: string
 }

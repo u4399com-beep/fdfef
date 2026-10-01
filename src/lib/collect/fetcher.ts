@@ -86,6 +86,10 @@ export function randomUA(): string {
 }
 
 /** 固定 UA（rotateUA=false 时全局使用；WAF 通行 cookie 与 UA 绑定的站点必须用同一 UA） */
+/** fetchPage 页面响应体上限（字节）：防超大/恶意页面内存放大 */
+const MAX_HTML_BYTES = 8 * 1024 * 1024
+/** 封面图片下载上限（字节） */
+const MAX_IMAGE_BYTES = 10 * 1024 * 1024
 export const FIXED_UA = UA_LIST[0]
 
 export function randomInt(min: number, max: number): number {
@@ -866,7 +870,12 @@ async function fetchPageInner(url: string, cfg: FetchConfig): Promise<FetchResul
       cfg.cookies
     )
     const effectiveFinal = fetchedUrl || url
+    // 响应体大小兜底：content-length 预检 + 读取后复核（超大页面全量进解码/cheerio 是内存放大点；
+    // 正常小说页面 ≈几十~几百 KB，8MB 为宽裕上限）。超限按网络类错误抛出，可触发镜像轮换
+    const declaredLen = Number(res.headers.get('content-length') ?? 0)
+    if (declaredLen > MAX_HTML_BYTES) throw new Error(`页面过大（content-length ${declaredLen} > ${MAX_HTML_BYTES}）：${effectiveFinal.slice(0, 120)}`)
     const buffer = Buffer.from(await res.arrayBuffer())
+    if (buffer.length > MAX_HTML_BYTES) throw new Error(`页面过大（实际 ${buffer.length} 字节 > ${MAX_HTML_BYTES}）：${effectiveFinal.slice(0, 120)}`)
     cookieJar.absorbFromFetch(urlHost(effectiveFinal), res.headers)
     const charset = detectCharset(buffer, res.headers.get('content-type') ?? '', cfg.encoding ?? 'auto')
     html = decodeBuffer(buffer, charset)
@@ -1535,6 +1544,8 @@ export async function fetchImage(url: string, referer?: string, timeout = 20000,
   const mergedCookie = cookies && jarCookie ? mergeCookieStrings(cookies, jarCookie) : cookies || jarCookie
   if (mergedCookie) headers.Cookie = mergedCookie
   const { res } = await fetchWithRetry(url, headers, timeout, 1, Boolean(ua), cookies)
+  const declaredImgLen = Number(res.headers.get('content-length') ?? 0)
+  if (declaredImgLen > MAX_IMAGE_BYTES) throw new Error(`封面图片过大（content-length ${declaredImgLen}）：${url.slice(0, 120)}`)
   const buf = Buffer.from(await res.arrayBuffer())
   if (!res.ok || buf.length === 0) {
     throw new Error(`图片下载失败：HTTP ${res.status}（${url.slice(0, 120)}）`)

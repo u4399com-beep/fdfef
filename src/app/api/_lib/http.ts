@@ -9,9 +9,18 @@ import { NextResponse } from 'next/server'
 /** 动态路由段上下文（Next 16：params 为 Promise） */
 export type RouteCtx<T extends Record<string, string>> = { params: Promise<T> }
 
-/** 安全解析 JSON body：非法 JSON / 非对象 body 返回 null（调用方统一 400，避免裸 500） */
+/**
+ * JSON body 全局上限（字节）。规则/配置/设置类请求均为 KB 级；
+ * 上限由 clean-test 的合法最大值决定：5,000,000 字符 × UTF-8 最多 4 字节/字符 ≈ 20MB，
+ * 取 24MB 兼容之，同时保持有界（防超大 body 占用内存与 JSON 解析 CPU）。
+ */
+const MAX_BODY_BYTES = 24 * 1024 * 1024
+
+/** 安全解析 JSON body：非法 JSON / 非对象 body / 超大 body 返回 null（调用方统一 400，避免裸 500） */
 export async function readJson(req: Request): Promise<Record<string, unknown> | null> {
   try {
+    const len = Number(req.headers.get('content-length') ?? 0)
+    if (len > MAX_BODY_BYTES) return null
     const data: unknown = await req.json()
     if (!data || typeof data !== 'object' || Array.isArray(data)) return null
     return data as Record<string, unknown>

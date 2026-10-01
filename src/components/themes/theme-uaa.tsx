@@ -92,7 +92,7 @@ function PageNumbers({
 function Cover({ book, className }: { book: Pick<BookCard, 'title' | 'coverUrl'>; className: string }) {
   if (book.coverUrl) {
     return (
-      <img
+      <img loading="lazy"
         src={book.coverUrl}
         alt={`《${book.title}》封面`}
         className={`${className} shrink-0 rounded border border-[#d4e4f0] bg-white object-cover shadow-sm`}
@@ -110,7 +110,8 @@ function Cover({ book, className }: { book: Pick<BookCard, 'title' | 'coverUrl'>
 }
 
 function StatusPill({ status }: { status: string }) {
-  const done = status.includes('完')
+  // 排除「未完结/未完待续」：includes('完') 对其恒真会误亮完结色（与引擎侧完结判定语义对齐）
+  const done = status.includes('完') && !status.includes('未')
   return (
     <span
       className={`inline-flex items-center rounded px-1.5 py-0.5 text-xs font-medium ${
@@ -343,7 +344,7 @@ function UaaHome({ site, data, loading, onNavigate }: ThemeProps) {
       books.filter(
         (b) =>
           (category === '全部' || b.category === category) &&
-          (status === '全部' || (status === '完结' ? b.status.includes('完') : !b.status.includes('完'))),
+          (status === '全部' || (status === '完结' ? b.status.includes('完') && !b.status.includes('未') : !(b.status.includes('完') && !b.status.includes('未')))),
       ),
     [books, category, status],
   )

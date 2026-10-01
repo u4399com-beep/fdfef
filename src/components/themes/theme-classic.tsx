@@ -28,7 +28,7 @@ function Cover({
 }) {
   if (book.coverUrl) {
     return (
-      <img
+      <img loading="lazy"
         src={book.coverUrl}
         alt={`《${book.title}》封面`}
         className={`${className} shrink-0 rounded-sm border border-amber-200/80 object-cover shadow-sm`}

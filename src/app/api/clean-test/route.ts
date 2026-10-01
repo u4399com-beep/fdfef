@@ -14,9 +14,10 @@ export async function POST(req: NextRequest) {
   if (typeof body.html !== 'string') return badRequest('html 必须为字符串')
   const html = body.html
   if (!html.trim()) return json({ ok: false, message: '请输入待清洗的 HTML' }, { status: 400 })
-  // 清洗为逐行×多条正则的同步 CPU 处理，超长输入（如恶意超大 body）会长时间占死事件循环；
-  // 正常章节/整页 HTML 远小于该上限（一章 ≈10KB），5M 字符为宽裕兜底
-  if (html.length > 5_000_000) return badRequest('html 过长（上限 5,000,000 字符）')
+  // 清洗为逐行×多条正则的同步 CPU 处理，超长输入会长时间占死事件循环（实测多行大文本
+  // 每百万字符可达数十秒且全程阻塞其他请求）；正常章节/整页 HTML ≈10~30KB，
+  // 1M 字符仍为其 30~100 倍宽裕兜底（R8 曾实测 5M 上限下合法极端输入可阻塞 99s，故收紧）
+  if (html.length > 1_000_000) return badRequest('html 过长（上限 1,000,000 字符）')
 
   const base = mergeCleaning(await loadSystemCleaningRaw())
   // 仅接受纯对象覆盖，防字符串/数组/数字混入后被展开污染配置（同形于 headers [object Object] 类 bug）

@@ -169,7 +169,7 @@ function NeonCard({ book, onNavigate }: { book: BookCard; onNavigate: Nav }) {
       >
         <div className="relative aspect-[3/4] w-full overflow-hidden rounded-xl bg-zinc-800">
           {book.coverUrl ? (
-            <img
+            <img loading="lazy"
               src={book.coverUrl}
               alt={`《${book.title}》封面`}
               className="h-full w-full object-cover"
@@ -347,7 +347,7 @@ function NeonBook({ site, data, loading, onNavigate }: ThemeProps) {
           <article className={`mt-2 rounded-3xl ${GRAD_BR} p-[2px]`}>
             <div className="flex flex-col gap-8 rounded-[22px] bg-[#1d1d22] p-6 sm:p-8 md:flex-row">
               {book.coverUrl ? (
-                <img
+                <img loading="lazy"
                   src={book.coverUrl}
                   alt={`《${book.title}》封面`}
                   className="aspect-[3/4] w-44 shrink-0 self-center rounded-xl object-cover md:self-start"

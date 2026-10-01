@@ -223,7 +223,7 @@ function ScrollCard({ book, onNavigate }: { book: BookCard; onNavigate: Nav }) {
       />
       <div className="relative w-24 shrink-0 sm:w-28">
         {book.coverUrl ? (
-          <img
+          <img loading="lazy"
             src={book.coverUrl}
             alt={`《${book.title}》封面`}
             className="h-full w-full object-cover"
@@ -344,7 +344,7 @@ function InkBook({ site, data, loading, onNavigate }: ThemeProps) {
         <>
           <article className="mt-2 flex flex-col gap-8 rounded-sm border border-stone-300/80 bg-white/60 p-6 sm:p-8 md:flex-row">
             {book.coverUrl ? (
-              <img
+              <img loading="lazy"
                 src={book.coverUrl}
                 alt={`《${book.title}》封面`}
                 className="h-64 w-44 shrink-0 self-center border border-stone-300 object-cover md:self-start"
