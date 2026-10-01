@@ -723,3 +723,20 @@ Work Log:
 Stage Summary:
 - 修复 6 项 UI 缺陷：settings 多段输入逐键吞字符（功能性缺陷，用户无法连续输入标签/换行）、books 删除后空页、tasks 首次加载静默、日志贴底残留、sites 加载态误显空态、绑定书籍列表外误显未绑定
 - 契约核对：tasks/sites/books/settings/logs/control/suggest/clean-test/preview 前后端字段全对齐
+
+---
+Task ID: R8-verify
+Agent: orchestrator (Z.ai Code)
+Task: R8收官——规则实盘回归 + Agent Browser E2E + git推送
+
+Work Log:
+- 全库规则实盘回归（verify-all-rules）：首轮 VLM API 429 限流致 3 站 WAF 解题失败（沙箱基础设施限流，非代码问题），改逐站间隔重试：cunshu 15项→254章→2431字 ✓、rqwb 6项→72章→3081字 ✓、kelexs 20项→100章→1980字/2页 ✓（连接级阻断解除，熔断半开复检自动恢复再+1 实证）、biqutu 首轮 list 0 项 → 深挖
+- 【biqutu 镜像二次改版适配】bqgbe.com 又换模板（R7 的 sort-book-list 消失→novel_home 布局）：考古确认书籍页（og:novel/og:image/.details）与内容页（pep.rilr base64 混淆、_N.html 分页）原样兼容，仅 LIST/TOC 断链 → LIST 重写为 list_l2 五段式锚定正则（s1 分类/s2 链接书名/s4 作者/s5 日期，补 author+category 字段提取）→ list 60 项；TOC 重写 yanqing_list 结构 item 正则（去「第」前缀限制）→ 124 章/去重 25；四链路 60项→书→124章→4071字/3页 ✓
+- E2E（Agent Browser）：管理后台 仪表盘/采集任务/站群管理/系统设置 渲染 ✓；前台 UAA 首页（分类筛选/书籍卡）→书籍页（最新12章区块✓+查看全部124章目录入口✓+无全量目录✓）→目录页（100条/页、翻页 1→2 生效、边界禁用态正确）→章节页（上一章/返回目录/下一章）✓；390px 移动端章节页无横向溢出（scrollW=390=clientW）；console/page errors 0；页脚贴底（footerBottom=800=viewH）✓
+- 【F1 修复真机实测】settings removeTags 输入尾逗号保留✓、adPatterns 换行保留✓、保存→API 复核落库格式规整（空段剔除）✓、原值恢复✓
+- git：修复 R7 遗留分叉（仅2文件权限位差异，merge 后 push）；R8 全部改动 commit db60902 推送 origin/main ✓
+
+Stage Summary:
+- R8 六阶段闭环完成：恢复（分叉修复/盘点）→深审（三路并行 22 API 路由+11 引擎文件+8 admin 组件）→增强（4+4+6=14 项修复+biqutu 二次适配）→精简（toNumOr 收敛）→集成（规则 5/5+commit db60902 推送）→验证（tsc/lint/E2E/真机实测全绿）
+- 在库 5 站点 20 规则全部突破且全链路实盘通过（「全部突破、稳定长期获取」在本轮再次达成）
+- 长期稳定性保障链再实证：WAF 解题→cookie 持久化→限流退让→熔断半开复检（kelexs 阻断解除自动恢复）
