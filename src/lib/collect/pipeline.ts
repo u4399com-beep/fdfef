@@ -242,14 +242,23 @@ async function stoppableSleep(rt: TaskRuntime, ms: number): Promise<void> {
 export async function executeTask(taskId: string): Promise<void> {
   const task = await db.collectTask.findUnique({ where: { id: taskId } })
   if (!task) {
-    // 任务在 start 占位后、执行前被删除：清理 control start 遗留的运行时占位
-    taskManager.remove(taskId)
+    // 任务在 start 占位后、执行前被删除：清理 control start 遗留的运行时占位（带代际防误删）
+    const staleRt = taskManager.get(taskId)
+    if (staleRt) taskManager.remove(taskId, staleRt.epoch)
     return
   }
   // 同步注册运行时（在首个 await 之前）：避免启动窗口内被 /api/tasks 的 stale 检测误杀。
   // 用 ensure 复用 control start 已占位的运行时而非覆盖重建：
   // create 会把首个 await（任务查询）窗口内到达的 pause/stop 信号重置回 running
   const { rt } = taskManager.ensure(taskId)
+  // 捕获本次启动的代际：finally remove 仅当代际匹配才生效——
+  // 「停止强制清理后用户立即重启、旧协程才退出」的时序下不误删新一轮运行时
+  const myEpoch = rt.epoch
+  /** 本次启动是否仍持有运行时：终态回写让位——强清+重启时序下新实例已接管，旧实例不得覆写终态 */
+  const ownsRuntime = (): boolean => {
+    const cur = taskManager.get(taskId)
+    return !cur || cur.epoch === myEpoch
+  }
 
   const stats: TaskStats = { books: 0, booksNew: 0, chapters: 0, chaptersNew: 0, contents: 0, errors: 0 }
   let lastProgress = 0
@@ -293,6 +302,8 @@ export async function executeTask(taskId: string): Promise<void> {
       if (!listCfg) throw new Error('范围采集必须配置列表页规则')
       await writeStats('列表页解析', 2)
       await taskLog(taskId, 'info', `范围采集：模板 ${task.urlTemplate}，第 ${task.pageStart} ~ ${task.pageEnd} 页`)
+      // fail-fast：空模板会走到 fetchPage('') 抛「非法 URL: 」难以定位根因
+      if (!task.urlTemplate.trim()) throw new Error('范围采集未配置列表页 URL 模板（urlTemplate，需含 {page} 占位符）')
       if (!task.urlTemplate.includes('{page}') && task.pageEnd > task.pageStart) {
         await taskLog(
           taskId,
@@ -551,8 +562,15 @@ export async function executeTask(taskId: string): Promise<void> {
               }
             }
           }
-          for (const u of toUpdate) {
-            await db.chapter.update({ where: { id: u.id }, data: { title: u.title, order: u.order } })
+          // 标题/顺序变更批量提交：千章书全量重采时 order 几乎全变，
+          // 逐条 update = 数千个独立隐式事务（SQLite 每事务一次 fsync）；
+          // 单事务批量快 1~2 个数量级。分片 500 防 Prisma 事务默认 5s 超时
+          for (let i = 0; i < toUpdate.length; i += 500) {
+            await db.$transaction(
+              toUpdate.slice(i, i + 500).map((u) =>
+                db.chapter.update({ where: { id: u.id }, data: { title: u.title, order: u.order } })
+              )
+            )
           }
           // 全量重采清理失效章节：源目录已不再列出的旧章节（连同其 txt 文件）一并移除，
           // 否则残留旧 order 与新目录序号冲突（目录/上下章导航错乱）、totalChapters 与实际行数漂移。
@@ -663,16 +681,18 @@ export async function executeTask(taskId: string): Promise<void> {
 
     const stopped = poolResult.stopped
     const finalStatus = stopped ? 'stopped' : stats.books === 0 && stats.errors > 0 ? 'failed' : 'done'
-    await db.collectTask.update({
-      where: { id: taskId },
-      data: {
-        status: finalStatus,
-        stage: stopped ? '已停止' : '完成',
-        // 仅成功完成才置 100；停止保持原进度，失败保留最后进度（避免 failed 显示 100% 的误导）
-        progress: finalStatus === 'done' ? 100 : undefined,
-        stats: JSON.stringify(stats),
-      },
-    })
+    if (ownsRuntime()) {
+      await db.collectTask.update({
+        where: { id: taskId },
+        data: {
+          status: finalStatus,
+          stage: stopped ? '已停止' : '完成',
+          // 仅成功完成才置 100；停止保持原进度，失败保留最后进度（避免 failed 显示 100% 的误导）
+          progress: finalStatus === 'done' ? 100 : undefined,
+          stats: JSON.stringify(stats),
+        },
+      })
+    }
     if (stopped) {
       await taskLog(taskId, 'warn', `任务已停止：书籍 ${stats.books}，正文 ${stats.contents} 篇，错误 ${stats.errors}`)
     } else {
@@ -684,14 +704,17 @@ export async function executeTask(taskId: string): Promise<void> {
     }
   } catch (e) {
     const stoppedEarly = e instanceof TaskStoppedError
-    await db.collectTask.update({
-      where: { id: taskId },
-      data: {
-        status: stoppedEarly ? 'stopped' : 'failed',
-        stage: stoppedEarly ? '已停止' : '失败',
-        stats: JSON.stringify(stats),
-      },
-    })
+    // 终态让位守卫：运行时已被新一轮启动接管时不覆写（新实例自会写终态）
+    if (ownsRuntime()) {
+      await db.collectTask.update({
+        where: { id: taskId },
+        data: {
+          status: stoppedEarly ? 'stopped' : 'failed',
+          stage: stoppedEarly ? '已停止' : '失败',
+          stats: JSON.stringify(stats),
+        },
+      })
+    }
     await taskLog(
       taskId,
       stoppedEarly ? 'warn' : 'error',
@@ -700,6 +723,7 @@ export async function executeTask(taskId: string): Promise<void> {
         : `任务失败：${e instanceof Error ? e.message : String(e)}`
     )
   } finally {
-    taskManager.remove(taskId)
+    // 带代际删除：仅当运行时条目仍是本次启动的实例才清理
+    taskManager.remove(taskId, myEpoch)
   }
 }

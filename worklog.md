@@ -852,3 +852,29 @@ Stage Summary:
 - 任务1达成：「根据采集任务日志重新获取所有在库书籍封面」——日志中所有历史封面失败项已核验自愈，无源封面书籍（存书啦 15 本，源站为 TXT 分享站不发封面）由新增的占位封面生成体系补全，全库 30/30 封面 100% 覆盖且可解码
 - 反反爬能力实证+增强：WAF 解题→cookie 持久化→复用直连全链路实测通过；fetchImage 新增图片内容校验把「sharp 无法解码」类静默失败变为可定位报错（并阻止 HTML 进 sharp）
 - 新增封面维护能力（cover.ts + /api/covers/refetch + UI 按钮）成为长期稳定性保障链的一环：未来任何封面下载失败都可在后台一键补全
+
+---
+Task ID: R13
+Agent: orchestrator (Z.ai Code)
+Task: 深审引擎其余模块（task-manager/paginated 高并发路径、preview 数据源）+ 在库规则稳定性回归
+
+Work Log:
+- 【恢复】盘点引擎 13 模块行数与任务/规则清单：在库 20 条规则（演示/可乐小说kelexs/存书啦cunshu/人气完本rqwb/笔趣阁biqutu × list/book/toc/content）、19 个采集任务；dev server(3000) 与 mock(3031) 在位
+- 【深审·task-manager.ts 逐行】counter++/completed++ 单线程原子性、嵌套池 ensure/owned 所有权、waitWhilePaused 自旋、interruptibleSleep 400ms 切片、shouldStop 共享源读取——发现收尾空睡 bug：worker 处理完条目后即使 counter>=total（无可领取条目）仍会空睡一个随机间隔才回循环顶退出（intervalMax 大时任务实际已完成却迟迟不回写 done/UI 卡 running）；修复为 counter>=total 立即收尾（探针判别场景 601ms vs 旧实现 ~5.1s）
+- 【深审·paginated.ts 逐行】三模式（nextLink/template/select）cap 语义、环检测、防跨章 pageBase、fetchCleanedContent 与管线共用实现——确认无恙（每次调用独立状态，线程安全；visited 以 finalUrl 记录在重定向场景可能漏判环，有 sameChapterOnly+maxPages≤10 兜底，仅记录）
+- 【深审·preview 数据源】route.ts 五视图逐行：offset 轮转（负偏移亦正确）、空关键词不派生落地页、chapterContentText db→txt 兜底、TDK/JSON-LD 注入与卸载还原——确认无恙；已知取舍记录：keyword 视图搜索范围限最新 200 本、toc>5000 章截断（R6 已知）
+- 【修复① 线程池收尾空睡】task-manager.ts runRandomPool（探针 6 场景全绿：判别收尾/停止/暂停恢复/处理中停止/代际删除/强清重启）
+- 【修复② range 空 urlTemplate fail-fast】pipeline.ts：空模板此前走到 fetchPage('') 抛「非法 URL: 」难定位，现在任务启动即报「范围采集未配置列表页 URL 模板」
+- 【修复③ toUpdate 批量事务】pipeline.ts：千章书全量重采时 order 几乎全变，逐条 update=数千个独立隐式事务（SQLite 每事务一次 fsync）→ $transaction 分片 500 批量提交
+- 【修复④ PUT/DELETE 竞态原子化】tasks/[id]/route.ts：「检查-执行」窗口内任务可能被 start 拉起，无条件 update 会把 running 覆盖回 pending、无条件 delete 会误删活任务 → updateMany/deleteMany 条件写（status notIn ACTIVE），count=0 回 400
+- 【修复⑤ 运行时僵尸治理（本轮最重要发现）】任务日志考古发现同一任务 ID 多个 executeTask 实例时间重叠的历史痕迹（stop 8s 兜底后条目永不清理 + 热重载丢失执行体的僵尸条目会永久挡住 start）→ 三层加固：a) TaskRuntime 增加 epoch 代际，finally/兜底 remove 带代际防旧实例误删新一轮运行时；b) control start 三态逻辑（内存残留+DB 非活动→自愈放行；DB 原子 claim updateMany 条件占位闭合并发双 start 竞态）；c) stop 8s 超时强制清理释放启动通道 + shouldStop 双源判定（map 或闭包任一 stopping 即停，防「强清+立即重启」时序下旧协程脱管继续爬取）+ pipeline 终态回写代际让位守卫
+- 【真机 E2E】僵尸任务「可乐小说-男生列表1-10全量」（DB running + 无实际执行）stop → DB stopped + runtime None（自愈成功）；临时 mock 任务全生命周期：创建→start（DB claim）→运行中双开 start 400「任务已在运行中」→运行中 PUT/DELETE 400（条件写生效）→stop（runtime 清理）→终态 PUT 改名→DELETE 404 确认；done 任务合法重启跑通（12 章/0 错误）
+- 【在库规则稳定性回归·5 站四链路全部突破】mock：list 3→book《斗罗星河传》→toc 12 章（乱序重排在位）→content 266 字 ✓；kelexs：list 20→book→toc 100 章→content 3063 字 ✓；cunshu：list 15→book《决战正阳门》→toc 65 章→content 2469 字 ✓（R12 持久化 WAF cookie 复用直连）；biqutu：list 60→book《百世修长生》→toc 236 章去重 44→content 2734 字 ✓；rqwb：list 6→book《穿书70：海岛下乡风情摇曳》→toc 72 章（乱序检测在位）→content 3118 字 ✓（dev server 引擎 API 链路；独立 verify 脚本进程在 setsid 下静默死亡属 bun+Playwright 环境问题，已记录不影响引擎）
+- 【浏览器 E2E】后台任务页渲染已愈状态「已停止」+ 零页面错误；前台五视图 golden path：home(TDK 书香阁)→book(TDK 斗罗星河传_唐三少_书香阁、最新更新 12 章区块、h1 书名)→toc(TDK 章节目录、12 章)→chapter(TDK 章节名、上一章/下一章/返回目录、正文 19219 字符)；console/page errors 0
+- 验证：bunx tsc --noEmit 0 错误、bun run lint 0 错误、dev.log 无错误；临时任务/探针（/home/z/.tmp-r13/）用后即删零残留；未 commit
+
+Stage Summary:
+- 高并发路径修复 5 类：线程池收尾空睡（任务完成被拖慢最多一个 intervalMax）、range 空模板 fail-fast、目录 update 批量事务、PUT/DELETE 竞态原子化、运行时僵尸三层治理（epoch 代际 + start 三态自愈/DB 原子 claim + stop 强清与双源停止信号）
+- preview 数据源深审确认健壮（已知取舍 2 项记录在案）
+- 在库 20 条规则 5 站 × 四链路实盘回归全部通过（乱序重排/去重/WAF cookie 复用/正文清洗全链路在位）
+- R12 遗留 covers/cover.ts/system-config.ts 仅文件权限位差异，无内容变化

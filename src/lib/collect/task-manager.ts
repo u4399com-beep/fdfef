@@ -12,14 +12,28 @@ export interface TaskRuntime {
   status: RuntimeStatus
   startedAt: number
   processed: number
+  /**
+   * 运行时代际：每次 create 递增。finally/兜底 remove 携带启动时捕获的代际，
+   * 仅当代际匹配才删除——防止「停止 8s 强制清理后用户立即重启、旧协程才退出」
+   * 的时序下旧实例误删新一轮启动的运行时（导致新任务控制失效）
+   */
+  epoch: number
 }
 
 // 状态数据挂 globalThis（跨热重载保留），类实例每次新建（类代码始终最新）
 const RUNTIME_STATE_KEY = '__novelTaskRuntimes'
-const globalForTaskManager = globalThis as unknown as { [RUNTIME_STATE_KEY]?: Map<string, TaskRuntime> }
+const globalForTaskManager = globalThis as unknown as {
+  [RUNTIME_STATE_KEY]?: Map<string, TaskRuntime>
+  __novelTaskEpoch?: number
+}
 const runtimeStore: Map<string, TaskRuntime> =
   globalForTaskManager[RUNTIME_STATE_KEY] ?? new Map()
 globalForTaskManager[RUNTIME_STATE_KEY] = runtimeStore
+// 代际计数器同样挂 globalThis（热重载不回退）；epoch 0 保留给「ensure 兜底创建」之外的语义
+function nextEpoch(): number {
+  globalForTaskManager.__novelTaskEpoch = (globalForTaskManager.__novelTaskEpoch ?? 0) + 1
+  return globalForTaskManager.__novelTaskEpoch
+}
 
 export class TaskManagerImpl {
   private runtimes = runtimeStore
@@ -37,7 +51,7 @@ export class TaskManagerImpl {
   }
 
   create(taskId: string): TaskRuntime {
-    const rt: TaskRuntime = { taskId, status: 'running', startedAt: Date.now(), processed: 0 }
+    const rt: TaskRuntime = { taskId, status: 'running', startedAt: Date.now(), processed: 0, epoch: nextEpoch() }
     this.runtimes.set(taskId, rt)
     return rt
   }
@@ -80,8 +94,17 @@ export class TaskManagerImpl {
     return false
   }
 
-  remove(taskId: string): void {
-    this.runtimes.delete(taskId)
+  /**
+   * 删除运行时。携带 epoch 时仅当代际匹配才删（防旧实例退出误删新一轮启动的运行时）；
+   * 不携带时无条件删（控制路由的强制清理/僵尸自愈场景）。
+   */
+  remove(taskId: string, epoch?: number): void {
+    if (epoch === undefined) {
+      this.runtimes.delete(taskId)
+      return
+    }
+    const rt = this.runtimes.get(taskId)
+    if (rt && rt.epoch === epoch) this.runtimes.delete(taskId)
   }
 
   /** 暂停期间自旋等待；返回 false 表示需要终止 */
@@ -93,9 +116,11 @@ export class TaskManagerImpl {
   }
 
   shouldStop(rt: TaskRuntime): boolean {
-    // 从共享 store 读取而非闭包持有的 rt：与 pause/stop 写入同一来源，
-    // 避免热重载重建实例/条目被替换后读到孤立对象漏掉停止信号
-    return (this.runtimes.get(rt.taskId) ?? rt).status === 'stopping'
+    // 双源判定：map 条目为 stopping（常规停止/热重载后条目被替换再停止）或闭包持有的
+    // rt 自身为 stopping（停止后条目被强制清理又被新一轮启动覆盖——旧协程读 map 会看到
+    // 新实例的 running，此时闭包对象仍保留 stop 写入的 stopping，任一命中即终止，
+    // 防止强清+重启时序下旧协程脱管继续爬取）
+    return this.runtimes.get(rt.taskId)?.status === 'stopping' || rt.status === 'stopping'
   }
 }
 
@@ -174,7 +199,11 @@ export async function runRandomPool<T>(opts: PoolOptions<T>): Promise<{ stopped:
         stopped = true
         return
       }
-      if (counter >= total && completed >= total) return
+      // 条目已全部领完（counter>=total）：本 worker 永远拿不到新条目，立即收尾。
+      // 原实现为 `counter>=total && completed>=total`——最后一批完成 worker 会先空睡一个
+      // 随机间隔才回循环顶发现无条目可领，intervalMax 较大时（如 30s）任务实际已完成
+      // 却迟迟不退出 Promise.all，DB 状态与 UI 进度被无谓拖住
+      if (counter >= total) return
       // 随机间隔：每次请求后按 [intervalMin, intervalMax] 随机等待；
       // 睡眠期间收到停止/暂停信号立即打断（由循环顶部统一退出）
       await interruptibleSleep(rt, randomInt(opts.intervalMin, opts.intervalMax))
@@ -183,7 +212,7 @@ export async function runRandomPool<T>(opts: PoolOptions<T>): Promise<{ stopped:
 
   const threadCount = Math.max(1, randomInt(opts.threadMin, opts.threadMax))
   await Promise.all(Array.from({ length: threadCount }, () => worker(0)))
-  if (owned) taskManager.remove(opts.taskId)
+  if (owned) taskManager.remove(opts.taskId, rt.epoch)
   return { stopped, completed }
 }
 

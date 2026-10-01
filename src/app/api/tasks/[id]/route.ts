@@ -28,8 +28,11 @@ export async function PUT(req: NextRequest, { params }: RouteCtx<{ id: string }>
   if (body.name !== undefined && !String(body.name ?? '').trim()) {
     return badRequest('任务名称不能为空')
   }
-  const task = await db.collectTask.update({
-    where: { id },
+  // 条件写闭合「检查-执行」竞态窗口：findUnique 与写入之间任务可能被 start 拉起，
+  // 无条件 update 会把 running 覆盖回 pending（此后 runtime 在跑而 DB 显示 pending，
+  // 直到任务终态才恢复）。updateMany 仅当状态仍非活动才写入，count=0 说明已被拉起。
+  const res = await db.collectTask.updateMany({
+    where: { id, status: { notIn: ACTIVE_TASK_STATUSES } },
     data: {
       ...(body.name !== undefined ? { name: String(body.name ?? '').trim() } : {}),
       ...(body.targetType !== undefined ? { targetType: body.targetType === 'range' ? 'range' : 'single' } : {}),
@@ -54,6 +57,10 @@ export async function PUT(req: NextRequest, { params }: RouteCtx<{ id: string }>
       stage: '',
     },
   })
+  if (res.count === 0) {
+    return json({ error: '任务正在运行，请先暂停或停止后再编辑' }, { status: 400 })
+  }
+  const task = await db.collectTask.findUnique({ where: { id } })
   return json({ task })
 }
 
@@ -65,7 +72,13 @@ export async function DELETE(_req: NextRequest, { params }: RouteCtx<{ id: strin
     taskManager.stop(id)
     return json({ error: '任务正在运行，请先停止后再删除' }, { status: 400 })
   }
+  // 条件删除闭合竞态：findUnique（非活动）与删除之间任务可能被 start 拉起，
+  // 无条件 delete 会把活任务连同其运行状态一起删除。deleteMany 仅当状态仍非活动才删，
+  // count=0 说明已被拉起（executeTask 开头 findUnique null 兜底自行退出，数据零误删）。
+  const res = await db.collectTask.deleteMany({ where: { id, status: { notIn: ACTIVE_TASK_STATUSES } } })
+  if (res.count === 0) {
+    return json({ error: '任务正在运行，请先停止后再删除' }, { status: 400 })
+  }
   await db.taskLog.deleteMany({ where: { taskId: id } })
-  await db.collectTask.delete({ where: { id } })
   return json({ ok: true })
 }
