@@ -16,6 +16,7 @@ import { downloadCoverAsWebp, hashText, removeChapterTxt, saveChapterTxt } from 
 import { interruptibleSleep, runRandomPool, taskLog, taskManager } from './task-manager'
 import type { TaskRuntime } from './task-manager'
 import { fetchCleanedContent, fetchPaginated } from './paginated'
+import { loadSystemCleaningRaw } from './system-config'
 
 // ============================================================
 // 采集管线：列表页 → 书籍信息页 → 章节目录页 → 章节内容页
@@ -146,7 +147,7 @@ async function collectBookInfo(
   const title = norm.title
   const author = norm.author
 
-  const cleaningCfg = mergeCleaning()
+  const cleaningCfg = mergeCleaning(await loadSystemCleaningRaw())
   const { cleanIntro } = await import('./cleaner')
   const intro = parsed.intro ? cleanIntro(parsed.intro, cleaningCfg, rule.extraAdPatterns ?? []) : ''
 
@@ -340,7 +341,7 @@ export async function executeTask(taskId: string): Promise<void> {
       /* ignore */
     }
 
-    const cleaningCfg = mergeCleaning()
+    const cleaningCfg = mergeCleaning(await loadSystemCleaningRaw())
 
     // ---------- 阶段 2~4：书籍 → 目录 → 内容（随机线程池） ----------
     const poolResult = await runRandomPool({

@@ -193,7 +193,7 @@ function NeonCard({ book, onNavigate }: { book: BookCard; onNavigate: Nav }) {
           </p>
           <p className="mt-1.5 flex items-center gap-1.5 text-xs text-zinc-500">
             <Zap className="h-3.5 w-3.5 shrink-0 text-orange-300" aria-hidden="true" />
-            <span className="truncate">{book.latestChapter}</span>
+            <span className="truncate">{book.latestChapter || '暂无'}</span>
           </p>
         </div>
       </button>
@@ -377,7 +377,8 @@ function NeonBook({ site, data, loading, onNavigate }: ThemeProps) {
                   </span>
                   <span
                     className={`rounded-full px-2.5 py-0.5 text-xs font-bold ${
-                      book.status.includes('完')
+                      // 否定前缀防误判：「未完结」「未完待续」不算完结（与引擎侧完结判定语义对齐）
+                      book.status.includes('完') && !book.status.includes('未')
                         ? 'bg-fuchsia-500/15 text-fuchsia-300 ring-1 ring-fuchsia-400/40'
                         : 'bg-orange-400/10 text-orange-300 ring-1 ring-orange-400/40'
                     }`}

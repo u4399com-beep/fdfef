@@ -208,7 +208,7 @@ function BookRow({ book, onNavigate }: { book: BookCard; onNavigate: Nav }) {
           </span>
           <span className="mt-1.5 flex items-center gap-1 font-serif text-xs text-amber-700">
             <Clock className="h-3.5 w-3.5" aria-hidden="true" />
-            最新：{book.latestChapter}
+            最新：{book.latestChapter || '暂无'}
           </span>
         </span>
       </button>

@@ -206,7 +206,7 @@ function BookCard({ book, onNavigate }: { book: BookCard; onNavigate: Nav }) {
         </p>
         <p className="mt-2 flex items-center gap-1.5 text-xs text-stone-400">
           <Clock className="h-3.5 w-3.5 shrink-0" aria-hidden="true" />
-          <span className="truncate">{book.latestChapter}</span>
+          <span className="truncate">{book.latestChapter || '暂无'}</span>
         </p>
       </div>
     </article>
@@ -378,7 +378,8 @@ function MagazineBook({ site, data, loading, onNavigate }: ThemeProps) {
                     </span>
                     <span
                       className={`rounded-full px-2.5 py-0.5 text-xs font-bold ${
-                        book.status.includes('完')
+                        // 否定前缀防误判：「未完结」「未完待续」不算完结（与引擎侧完结判定语义对齐）
+                        book.status.includes('完') && !book.status.includes('未')
                           ? 'bg-emerald-100 text-emerald-700'
                           : 'bg-rose-100 text-rose-600'
                       }`}

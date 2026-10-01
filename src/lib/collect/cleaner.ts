@@ -31,7 +31,23 @@ export interface CleanResult {
   removedLines: number
 }
 
+/**
+ * 清洗正则长度兜底：超长自定义模式（误粘贴文档进配置）拒绝编译，
+ * 防编译/回溯耗时失控（默认 27 条最长 ≈100 字符，2000 为宽裕上限）。
+ * 注：不能根治灾难性回溯，仅拦截超长输入这一类失控源（行级处理天然限长已记录在案）。
+ */
+const MAX_PATTERN_LEN = 2000
+
+/** 配置数组类型收敛：DB JSON 中字段类型不设防（settings/rules 接口仅校验最外层对象），
+ * 非数组/含非字符串元素会在展开/迭代时抛 TypeError（整章清洗失败→整本书采集失败）*/
+function asPatternList(v: unknown): string[] {
+  return Array.isArray(v)
+    ? v.filter((p): p is string => typeof p === 'string' && p.trim() !== '')
+    : []
+}
+
 function safeRegex(pattern: string): RegExp | null {
+  if (typeof pattern !== 'string' || pattern.length > MAX_PATTERN_LEN) return null
   try {
     return new RegExp(pattern)
   } catch {
@@ -58,7 +74,7 @@ export function cleanContent(
 ): CleanResult {
   const $ = cheerio.load(rawHtml)
   // 逐个容错：自定义规则里的非法 CSS 选择器不应中止整章清洗
-  for (const tag of cfg.removeTags) {
+  for (const tag of asPatternList(cfg.removeTags)) {
     try {
       $(tag).remove()
     } catch {
@@ -77,7 +93,9 @@ export function cleanContent(
   // 实体解码可能产生 CR（&#13;），统一归一为 \n 再按行处理
   raw = raw.replace(/\r\n?/g, '\n')
 
-  const adRegexes = [...cfg.adPatterns, ...extraAdPatterns]
+  // adPatterns/extraAdPatterns 类型与元素收敛（extraAdPatterns 来自规则 JSON，非数组时
+  // `[...extraAdPatterns]` 对字符串会按字符拆散成海量单字模式大面积误伤正文、对非可迭代值直接抛错）
+  const adRegexes = [...asPatternList(cfg.adPatterns), ...asPatternList(extraAdPatterns)]
     .map(safeRegex)
     .filter((r): r is RegExp => r !== null)
   // 预编译全局版（避免逐行替换时每行×每规则重复编译正则：千行章节×15规则曾达3万次/章）

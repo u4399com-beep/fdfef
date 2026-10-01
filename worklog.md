@@ -740,3 +740,61 @@ Stage Summary:
 - R8 六阶段闭环完成：恢复（分叉修复/盘点）→深审（三路并行 22 API 路由+11 引擎文件+8 admin 组件）→增强（4+4+6=14 项修复+biqutu 二次适配）→精简（toNumOr 收敛）→集成（规则 5/5+commit db60902 推送）→验证（tsc/lint/E2E/真机实测全绿）
 - 在库 5 站点 20 规则全部突破且全链路实盘通过（「全部突破、稳定长期获取」在本轮再次达成）
 - 长期稳定性保障链再实证：WAF 解题→cookie 持久化→限流退让→熔断半开复检（kelexs 阻断解除自动恢复）
+
+---
+Task ID: R9-a
+Agent: themes-reviewer
+Task: 六主题组件(除uaa)逐行深审+修复
+
+Work Log:
+- 通读 worklog R1~R8 全量，锁定主题相关既有修复并逐项规避：R3-theme-a/b（5 套主题 toc 改造/100 每页分页/开始阅读双入口）、R3-bug-b（卡片 a11y role=button 键盘导航）、R6-iter-c（classic/ink updatedAt ISO→slice(0,10)、uaa 面包屑对齐）、R7-iter-d（uaa 省略号分页+引号《》、确认其余 5 套仅上下页钮无页码钮）、R7-verify（390px）、R8（API 层）——未重复未回退
+- 逐行通读 5 个非 uaa 主题全文（classic 741/noir 639/magazine 782/ink 739/neon 765 行）+ 只读核对 theme-types.ts 契约、themes/index.ts 注册表、theme-uaa.tsx（参考）、site/preview-shell.tsx（TDK/竞态宿主）、api/preview/route.ts（数据源契约）
+- 【数据契约核对】preview API 逐分支核对：home books≤36+categories 服务端去重、book 最新12章 desc+firstChapterId（可 null→5 套开始阅读均 disabled ✓）、toc 全量 asc≤5000+firstChapterId=chapters[0]、chapter prev/next 可 null（首章 prevId:null 实测，5 套 disabled ✓）、keywordBooks 空关键词→[]（5 套空态 ✓）；无封面→首字占位块 5 套齐备 ✓；totalChapters=0→「查看全部 0 章目录」进 toc 空态+分页双禁用 ✓
+- 【修复① 完结状态否定前缀误判】theme-magazine.tsx:382 / theme-neon.tsx:381 状态徽章 `book.status.includes('完')` 对「未完结」「未完待续」恒真→误标完结色（与 R5 已修的引擎侧「未完结否定前缀完结误判」同类）→ 补 `&& !book.status.includes('未')`；当前库内 仅 连载/完结 8+22 本→渲染零变化，纯防御性语义修正（uaa 同款启发式在 theme-uaa.tsx:113/346，范围外记录）
+- 【修复② latestChapter 空值兜底】classic:211 / magazine:209 / ink:248 / neon:196 书卡「最新：xxx」在 latestChapter='' 时渲染悬空标签 → 补 `|| '暂无'` 对齐 uaa:308 同款兜底；noir 不渲染该字段无需改
+- 【确认无恙】①分页：5 套 toc 均 TOC_PAGE_SIZE=100、totalPages=max(1,ceil)、safePage=min(page,totalPages)、上下钮 disabled=safePage<=1/>=totalPages、点击 Math.max/min 钳制——total=0/越界/分母零边界全闭合；②导航：全部 onNavigate 按钮无裸 <a href>、章节跳转 id 均来自 API 非空字段、firstChapterId null→disabled、面包屑书名跳转均有 chapter/book 存在守卫、5 套均无搜索框（空提交 N/A）；③渲染：dangerouslySetInnerHTML/useEffect/window/localStorage 全零命中（rg 实证）、动态列表 key 全部 book.id/ch.id/kw(Set 去重)，index key 仅静态骨架与整段替换的正文段落（无重排）、长书名 truncate/换行+简介 line-clamp-2 无溢出；④TDK/SEO：由 preview-shell 统一注入（computeTDK 五视图+JSON-LD+卸载还原，R6/R7 已修），主题侧每视图恰一个 h1（home=site.title、book/toc=书名、chapter=章节名、keyword=关键词）✓；⑤a11y：7 处 img 全带《书名》封面 alt、图标全 aria-hidden、可点击元素全为 <button>（magazine/ink 整卡 stretched-button 带 aria-label）、触达面积 min-h-[44px]；⑥竞态/泄漏：主题仅 useState 无副作用，preview-shell reqRef 乱序守卫+loading 期间骨架屏兜底旧数据在位
+- 【验证】修复前后 bunx tsc --noEmit 均 0 错误、bun run lint 均 0 错误；curl /api/preview 五视图冒烟全 200+no-store：home/books+categories、book(12章/firstChapterId/updatedAt ISO/共124章)、toc(124章 asc)、chapter(首章 prevId:null 边界/content 2430 字)、keyword(玄幻 3 本/空关键词 0 本)；非法 chapterId 404 ✓；临时探针目录 /home/z/.tmp-r9/ 用后即删，仓库零残留；未重启 dev server、未 commit
+
+Stage Summary:
+- 修复 2 类 6 处（4 文件 +8/-6 行）：①magazine/neon 完结状态徽章否定前缀误判（「未完结」不再亮完结色，与引擎侧语义对齐）②classic/magazine/ink/neon 书卡 latestChapter 空值兜底「暂无」（对齐 uaa）；noir 无需改动；视觉零迁移（当前库内数据渲染结果不变，纯畸形/空数据路径修正）
+- 深审结论：5 套主题在数据契约五视图、分页边界、导航链接、渲染安全、TDK/heading、a11y、竞态泄漏七个维度整体健壮，R1~R8 主题侧修复全部回归在位
+- 范围外发现（仅记录不修）：①uaa status 徽章同款 includes('完') 启发式（theme-uaa.tsx:113/346）未做否定前缀排除；②toc >5000 章时 API take 5000 截断、页眉仍显示 book.totalChapters 全量数（API 侧限制，R6 已知）；③home/keyword 卡片书名 h3 直接挂在 h1 下跳过 h2（5 套一致，属低危 heading 层级债，改动涉 SEO 语义需决策）；④chapter.content 为空串时 5 套+uaa 均渲染空正文区（如需「正文暂无」空态应六套协同加）；⑤书籍封面 img 未加 loading="lazy"（home 36 图全量急加载，属性能优化非缺陷）；⑥db/custom.db 在工作区有改动（dev server 运行时写入，非本代理所为）
+
+---
+Task ID: R9-b
+Agent: parser-modules-reviewer
+Task: parser/cleaner/matcher/suggest/download-builder逐行深审+修复
+
+Work Log:
+- 通读 worklog R1~R8 全量，锁定既有修复清单逐项规避不回退：R2-engine-a（parser base64 校验/代理区码点、matchAll 零长匹配曾复核）、R2-engine-c（cleaner 实体解码/选择器容错、matcher 完结否定守卫、download 空白正文/adTemplates 守卫/码点截断/混淆边界、suggest JSONP+二次解析、广告回溯遗留备忘）、R6-iter-b（download-builder adEvery/rate 归一、fillTemplate String）、R6-iter-a/R7-iter-a（normalizeBookMeta 19 用例甄别记录）、R8-a（settings 污染配置根治「需动 collect-types」的点名）
+- 逐行审 6 文件：parser.ts(446)/cleaner.ts(160)/matcher.ts(179)/suggest.ts(159)/download-builder.ts(153)/collect-types.ts(345)，交叉核对 pipeline/testing/paginated/clean-test/rules API 调用点与 DB 内 20 条规则实配（只读 SQLite 取证）
+- 【修复① parser·CSS 非法选择器整页崩溃】rules API 对 config 仅存 JSON 不校验字段，手误选择器（如 `div[`）在 selectValue/parseListEntries/parseContentHtml/parseFields 四条 CSS 路径抛 SyntaxError → 实测探针证实全路径抛错（regex/xpath 模式同场景返回空）→ cssSelectScope 与 parseContentHtml 选中段补 try/catch 视为无匹配，三模式语义对齐（parser.ts:126-141,396-414）
+- 【修复② parser·XPath 模式对真实页面整体失效（潜伏大 bug）】@xmldom/xmldom 0.9.12 中 fatalError 无视 onError 恒抛 ParseError，而 cheerio 按 HTML 规范序列化的 void 元素（<meta>/<br>/<img> 不自闭合）在 text/xml 模式必触发「tag mismatch」→ parseHtmlAsXml 恒 null → 任何含 void 元素的页面（≈所有真实页面）xpath 规则静默返回空（DB 20 规则恰好 0 条 xpath 故未暴露）；htmlToXml 序列化后为 void 元素补自闭合（parser.ts:47-50），xpath 模式复活（mock 实测 //ul[@class]/li/a、//a/@href、//*[@id] 全通）；探针同时证伪 text/html 模式替代方案——该模式给元素赋 XHTML 命名空间，XPath 1.0 无前缀名测试只匹配无命名空间节点（//div 全失配），已留注释
+- 【修复③ parser·超长自填正则兜底+零宽匹配防炸】新增 safeRegExp：expr 非字符串/超 2000 字符（在库最长正则 168 字符，宽裕上限）/编译失败一律视为无值，接入 selectValue regex 分支与 parseListEntries（parser.ts:70-83,214,324）；parseListEntries regex 循环跳过零宽空匹配（空模式/纯断言在每字符位产出 length+1 个空条目，5MB 页面=海量垃圾条目，parser.ts:327-330）
+- 【修复④ cleaner·配置类型不设防崩溃/误伤】extraAdPatterns 来自规则 JSON（`?? []` 只挡 null）：字符串会被 `[...extra]` 按字符拆成海量单字正则大面积误伤正文、非可迭代值直接 TypeError 整章清洗失败 → 新增 asPatternList 收敛 removeTags/adPatterns/extraAdPatterns 为非空白字符串数组（cleaner.ts:43-47,77,98）；safeRegex 补超 2000 字符拒编译（cleaner.ts:39,50）
+- 【修复⑤ matcher·numberPattern 非字符串崩溃】extractChapterNumber 的 `pattern?.trim()` 对数字/对象类型抛 TypeError（逐章调用放大为整书目录失败）→ typeof/长度守卫回退默认模式（matcher.ts:158-163）
+- 【修复⑥ suggest·去重键规范化】mergeSuggestKeywords 原为 trim 后全等去重，全半角/内部空格变体各占名额 → 新增 suggestKey（全角 ASCII→半角、\u3000→空格、去全部空白、小写）仅用于 seen 集合，入库关键词原值不变（suggest.ts:127-148）；五引擎单引擎隔离（withTimeout 全捕获）/4.5s 超时/URL 编码复核无恙
+- 【修复⑦ download-builder·模板占位符扩展】fillTemplate 仅替换 {siteName}/{domain}，新增 {bookTitle}/{author}（author 空回退「佚名」与文件头一致，download-builder.ts:62-75,95-134），不使用新占位符的存量模板渲染零变化；adEveryNChapters 除零/混淆密度 0/1 边界/增补平面码点迭代实测复核无恙
+- 【修复⑧ collect-types·污染配置根治（R8-a 点名项）】settings/rules PUT 仅校验最外层纯对象、字段内类型不设防，DB JSON 手改坏后（adPatterns:null / normalizeParagraphs:"false" / config 存成数组）引擎崩溃或行为反转 → mergeCleaning/mergeDownload 逐字段类型收敛：parseConfigObject 仅收纯对象、asPatternArray 过滤非字符串/空白项（空正则 match-all 防线）、asBool 收敛 "true"/"false"/1/0 字面量、asFiniteNumber 收敛数字（collect-types.ts:206-264），合法配置逐字段无损
+- 【回归·normalizeBookMeta 勿回退确认】11 组探针全过：「《X》 作者：Y」剥离+作者回填、「网文作者：从写毒点开始」不误伤、「上门儿婿by放日歌」「没有名字的号码-番2全」「综漫…原初全本」「转生异世界…魔国(1)」「聊斋志异全本」保守保留（R7-iter-a 甄别结论原样在位）、「书名1-202」「书名 第1-202章」剥离、enabled:false 全关
+- 【范围外发现（仅记录不修）】①重大：pipeline.ts:149/343 与 testing.ts:80/209、clean-test/route.ts:20 全部 mergeCleaning() 无参调用——管理后台「清洗配置」存库后从不被引擎消费（设置页仅回显，采集/清洗测试恒用默认值；download 配置则被 download-builder:88 正常消费），修复需改 pipeline/clean-test 调用点传 SystemConfig.cleaning，超出本代理 6 文件白名单 ②fetcher 无响应体大小上限（超大页面全量进 cheerio，性能兜底缺失）③selectValue regex group 越界回退 m[0] 语义（组号写错时混入整段 HTML）④cleanIntro 双重实体解码（cheerio 已解码一次，二次解码可把 &amp;lt; 还原为 <，纯文本展示无害）⑤parseListEntries regex title/link 子选择器传 baseUrl 缺失靠外层二次 resolveUrl 兜住（双解析幂等，无实害）⑥并行代理 R9-a 正在改 theme-*.tsx（同工作区实证，其 worklog 已入库）；db/custom.db 有 dev server 运行时写入非本代理所为
+- 离线实测全部走 localhost:3031 mock 与 bun:test mock.module（零外网请求、零 DB 写入）；探针 44+12+7 用例全绿后已删（/home/z/.tmp-r9/ 零残留）
+
+Stage Summary:
+- 修复 8 类共 15 处（6 文件 +202/-49 行，导出签名零变更）：parser 3（CSS 非法选择器容错、xpath void 元素致命失效复活、超长正则/零宽匹配兜底）、cleaner 2（配置类型收敛+长度兜底）、matcher 1（numberPattern 类型守卫）、suggest 1（去重键全半角/空格规范化）、download-builder 1（{bookTitle}/{author} 占位符）、collect-types 2（mergeCleaning/mergeDownload 字段级类型收敛根治污染配置）
+- 最重要的两个潜伏 bug：xpath 规则引擎此前对真实页面整体静默失效（xmldom fatalError 语义 + cheerio void 序列化，DB 内恰无 xpath 规则故从未暴露）；后台清洗配置从不被采集引擎消费（mergeCleaning 全部无参调用，属 pipeline 调用点问题已记录待修）
+- 回归全绿：bun 探针 63 用例（含 normalizeBookMeta 11 组勿回退确认、mock 3031 四链路 testRule 端到端、mock.module download-builder 全链路）；bunx tsc --noEmit 0 错误、bun run lint 0 错误；未重启 dev server、未 commit、零外网请求、临时探针零残留
+
+---
+Task ID: R9-integrate
+Agent: orchestrator (Z.ai Code)
+Task: R9收官——清洗配置消费链根治 + 集成推送
+
+Work Log:
+- 消化 R9-b 范围外重大发现：mergeCleaning() 全部 5 处无参调用（pipeline.ts×2、testing.ts×2、clean-test/route.ts×1）——管理后台「内容清洗系统」保存的配置从不被采集/测试引擎消费（仅设置页回显），采集与规则测试恒用默认清洗配置
+- 修复：新增 src/lib/collect/system-config.ts（loadSystemCleaningRaw：读 SystemConfig.main.cleaning 原文，异常/null 时 mergeCleaning 回退默认，不阻断采集主流程）；5 处调用点全部接线 mergeCleaning(await loadSystemCleaningRaw())；clean-test 语义顺带升级为「库内已存配置为 base + 请求体覆盖」
+- 【端到端实证】保存标记 adPattern「一秒记住本站最新网址」→ 经 /api/rules/test 跑 mock 内容环 → 广告行从输出中消失（CONSUME PASS）→ 恢复原设置复核 ✓
+- tsc 0 错误 / lint 0 错误；/ 与 /api/preview /api/stats 200；dev.log 无错误
+
+Stage Summary:
+- 「后台清洗配置存而不用」功能级 bug 根治：设置页保存的清洗规则现被采集管线、规则测试、清洗测试三条链路真实消费（端到端实证）；R9-a（主题4项）+ R9-b（引擎8类15处，含 xpath 引擎复活、CSS 选择器容错、mergeCleaning/mergeDownload 字段级类型收敛）一并计入本轮交付

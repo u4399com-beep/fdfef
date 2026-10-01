@@ -155,7 +155,12 @@ export const DEFAULT_CHAPTER_NUM_PATTERN =
 
 /** 提取章节序号（乱序重排依据），失败返回 -1 */
 export function extractChapterNumber(title: string, pattern?: string): number {
-  const p = pattern?.trim() || DEFAULT_CHAPTER_NUM_PATTERN
+  // 自定义序号正则类型/长度守卫：规则 JSON 中 numberPattern 可能被写成非字符串
+  // （?.trim() 直接 TypeError，逐章调用放大为整书目录失败）或超长误粘贴；非法时回退默认模式
+  const p =
+    typeof pattern === 'string' && pattern.trim() !== '' && pattern.length <= 2000
+      ? pattern.trim()
+      : DEFAULT_CHAPTER_NUM_PATTERN
   try {
     const re = new RegExp(p)
     const m = re.exec(title)

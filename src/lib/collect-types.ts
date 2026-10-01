@@ -203,21 +203,71 @@ export const DEFAULT_DOWNLOAD = {
 export type CleaningConfig = typeof DEFAULT_CLEANING
 export type DownloadConfig = typeof DEFAULT_DOWNLOAD
 
-export function mergeCleaning(raw?: string | null): CleaningConfig {
+// ---------- 存储端配置类型收敛（引擎侧兑底） ----------
+// settings/rules 接口仅校验最外层为对象，字段内部类型不设防；DB JSON 被手改坏后
+// （如 adPatterns:null、normalizeParagraphs:"false"）会在引擎展开/迭代/比较时
+// 崩溃或行为反转，这里在合并层统一收敛回默认语义（合法配置逐字段无损）。
+
+/** 解析存储端 JSON：仅接受纯对象（数组/原始类型会被 spread 出索引键污染配置） */
+function parseConfigObject(raw?: string | null): Record<string, unknown> {
+  if (!raw) return {}
   try {
-    const parsed = raw ? JSON.parse(raw) : {}
-    return { ...DEFAULT_CLEANING, ...parsed }
+    const obj: unknown = JSON.parse(raw)
+    if (obj && typeof obj === 'object' && !Array.isArray(obj)) return obj as Record<string, unknown>
   } catch {
-    return { ...DEFAULT_CLEANING }
+    /* 损坏 JSON 回退默认 */
+  }
+  return {}
+}
+
+/** 字符串数组收敛：非数组回退默认；过滤非字符串/空白项（空字符串正则会 match-all 误伤全文） */
+function asPatternArray(v: unknown, fallback: string[]): string[] {
+  if (!Array.isArray(v)) return fallback
+  return v.filter((p): p is string => typeof p === 'string' && p.trim() !== '')
+}
+
+function asBool(v: unknown, fallback: boolean): boolean {
+  if (typeof v === 'boolean') return v
+  // 存储端可能被写成字符串/数字（String(true)→"true"、0/1），按常见字面量收敛，其余回退默认
+  if (typeof v === 'string') {
+    const s = v.trim().toLowerCase()
+    if (s === 'true' || s === '1') return true
+    if (s === 'false' || s === '0') return false
+  } else if (v === 1) return true
+  else if (v === 0) return false
+  return fallback
+}
+
+function asFiniteNumber(v: unknown, fallback: number): number {
+  const n = typeof v === 'number' ? v : Number(v)
+  return Number.isFinite(n) ? n : fallback
+}
+
+export function mergeCleaning(raw?: string | null): CleaningConfig {
+  const parsed = parseConfigObject(raw)
+  return {
+    removeTags: asPatternArray(parsed.removeTags, DEFAULT_CLEANING.removeTags),
+    adPatterns: asPatternArray(parsed.adPatterns, DEFAULT_CLEANING.adPatterns),
+    keepTags: asPatternArray(parsed.keepTags, DEFAULT_CLEANING.keepTags),
+    decodeEntities: asBool(parsed.decodeEntities, DEFAULT_CLEANING.decodeEntities),
+    normalizeParagraphs: asBool(parsed.normalizeParagraphs, DEFAULT_CLEANING.normalizeParagraphs),
+    minParagraphLength: Math.max(0, asFiniteNumber(parsed.minParagraphLength, DEFAULT_CLEANING.minParagraphLength)),
   }
 }
 
 export function mergeDownload(raw?: string | null): DownloadConfig {
-  try {
-    const parsed = raw ? JSON.parse(raw) : {}
-    return { ...DEFAULT_DOWNLOAD, ...parsed }
-  } catch {
-    return { ...DEFAULT_DOWNLOAD }
+  const parsed = parseConfigObject(raw)
+  return {
+    insertSiteInfo: asBool(parsed.insertSiteInfo, DEFAULT_DOWNLOAD.insertSiteInfo),
+    siteInfoTemplate:
+      typeof parsed.siteInfoTemplate === 'string' ? parsed.siteInfoTemplate : DEFAULT_DOWNLOAD.siteInfoTemplate,
+    insertAds: asBool(parsed.insertAds, DEFAULT_DOWNLOAD.insertAds),
+    adTemplates: asPatternArray(parsed.adTemplates, DEFAULT_DOWNLOAD.adTemplates),
+    adEveryNChapters: asFiniteNumber(parsed.adEveryNChapters, DEFAULT_DOWNLOAD.adEveryNChapters),
+    insertObfuscation: asBool(parsed.insertObfuscation, DEFAULT_DOWNLOAD.insertObfuscation),
+    obfuscationMode:
+      typeof parsed.obfuscationMode === 'string' ? parsed.obfuscationMode : DEFAULT_DOWNLOAD.obfuscationMode,
+    obfuscationRate: asFiniteNumber(parsed.obfuscationRate, DEFAULT_DOWNLOAD.obfuscationRate),
   }
 }
 

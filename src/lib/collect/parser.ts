@@ -27,7 +27,7 @@ function decodeNamedEntities(input: string): string {
   })
 }
 
-/** 把 HTML 规范化为可被 xmldom 解析的 XML（关闭标签、去 doctype/注释、解码实体） */
+/** 把 HTML 规范化为可被 xmldom 解析的 XML（关闭标签、去 doctype/注释、解码实体、void 元素自闭合） */
 function htmlToXml(html: string): string {
   const $ = cheerio.load(html)
   $('script, style, noscript').remove()
@@ -39,6 +39,15 @@ function htmlToXml(html: string): string {
   let xml = $.html()
   xml = xml.replace(/<!DOCTYPE[^>]*>/gi, '')
   xml = xml.replace(/<!\[CDATA\[([\s\S]*?)\]\]>/g, '$1')
+  // cheerio 按 HTML 规范序列化 void 元素（<meta>/<br>/<img> 等不带自闭合斜杠），而 text/xml 模式
+  // 对「开闭标签失配」抛 fatalError（@xmldom/xmldom 0.9 的 onError 无法抑制其抛出），导致几乎所有
+  // 含 void 元素的真实页面 xpath 解析整体失效返回空。这里为 void 元素补自闭合。
+  // 注：不能改用 text/html 模式规避——该模式会给元素赋予 XHTML 命名空间，而 XPath 1.0 的
+  // 无前缀名测试只匹配无命名空间节点（//div 全部失配），规则里写的路径会静默落空。
+  xml = xml.replace(
+    /<(area|base|basefont|bgsound|br|col|embed|frame|hr|img|input|keygen|link|meta|param|source|track|wbr)((?:[^>"']|"[^"]*"|'[^']*')*?)\/?>/gi,
+    '<$1$2/>'
+  )
   return decodeNamedEntities(xml)
 }
 
@@ -58,6 +67,22 @@ type XmlDomNodeLike = {
   nodeValue?: string | null
   textContent?: string
   getAttribute?: (name: string) => string
+}
+
+/**
+ * 用户自填正则长度兜底：超长表达式（误粘贴 HTML/整段文档进 expr 字段）直接拒绝，
+ * 防御正则编译/回溯耗时失控（在库 20 条规则最长正则 168 字符，2000 为宽裕上限）。
+ * 注意：这不能根治灾难性回溯，仅拦截「超长输入」这一类失控源。
+ */
+const MAX_REGEX_EXPR = 2000
+
+function safeRegExp(expr: unknown, flags: string): RegExp | null {
+  if (typeof expr !== 'string' || expr.length > MAX_REGEX_EXPR) return null
+  try {
+    return new RegExp(expr, flags)
+  } catch {
+    return null
+  }
 }
 
 function attrFromNode($: cheerio.CheerioAPI, el: AnyNode, attr: string): string {
@@ -100,11 +125,17 @@ function cleanText(s: string): string {
 /** 在 cheerio 作用域内应用 css 相对选择器 */
 function cssSelectScope($: cheerio.CheerioAPI, scope: AnyNode | null, expr: string): AnyNode[] {
   if (!expr) return scope ? [scope] : []
-  if (!scope) return $(expr).toArray()
-  const $scope = $(scope) as unknown as cheerio.Cheerio<Element>
-  const found = $scope.find(expr).toArray() as AnyNode[]
-  if (found.length === 0 && $(scope).is(expr)) return [scope]
-  return found
+  try {
+    if (!scope) return $(expr).toArray()
+    const $scope = $(scope) as unknown as cheerio.Cheerio<Element>
+    const found = $scope.find(expr).toArray() as AnyNode[]
+    if (found.length === 0 && $(scope).is(expr)) return [scope]
+    return found
+  } catch {
+    // 非法 CSS 选择器（规则配置手误，如 "div["）：与 regex/xpath 模式语义一致，
+    // 视为无匹配而非让 SyntaxError 中止整页/整书解析
+    return []
+  }
 }
 
 /**
@@ -180,12 +211,8 @@ export function selectValue(html: string, sel: FieldSelector, opts: SelectorOpts
     if (opts.scopeNode && opts.$) {
       source = opts.$.html(opts.scopeNode) ?? ''
     }
-    let re: RegExp
-    try {
-      re = new RegExp(sel.expr, sel.multiple ? 'g' : '')
-    } catch {
-      return sel.multiple ? [] : ''
-    }
+    const re = safeRegExp(sel.expr, sel.multiple ? 'g' : '')
+    if (!re) return sel.multiple ? [] : ''
     if (sel.multiple) {
       const out: string[] = []
       for (const m of source.matchAll(re)) {
@@ -294,14 +321,13 @@ export function parseListEntries(html: string, items: ListItemSelectors, baseUrl
   if (!itemSel?.expr) return entries
 
   if (itemSel.mode === 'regex') {
-    let re: RegExp
-    try {
-      re = new RegExp(itemSel.expr, 'g')
-    } catch {
-      return entries
-    }
+    const re = safeRegExp(itemSel.expr, 'g')
+    if (!re) return entries
     for (const m of html.matchAll(re)) {
       const raw = m[0] ?? ''
+      // 零宽匹配（如空模式/纯断言）在每个字符位置产出一个空匹配：
+      // 大页面下会生成海量空条目，直接跳过
+      if (raw.length === 0) continue
       let title = m[1] ?? ''
       let link = m[2] ?? ''
       if (items.title?.expr) title = String(selectValue(raw, { ...items.title, multiple: false }) || '')
@@ -379,15 +405,21 @@ export function parseContentHtml(html: string, sel: FieldSelector): string {
   if (sel.mode === 'css') {
     const $ = cheerio.load(html)
     decodeProtectedChars($)
-    if (sel.multiple) {
-      const parts = $(sel.expr)
-        .toArray()
-        .map((el) => nodeToText($, el))
-      return parts.filter(Boolean).join('\n')
+    let selected: AnyNode[]
+    try {
+      selected = $(sel.expr).toArray()
+    } catch {
+      // 非法 CSS 选择器（规则配置手误）视为无正文，与 regex/xpath 模式语义一致
+      return ''
     }
-    const el = $(sel.expr).first()
-    if (el.length === 0) return ''
-    return nodeToText($, el.get(0) as AnyNode)
+    if (sel.multiple) {
+      return selected
+        .map((el) => nodeToText($, el))
+        .filter(Boolean)
+        .join('\n')
+    }
+    if (selected.length === 0) return ''
+    return nodeToText($, selected[0])
   }
   if (sel.mode === 'regex') {
     const v = selectValue(html, sel)

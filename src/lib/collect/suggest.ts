@@ -124,15 +124,27 @@ export async function fetchSuggestKeywords(title: string): Promise<SuggestSource
   return results
 }
 
+/**
+ * 去重键规范化：全角 ASCII→半角、表意空格→空格、去除全部空白、小写。
+ * 仅用于去重比较，不改写入库/展示的关键词本身（全半角/空格变体不再各占一个名额）。
+ */
+function suggestKey(s: string): string {
+  return s
+    .replace(/\u3000/g, ' ')
+    .replace(/[\uFF01-\uFF5E]/g, (c) => String.fromCharCode(c.charCodeAt(0) - 0xfee0))
+    .replace(/\s+/g, '')
+    .toLowerCase()
+}
+
 /** 合并去重（排除书名自身），返回统一关联词列表 */
 export function mergeSuggestKeywords(results: SuggestSourceResult[], bookTitle: string, cap = 30): string[] {
-  const seen = new Set<string>([bookTitle.trim()])
+  const seen = new Set<string>([suggestKey(bookTitle)])
   const merged: string[] = []
   for (const r of results) {
     for (const kw of r.keywords) {
       const k = kw.trim()
-      if (!k || seen.has(k)) continue
-      seen.add(k)
+      if (!k || seen.has(suggestKey(k))) continue
+      seen.add(suggestKey(k))
       merged.push(k)
       if (merged.length >= cap) return merged
     }

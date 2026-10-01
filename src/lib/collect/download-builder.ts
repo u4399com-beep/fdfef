@@ -59,9 +59,19 @@ export function obfuscateText(text: string, cfg: { mode: string; rate: number })
   return out.join('\n')
 }
 
-function fillTemplate(tpl: string, siteName: string, domain: string): string {
+function fillTemplate(
+  tpl: string,
+  siteName: string,
+  domain: string,
+  bookTitle: string,
+  author: string
+): string {
   // String() 归一：存储端配置若混入非字符串模板（数字等），replaceAll 直接 TypeError → 下载 500
-  return String(tpl ?? '').replaceAll('{siteName}', siteName).replaceAll('{domain}', domain)
+  return String(tpl ?? '')
+    .replaceAll('{siteName}', siteName)
+    .replaceAll('{domain}', domain)
+    .replaceAll('{bookTitle}', bookTitle)
+    .replaceAll('{author}', author)
 }
 
 export interface BuiltDownload {
@@ -82,14 +92,15 @@ export async function buildBookTxt(bookId: string, siteName?: string, domain?: s
   const dom = domain?.trim() || fallbackSite?.domain || 'localhost'
 
   const parts: string[] = []
+  const authorDisplay = book.author || '佚名'
   parts.push(`《${book.title}》`)
-  parts.push(`作者：${book.author || '佚名'}`)
+  parts.push(`作者：${authorDisplay}`)
   parts.push(`分类：${book.category || '其他'} / 状态：${book.status} / 共 ${book.totalChapters} 章`)
   if (book.intro) parts.push(`\n简介：${book.intro}`)
   const adTemplates = Array.isArray(cfg.adTemplates) ? cfg.adTemplates : []
   if (cfg.insertSiteInfo) {
     parts.push('\n' + '—'.repeat(24))
-    parts.push(fillTemplate(cfg.siteInfoTemplate, site, dom))
+    parts.push(fillTemplate(cfg.siteInfoTemplate, site, dom, book.title, authorDisplay))
     parts.push('—'.repeat(24))
   }
 
@@ -116,11 +127,11 @@ export async function buildBookTxt(bookId: string, siteName?: string, domain?: s
     if (cfg.insertAds && adTemplates.length > 0 && (i + 1) % adEvery === 0) {
       const ad = adTemplates[Math.floor(Math.random() * adTemplates.length)]
       parts.push('')
-      parts.push(fillTemplate(ad, site, dom))
+      parts.push(fillTemplate(ad, site, dom, book.title, authorDisplay))
     }
   }
 
-  if (cfg.insertSiteInfo) parts.push('\n' + fillTemplate(cfg.siteInfoTemplate, site, dom))
+  if (cfg.insertSiteInfo) parts.push('\n' + fillTemplate(cfg.siteInfoTemplate, site, dom, book.title, authorDisplay))
 
   const content = parts.join('\n')
   // 文件名安全化：控制字符与 Windows 非法字符替换、去结尾点/空格、保留名前缀、空标题回退

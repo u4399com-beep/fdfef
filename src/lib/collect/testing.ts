@@ -3,6 +3,7 @@ import { mergeCleaning, normalizeBookMeta } from '../collect-types'
 import { fetchPage } from './fetcher'
 import { parseFields, parseListEntries, resolveUrl, selectValue } from './parser'
 import { cleanIntro } from './cleaner'
+import { loadSystemCleaningRaw } from './system-config'
 import { detectCompletion, extractChapterNumber, smartMatchCategory } from './matcher'
 
 // ============================================================
@@ -77,7 +78,7 @@ async function testBook(cfg: BookRuleConfig, url: string, started: number): Prom
   const norm = normalizeBookMeta(parsedTitle, (parsed.author ?? '').trim(), cfg.titleNormalize)
   const title = norm.title
 
-  const intro = parsed.intro ? cleanIntro(parsed.intro, mergeCleaning(), cfg.extraAdPatterns ?? []) : ''
+  const intro = parsed.intro ? cleanIntro(parsed.intro, mergeCleaning(await loadSystemCleaningRaw()), cfg.extraAdPatterns ?? []) : ''
   const keywords = (parsed.keywords ?? '')
     .split(/[,，、|\s]+/)
     .map((k) => k.trim())
@@ -206,7 +207,7 @@ function normalizeTocUrlKey(url: string): string {
 
 async function testContent(cfg: ContentRuleConfig, url: string, started: number): Promise<TestResponse> {
   if (!cfg?.content?.expr) return { ok: false, message: '正文选择器不能为空' }
-  const cleaning = mergeCleaning()
+  const cleaning = mergeCleaning(await loadSystemCleaningRaw())
   const { fetchCleanedContent } = await import('./paginated')
   const { text, pages } = await fetchCleanedContent(url, cfg, cleaning)
   if (!text) return { ok: false, message: '正文解析为空，请检查正文选择器', elapsedMs: Date.now() - started }

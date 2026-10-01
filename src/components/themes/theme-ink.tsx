@@ -245,7 +245,7 @@ function ScrollCard({ book, onNavigate }: { book: BookCard; onNavigate: Nav }) {
           <span className="text-xs text-stone-400">{book.status}</span>
         </div>
         <p className="text-sm text-stone-500">
-          {book.author} · 共 {book.totalChapters} 章 · 最新 {book.latestChapter}
+          {book.author} · 共 {book.totalChapters} 章 · 最新 {book.latestChapter || '暂无'}
         </p>
         <p className="line-clamp-2 text-sm leading-relaxed text-stone-500">{book.intro}</p>
       </div>

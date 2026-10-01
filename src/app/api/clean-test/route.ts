@@ -1,6 +1,7 @@
 import { NextRequest } from 'next/server'
 import { cleanContent } from '@/lib/collect/cleaner'
 import { mergeCleaning } from '@/lib/collect-types'
+import { loadSystemCleaningRaw } from '@/lib/collect/system-config'
 import { json, badRequest, isPlainObject, readJson } from '../_lib/http'
 
 export const runtime = 'nodejs'
@@ -17,7 +18,7 @@ export async function POST(req: NextRequest) {
   // 正常章节/整页 HTML 远小于该上限（一章 ≈10KB），5M 字符为宽裕兜底
   if (html.length > 5_000_000) return badRequest('html 过长（上限 5,000,000 字符）')
 
-  const base = mergeCleaning()
+  const base = mergeCleaning(await loadSystemCleaningRaw())
   // 仅接受纯对象覆盖，防字符串/数组/数字混入后被展开污染配置（同形于 headers [object Object] 类 bug）
   const override = isPlainObject(body.cleaning) ? body.cleaning : {}
   const cfg = { ...base, ...override } as typeof base
