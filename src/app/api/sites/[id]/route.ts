@@ -1,6 +1,6 @@
 import { NextRequest } from 'next/server'
 import { db } from '@/lib/db'
-import { json, badRequest, readJson, RouteCtx, toInt } from '../../_lib/http'
+import { json, badRequest, readJson, RouteCtx, toInt, prismaErrorToResponse } from '../../_lib/http'
 
 export const runtime = 'nodejs'
 export const dynamic = 'force-dynamic'
@@ -29,8 +29,8 @@ export async function PUT(req: NextRequest, { params }: RouteCtx<{ id: string }>
       },
     })
     return json({ site })
-  } catch {
-    return json({ error: '站点不存在' }, { status: 404 })
+  } catch (e) {
+    return prismaErrorToResponse('站点', e)
   }
 }
 
@@ -39,7 +39,7 @@ export async function DELETE(_req: NextRequest, { params }: RouteCtx<{ id: strin
   try {
     await db.siteConfig.delete({ where: { id } })
     return json({ ok: true })
-  } catch {
-    return json({ error: '站点不存在' }, { status: 404 })
+  } catch (e) {
+    return prismaErrorToResponse('站点', e)
   }
 }

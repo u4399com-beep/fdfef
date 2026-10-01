@@ -35,6 +35,18 @@ export function badRequest(message: string) {
 }
 
 /**
+ * Prisma 写操作错误 → HTTP 语义映射：P2025（记录不存在）→ 404，其余 → 500 留痕。
+ * 修复前 catch 全量归 404，非「不存在」类失败（连接/约束/序列化）会被误报且无日志可查。
+ */
+export function prismaErrorToResponse(entity: string, e: unknown) {
+  if (e instanceof Error && 'code' in e && (e as { code?: string }).code === 'P2025') {
+    return json({ error: `${entity}不存在` }, { status: 404 })
+  }
+  console.error(`[${entity} 写操作失败]`, e)
+  return json({ error: `${entity}操作失败，请稍后重试` }, { status: 500 })
+}
+
+/**
  * JSON 统一响应：显式 no-store。
  * 实测（curl -D -）动态路由不回任何 Cache-Control 头——预览数据源/统计/任务列表等
  * 轮询型 GET 可能被浏览器或中间层按启发式缓存，拿到陈旧数据；统一显式禁缓存。

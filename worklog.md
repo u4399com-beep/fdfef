@@ -817,3 +817,17 @@ Work Log:
 Stage Summary:
 - 资源兜底三件套补全（fetcher 页面/图片、API body 全局上限）+ 事件循环阻塞面收窄（clean-test 1M）+ uaa 徽章对齐 + lazy 加载 + 下载体验 + 死字段清理，全部为各审查轮报告遗留项的定点消化
 - 本轮改动文件：fetcher.ts、_lib/http.ts、clean-test/route.ts、theme-uaa.tsx、theme-classic/ink/magazine/neon.tsx、books-page.tsx、tasks-page.tsx
+
+---
+Task ID: R11
+Agent: orchestrator (Z.ai Code)
+Task: R11轮——书籍分类聚合 + PUT/DELETE 错误语义精确化
+
+Work Log:
+- 【分类 chips 全量化】books-page 分类筛选 chips 此前由当前页 12 本的局部分类派生（筛选到冷门分类后 chips 收缩、无法跳转其他分类）→ books GET 双分支（raw SQL 与 findMany）补 SELECT category COUNT(*) GROUP BY 全量聚合，响应新增 categories 字段（null→「其他」归一，按书量降序）；UI 用 allCategories state 承载并保留页内派生兜底。API 实测 9 类全量返回、浏览器实测 9 chips 全渲染 ✓
+- 【写操作错误语义】rules/[id] PUT/DELETE 与 sites/[id] PUT/DELETE 的 catch 此前全量归 404（R8-a 点名：非 P2025 失败被误报且无日志）→ _lib/http.ts 新增共享 prismaErrorToResponse：P2025（记录不存在）→ 404、其余 → 500 + console.error 留痕；GET 的 findUnique null 直判 404 不经该助手（修复一次误替换：GET 无异常上下文）
+- 【E2E】书籍详情「下载 TXT」新链路（R10 的 fetch+blob）真机点击 → toast「已开始下载」✓、page errors 0
+- 验证：tsc 0 错误 / lint 0 错误；假 ID PUT/DELETE 规则与站点全 404 ✓、分类聚合 200 ✓
+
+Stage Summary:
+- 分类筛选从「当前页局部派生」升级为「全库聚合」；写操作错误从「一律 404」升级为「P2025→404/其余→500+留痕」——API 契约向后兼容（books 响应新增可选字段 categories）

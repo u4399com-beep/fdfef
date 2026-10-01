@@ -35,13 +35,14 @@ export async function GET(req: NextRequest) {
       db.$queryRaw<Book[]>`SELECT * FROM Book WHERE ${cond} ORDER BY "updatedAt" DESC LIMIT ${pageSize} OFFSET ${skip}`,
       db.$queryRaw<[{ n: bigint }]>`SELECT COUNT(*) AS n FROM Book WHERE ${cond}`,
     ])
-    return json({ books, total: Number(countRows[0]?.n ?? 0), page, pageSize })
+    const catRows = await db.$queryRaw<[{ category: string | null; n: bigint }]>`SELECT category, COUNT(*) AS n FROM Book GROUP BY category ORDER BY COUNT(*) DESC`
+    return json({ books, total: Number(countRows[0]?.n ?? 0), page, pageSize, categories: catRows.map((r) => r.category || '其他') })
   }
 
   const where = {
     ...(category ? { category } : {}),
   }
-  const [books, total] = await Promise.all([
+  const [books, total, catRows] = await Promise.all([
     db.book.findMany({
       where,
       orderBy: { updatedAt: 'desc' },
@@ -49,6 +50,8 @@ export async function GET(req: NextRequest) {
       take: pageSize,
     }),
     db.book.count({ where }),
+    // 全量分类聚合（不受本页筛选影响）：分类筛选 chips 由此派生，而非仅当前页 12 本的局部分类
+    db.$queryRaw<[{ category: string | null; n: bigint }]>`SELECT category, COUNT(*) AS n FROM Book GROUP BY category ORDER BY COUNT(*) DESC`,
   ])
-  return json({ books, total, page, pageSize })
+  return json({ books, total, page, pageSize, categories: catRows.map((r) => r.category || '其他') })
 }

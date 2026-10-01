@@ -50,6 +50,8 @@ export function BooksPage() {
   const [page, setPage] = useState(1)
   const [q, setQ] = useState('')
   const [category, setCategory] = useState('')
+  // 全量分类（API 聚合返回）：筛选 chips 由此派生而非当前页 12 本的局部分类
+  const [allCategories, setAllCategories] = useState<string[]>([])
   const [loading, setLoading] = useState(true)
   const [detail, setDetail] = useState<BookRow | null>(null)
   const [chapters, setChapters] = useState<ChapterRow[]>([])
@@ -71,10 +73,11 @@ export function BooksPage() {
       const params = new URLSearchParams({ page: String(page), pageSize: String(pageSize) })
       if (q.trim()) params.set('q', q.trim())
       if (category) params.set('category', category)
-      const r = await api<{ books: BookRow[]; total: number }>(`/api/books?${params}`)
+      const r = await api<{ books: BookRow[]; total: number; categories?: string[] }>(`/api/books?${params}`)
       if (reqId !== listReqRef.current) return
       setBooks(r.books)
       setTotal(r.total)
+      if (r.categories) setAllCategories(r.categories)
       // 删除/外部变更使当前页越过最后一页时回退到有效页，避免停在空页误示「暂无书籍」
       if (r.books.length === 0 && r.total > 0 && page > 1) {
         setPage(Math.max(1, Math.ceil(r.total / pageSize)))
@@ -188,7 +191,7 @@ export function BooksPage() {
     }
   }
 
-  const categories = [...new Set(books.map((b) => b.category).filter(Boolean))]
+  const categories = allCategories.length > 0 ? allCategories : [...new Set(books.map((b) => b.category).filter(Boolean))]
   const totalPages = Math.max(1, Math.ceil(total / pageSize))
   const filteredChapters = chapters.filter((c) => !chapterQ.trim() || c.title.includes(chapterQ.trim()))
 

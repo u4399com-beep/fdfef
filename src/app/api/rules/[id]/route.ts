@@ -1,6 +1,6 @@
 import { NextRequest } from 'next/server'
 import { db } from '@/lib/db'
-import { json, badRequest, readJson, RouteCtx, toBoolOrNull } from '../../_lib/http'
+import { json, badRequest, readJson, RouteCtx, toBoolOrNull, prismaErrorToResponse } from '../../_lib/http'
 
 export const runtime = 'nodejs'
 export const dynamic = 'force-dynamic'
@@ -35,9 +35,9 @@ export async function PUT(req: NextRequest, { params }: RouteCtx<{ id: string }>
       },
     })
     return json({ rule })
-  } catch {
+  } catch (e) {
     // 不存在的 id 更新会抛 Prisma P2025，统一按 404 处理
-    return json({ error: '规则不存在' }, { status: 404 })
+    return prismaErrorToResponse('规则', e)
   }
 }
 
@@ -52,7 +52,7 @@ export async function DELETE(_req: NextRequest, { params }: RouteCtx<{ id: strin
   try {
     await db.collectRule.delete({ where: { id } })
     return json({ ok: true })
-  } catch {
-    return json({ error: '规则不存在' }, { status: 404 })
+  } catch (e) {
+    return prismaErrorToResponse('规则', e)
   }
 }
