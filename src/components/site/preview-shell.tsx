@@ -2,7 +2,9 @@
 
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { THEMES } from '@/components/themes'
+import { PseoHub } from '@/components/site/pseo-hub'
 import type { SiteMeta, SiteView } from '@/lib/theme-types'
+import { interfereContent, obfuscateDom, parseSeoConfig, transcodeText } from '@/lib/seo/engine'
 import { Button } from '@/components/ui/button'
 import { ArrowLeft, Globe, Loader2 } from 'lucide-react'
 
@@ -15,6 +17,7 @@ interface PreviewResponse {
     chapter?: import('@/lib/theme-types').ChapterDetail
     keywordBooks?: import('@/lib/theme-types').BookCard[]
     categories?: string[]
+    pseoKeywords?: import('@/lib/theme-types').PseoKeyword[]
   }
 }
 
@@ -28,6 +31,8 @@ function viewToQuery(view: SiteView): string {
       return `type=chapter&chapterId=${encodeURIComponent(view.chapterId)}`
     case 'keyword':
       return `type=keyword&keyword=${encodeURIComponent(view.keyword)}`
+    case 'pseo':
+      return 'type=pseo'
     default:
       return 'type=home'
   }
@@ -39,6 +44,10 @@ function computeTDK(preview: PreviewResponse): { title: string; description: str
   const siteTitle = site.title || site.siteName
   const siteDesc = site.description
   const siteKw = site.keywords
+  // PSEO 模板占位符展开（仅 keyword/pseo 视图消费）
+  const pseoCfg = parseSeoConfig(site.seoConfig).pseo
+  const fill = (tpl: string, kw: string) =>
+    tpl.replaceAll('{keyword}', kw).replaceAll('{siteName}', site.siteName).replaceAll('{domain}', site.domain)
   switch (view.type) {
     case 'book': {
       const b = data.book
@@ -60,10 +69,24 @@ function computeTDK(preview: PreviewResponse): { title: string; description: str
     }
     case 'keyword': {
       const kw = view.keyword
+      if (pseoCfg?.enabled && (pseoCfg.titleTemplate || pseoCfg.descTemplate || pseoCfg.kwTemplate)) {
+        return {
+          title: pseoCfg.titleTemplate ? fill(pseoCfg.titleTemplate, kw) : `${kw}_相关小说_${site.siteName}`,
+          description: pseoCfg.descTemplate ? fill(pseoCfg.descTemplate, kw) : `与「${kw}」相关的小说列表，${site.siteName}为您提供，更多精彩请访问主书籍信息页。`,
+          keywords: pseoCfg.kwTemplate ? fill(pseoCfg.kwTemplate, kw) : [kw, site.keywords].filter(Boolean).join(','),
+        }
+      }
       return {
         title: `${kw}_相关小说_${site.siteName}`,
         description: `与「${kw}」相关的小说列表，${site.siteName}为您提供，更多精彩请访问主书籍信息页。`,
         keywords: [kw, site.keywords].filter(Boolean).join(','),
+      }
+    }
+    case 'pseo': {
+      return {
+        title: `${site.siteName}_关键词专题导航`,
+        description: `${site.siteName}全部小说专题与关键词导航，${siteDesc}`,
+        keywords: [site.siteName, '专题导航', siteKw].filter(Boolean).join(','),
       }
     }
     case 'toc': {
@@ -79,6 +102,24 @@ function computeTDK(preview: PreviewResponse): { title: string; description: str
       break
   }
   return { title: siteTitle, description: siteDesc, keywords: siteKw }
+}
+
+/** TDK 转码：关键词/TDK 以转码形态写入 head（浏览器渲染不变，源码层干扰审核匹配）。
+ * document.title 是纯文本节点不解析实体 → 标题仅用零宽插入；meta 属性可解析实体 → 按所选模式 */
+function applyTranscode(tdk: { title: string; description: string; keywords: string }, site: SiteMeta): {
+  title: string
+  description: string
+  keywords: string
+} {
+  const cfg = parseSeoConfig(site.seoConfig).transcode
+  if (!cfg?.enabled) return tdk
+  const mode = cfg.mode ?? 'mixed'
+  const seed = site.id || site.domain || site.siteName
+  return {
+    title: transcodeText(tdk.title, 'zerowidth', `${seed}:title`, { allowEntities: false }),
+    description: transcodeText(tdk.description, mode, `${seed}:desc`),
+    keywords: transcodeText(tdk.keywords, mode, `${seed}:kw`),
+  }
 }
 
 function upsertMeta(attr: 'name' | 'property', key: string, content: string): void {
@@ -121,6 +162,18 @@ export function SitePreview({
       }
       const data = (await res.json()) as PreviewResponse
       if (reqId !== reqRef.current) return
+      // 内容干扰 + 伪原创：章节正文渲染层变换（DB 原文不受影响；种子=站点+章节，同章稳定、跨章不重复）
+      const icfg = parseSeoConfig(data.site.seoConfig).interfere
+      if (icfg?.enabled && data.data.chapter?.content) {
+        data.data.chapter = {
+          ...data.data.chapter,
+          content: interfereContent(data.data.chapter.content, `${data.site.id}:${data.data.chapter.id}`, {
+            density: icfg.density ?? 'low',
+            pseudo: icfg.pseudo ?? true,
+            zeroWidth: icfg.zeroWidth ?? true,
+          }),
+        }
+      }
       setPreview(data)
       containerRef.current?.scrollTo({ top: 0 })
     } catch (e) {
@@ -177,7 +230,7 @@ export function SitePreview({
 
   useEffect(() => {
     if (!preview) return
-    const tdk = computeTDK(preview)
+    const tdk = applyTranscode(computeTDK(preview), preview.site)
     document.title = tdk.title
     upsertMeta('name', 'description', tdk.description)
     upsertMeta('name', 'keywords', tdk.keywords)
@@ -236,8 +289,22 @@ export function SitePreview({
     }
   }, [preview])
 
+  // 混淆代码模式：渲染完成后对前台容器做站点唯一结构噪声（外观零变化，蜘蛛抓到的代码逐站不同）
+  useEffect(() => {
+    if (!preview || loading) return
+    const ocfg = parseSeoConfig(preview.site.seoConfig).obfuscate
+    if (!ocfg?.enabled) return
+    const el = containerRef.current
+    if (!el) return
+    const raf = requestAnimationFrame(() => {
+      obfuscateDom(el, preview.site.id || preview.site.siteName, { strength: ocfg.strength ?? 'standard' })
+    })
+    return () => cancelAnimationFrame(raf)
+  }, [preview, loading, view])
+
   const theme = preview ? THEMES[preview.site.themeId] ?? THEMES.classic : null
   const ThemeComponent = theme?.Component
+  const showPseoHub = view.type === 'pseo' && !!preview
 
   return (
     <div className="flex flex-col h-full" data-testid="site-preview">
@@ -281,6 +348,13 @@ export function SitePreview({
               重试
             </Button>
           </div>
+        ) : preview && showPseoHub ? (
+          <PseoHub
+            site={preview.site}
+            keywords={preview.data.pseoKeywords ?? []}
+            books={preview.data.books ?? []}
+            onNavigate={setView}
+          />
         ) : preview && ThemeComponent ? (
           <ThemeComponent
             site={preview.site}

@@ -17,6 +17,7 @@ import {
   User,
 } from 'lucide-react'
 import type { BookCard, ChapterItem, SiteMeta, SiteView, ThemeProps } from '@/lib/theme-types'
+import { PseoFooterLink } from '@/components/site/pseo-hub'
 
 type Nav = (v: SiteView) => void
 
@@ -196,10 +197,11 @@ function Header({ site, onNavigate }: { site: SiteMeta; onNavigate: Nav }) {
   )
 }
 
-function Footer({ site }: { site: SiteMeta }) {
+function Footer({ site, onNavigate }: { site: SiteMeta; onNavigate: Nav }) {
   return (
     <footer className="mt-auto border-t border-[#c9dff0] bg-[#dcebf7] py-6 pb-[max(1.5rem,env(safe-area-inset-bottom))] text-center">
       <p className="text-sm text-[#4a6b85]">{site.footerText || `${site.siteName} · ${site.domain}`}</p>
+      <PseoFooterLink site={site} onNavigate={onNavigate} />
       <p className="mt-1.5 text-xs text-[#7d9cb5]">{site.title}</p>
     </footer>
   )
@@ -507,7 +509,7 @@ function UaaHome({ site, data, loading, onNavigate }: ThemeProps) {
           </aside>
         </div>
       </main>
-      <Footer site={site} />
+      <Footer site={site} onNavigate={onNavigate} />
     </div>
   )
 }
@@ -648,7 +650,7 @@ function UaaBook({ site, data, loading, onNavigate }: ThemeProps) {
           </>
         )}
       </main>
-      <Footer site={site} />
+      <Footer site={site} onNavigate={onNavigate} />
     </div>
   )
 }
@@ -742,7 +744,7 @@ function UaaToc({ site, data, loading, onNavigate }: ThemeProps) {
           </section>
         )}
       </main>
-      <Footer site={site} />
+      <Footer site={site} onNavigate={onNavigate} />
     </div>
   )
 }
@@ -841,7 +843,7 @@ function UaaChapter({ site, data, loading, onNavigate }: ThemeProps) {
           </article>
         )}
       </main>
-      <Footer site={site} />
+      <Footer site={site} onNavigate={onNavigate} />
     </div>
   )
 }
@@ -912,7 +914,7 @@ function UaaKeyword({ site, data, loading, onNavigate, keyword }: ThemeProps & {
           </section>
         )}
       </main>
-      <Footer site={site} />
+      <Footer site={site} onNavigate={onNavigate} />
     </div>
   )
 }

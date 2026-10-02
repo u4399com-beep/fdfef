@@ -14,6 +14,7 @@ import {
   User,
 } from 'lucide-react'
 import type { BookCard, ChapterItem, SiteMeta, SiteView, ThemeProps } from '@/lib/theme-types'
+import { PseoFooterLink } from '@/components/site/pseo-hub'
 
 type Nav = (v: SiteView) => void
 
@@ -85,13 +86,14 @@ function Header({ site, onNavigate }: { site: SiteMeta; onNavigate: Nav }) {
   )
 }
 
-function Footer({ site }: { site: SiteMeta }) {
+function Footer({ site, onNavigate }: { site: SiteMeta; onNavigate: Nav }) {
   return (
     <footer className="mt-14 border-t border-amber-200 bg-amber-100/50 py-8 text-center">
       <p className="font-serif text-sm text-stone-600">
         {site.footerText || `${site.siteName} · ${site.domain}`}
       </p>
       <p className="mt-2 font-serif text-xs text-stone-400">{site.title}</p>
+      <PseoFooterLink site={site} onNavigate={onNavigate} />
     </footer>
   )
 }
@@ -303,7 +305,7 @@ function ClassicHome({ site, data, loading, onNavigate }: ThemeProps) {
           )}
         </section>
       </main>
-      <Footer site={site} />
+      <Footer site={site} onNavigate={onNavigate} />
     </div>
   )
 }
@@ -433,7 +435,7 @@ function ClassicBook({ site, data, loading, onNavigate }: ThemeProps) {
           </>
         )}
       </main>
-      <Footer site={site} />
+      <Footer site={site} onNavigate={onNavigate} />
     </div>
   )
 }
@@ -527,7 +529,7 @@ function ClassicToc({ site, data, loading, onNavigate }: ThemeProps) {
           </>
         )}
       </main>
-      <Footer site={site} />
+      <Footer site={site} onNavigate={onNavigate} />
     </div>
   )
 }
@@ -629,7 +631,7 @@ function ClassicChapter({ site, data, loading, onNavigate }: ThemeProps) {
           </article>
         )}
       </main>
-      <Footer site={site} />
+      <Footer site={site} onNavigate={onNavigate} />
     </div>
   )
 }
@@ -713,7 +715,7 @@ function ClassicKeyword({
           </section>
         )}
       </main>
-      <Footer site={site} />
+      <Footer site={site} onNavigate={onNavigate} />
     </div>
   )
 }

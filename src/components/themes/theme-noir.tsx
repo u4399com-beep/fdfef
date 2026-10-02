@@ -4,6 +4,7 @@ import { useState } from 'react'
 import type { ReactElement, ReactNode } from 'react'
 import { ArrowLeft, ArrowRight, ChevronRight, Hash } from 'lucide-react'
 import type { ChapterItem, SiteMeta, SiteView, ThemeProps } from '@/lib/theme-types'
+import { PseoFooterLink } from '@/components/site/pseo-hub'
 
 type Nav = (v: SiteView) => void
 
@@ -39,6 +40,7 @@ function Shell({
             {site.footerText || `${site.siteName} — ${site.domain}`}
           </p>
           <p className="mt-2 font-mono text-[11px] text-zinc-700">{site.title}</p>
+          <PseoFooterLink site={site} onNavigate={onNavigate} />
         </div>
       </footer>
     </div>

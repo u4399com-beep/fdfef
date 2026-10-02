@@ -14,6 +14,7 @@ import {
   Zap,
 } from 'lucide-react'
 import type { BookCard, ChapterItem, SiteMeta, SiteView, ThemeProps } from '@/lib/theme-types'
+import { PseoFooterLink } from '@/components/site/pseo-hub'
 
 type Nav = (v: SiteView) => void
 
@@ -70,6 +71,7 @@ function Shell({
       <footer className="mt-14 border-t border-white/10 py-8 text-center text-sm text-zinc-500">
         <p>{site.footerText || `${site.siteName} · ${site.domain}`}</p>
         <p className="mt-1.5 text-xs text-zinc-600">{site.title}</p>
+        <PseoFooterLink site={site} onNavigate={onNavigate} />
       </footer>
     </div>
   )

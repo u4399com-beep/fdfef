@@ -1,6 +1,7 @@
 import { NextRequest } from 'next/server'
 import { db } from '@/lib/db'
 import { json, chapterContentText } from '../_lib/http'
+import { parseSeoConfig } from '@/lib/seo/engine'
 
 export const runtime = 'nodejs'
 export const dynamic = 'force-dynamic'
@@ -45,6 +46,7 @@ function toCard(b: {
  * type=toc 书籍完整章节目录页
  * type=chapter 章节正文
  * type=keyword 关键词落地页（均指向主书籍信息页）
+ * type=pseo PSEO 内链枢纽（站点全部派生关键词索引）
  */
 export async function GET(req: NextRequest) {
   const sp = req.nextUrl.searchParams
@@ -62,6 +64,7 @@ export async function GET(req: NextRequest) {
     keywords: site?.keywords ?? '',
     footerText: site?.footerText ?? '',
     mainBookId: site?.mainBookId ?? '',
+    seoConfig: site?.seoConfig ?? '{}',
   }
 
   if (type === 'home') {
@@ -134,6 +137,45 @@ export async function GET(req: NextRequest) {
           nextId: next?.id ?? null,
         },
       },
+    })
+  }
+
+  if (type === 'pseo') {
+    // PSEO 内链枢纽：站点设定关键词 + 书籍标签/下拉词/分类聚合派生
+    const cfg = parseSeoConfig(site?.seoConfig).pseo
+    const manual = (cfg?.keywords ?? []).map((k) => ({ keyword: k, count: 0, source: 'manual' as const }))
+    const all = await db.book.findMany({ orderBy: { updatedAt: 'desc' }, take: 200, select: { category: true, keywords: true, suggestKeywords: true } })
+    const tally = new Map<string, { count: number; source: 'book' | 'suggest' | 'category' }>()
+    const add = (kw: string, source: 'book' | 'suggest' | 'category') => {
+      const key = kw.trim()
+      if (!key || key.length > 24) return
+      const cur = tally.get(key)
+      if (cur) cur.count++
+      else tally.set(key, { count: 1, source })
+    }
+    for (const b of all) {
+      if (b.category) add(b.category, 'category')
+      for (const k of b.keywords.split(',')) add(k, 'book')
+      for (const k of b.suggestKeywords.split(',')) add(k, 'suggest')
+    }
+    // 权重降序，书籍标签与下拉词派生上限 60（枢纽页链接数可控）
+    const derived = [...tally.entries()]
+      .sort((a, b) => b[1].count - a[1].count)
+      .slice(0, 60)
+      .map(([keyword, v]) => ({ keyword, count: v.count, source: v.source }))
+    const books = await db.book.findMany({ orderBy: { updatedAt: 'desc' }, take: 12 })
+    // 去重（同词多源取首个来源）
+    const seen = new Set<string>()
+    const keywords = [...manual, ...derived].filter((k) => {
+      const key = k.keyword.toLowerCase()
+      if (seen.has(key)) return false
+      seen.add(key)
+      return true
+    })
+    return json({
+      site: siteMeta,
+      view: { type: 'pseo' },
+      data: { pseoKeywords: keywords, books: books.map(toCard) },
     })
   }
 

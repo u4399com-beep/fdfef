@@ -855,6 +855,11 @@ async function fetchPageInner(url: string, cfg: FetchConfig): Promise<FetchResul
   if (strategy === 'playwright') return fetchWithPlaywright(url, cfg, timeout, started)
   if (strategy === 'hyperbrowser') return fetchWithHyperbrowser(url, cfg, timeout, started)
 
+  // JS 翻页交互（jsPages）依赖浏览器点击逐页拼接快照：HTTP 直连只能拿到首屏。
+  // 规则配置了 jsPages 即视为内容需要 JS 交互才完整 → 自动升级 Playwright
+  // （此前该升级依赖「恰好被 WAF 拦截」，站点放行时翻页静默丢失，只采到第 1 页）
+  if (cfg.jsPages?.enabled) return fetchWithPlaywright(url, cfg, timeout, started)
+
   // HTTP 直连策略（遇 WAF 自动升级浏览器渲染；同域全局节流）
   await domainThrottle.wait(url, cfg.throttleGap)
   let html = ''

@@ -11,6 +11,18 @@ export async function GET() {
   return json({ sites })
 }
 
+/** seoConfig 透传校验：非法 JSON 一律拒绝（前端序列化兜底，此为最后防线） */
+function seoConfigOr(body: unknown): string {
+  if (body === undefined) return '{}'
+  const s = typeof body === 'string' ? body : JSON.stringify(body)
+  try {
+    JSON.parse(s)
+    return s
+  } catch {
+    return '{}'
+  }
+}
+
 /** 新建站点（站群：一套后台/数据库/文件，多站派生） */
 export async function POST(req: NextRequest) {
   const body = await readJson(req)
@@ -28,6 +40,7 @@ export async function POST(req: NextRequest) {
       offset: toInt(body.offset, 0, 0),
       mainBookId: String(body.mainBookId ?? ''),
       footerText: String(body.footerText ?? ''),
+      seoConfig: seoConfigOr(body.seoConfig),
     },
   })
   return json({ site })

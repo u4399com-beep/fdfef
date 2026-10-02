@@ -123,6 +123,7 @@ model SiteConfig {
   offset      Int      @default(0) // 列表偏移量：不同站点展示不同排序起点
   mainBookId  String   @default("") // 绑定的主书籍（主关键词）
   footerText  String   @default("")
+  seoConfig   String   @default("{}") // SEO 增强配置 JSON（混淆代码/TDK转码/内容干扰/PSEO）
   createdAt   DateTime @default(now())
   updatedAt   DateTime @updatedAt
 }

@@ -5,6 +5,18 @@ import { json, badRequest, readJson, RouteCtx, toInt, prismaErrorToResponse } fr
 export const runtime = 'nodejs'
 export const dynamic = 'force-dynamic'
 
+/** seoConfig 透传校验：非法 JSON 一律回退 {}（与新建站点同语义） */
+function seoConfigOr(body: unknown): string {
+  if (body === undefined) return '{}'
+  const s = typeof body === 'string' ? body : JSON.stringify(body)
+  try {
+    JSON.parse(s)
+    return s
+  } catch {
+    return '{}'
+  }
+}
+
 export async function PUT(req: NextRequest, { params }: RouteCtx<{ id: string }>) {
   const { id } = await params
   const body = await readJson(req)
@@ -26,6 +38,7 @@ export async function PUT(req: NextRequest, { params }: RouteCtx<{ id: string }>
         ...(body.offset !== undefined ? { offset: toInt(body.offset, 0, 0) } : {}),
         ...(body.mainBookId !== undefined ? { mainBookId: String(body.mainBookId ?? '') } : {}),
         ...(body.footerText !== undefined ? { footerText: String(body.footerText ?? '') } : {}),
+        ...(body.seoConfig !== undefined ? { seoConfig: seoConfigOr(body.seoConfig) } : {}),
       },
     })
     return json({ site })

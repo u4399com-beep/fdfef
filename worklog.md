@@ -903,3 +903,25 @@ Work Log:
 Stage Summary:
 - 采集主管线（前 13 轮唯一未全文深审的核心模块）深审收官：修复 3 类（txt 孤儿文件根治、目录 URL 归一化比对一致化+URL 治愈、suggest 无界封顶），全部经 mock 站真实任务三轮探针实证；/api/stats 假警报排除；kelexs/biqutu 四链路回归全通
 - 至此引擎 13 模块全部完成逐行深审（fetcher/parser/cleaner/matcher/suggest/download-builder/collect-types/task-manager/paginated/preview/pipeline/storage/testing）
+
+---
+Task ID: R15
+Agent: orchestrator (Z.ai Code)
+Task: R15轮——kelexs目录分页修复+增量实跑（+1140章/0错误） + 站群SEO增强四件套（混淆代码/TDK转码/内容干扰伪原创/PSEO）
+
+Work Log:
+- 【修复④ kelexs 目录分页（用户新需求）】实探发现目录页为 JS 下拉翻页（.selBox .btn + .dropDown li[data-p]，1-100/101-200/201-300 三页），规则已配 jsPages 但 strategy:http 时 collectJsPages（仅存在于 Playwright 路径）永不执行——站点放行时只采到第 1 页 100 章。common.js 被混淆+crypto-js 加密、?p=N 服务端不换内容，故不逆向 AJAX，改为引擎级修复：fetchPageInner 中 cfg.jsPages?.enabled 即自动升级 Playwright（jsPages 配置本身即「需要 JS 交互」的意图声明）。实测 toc 100→208 章（与下拉三页 100+100+8 完全吻合）
+- 【增量任务实跑】8 本在库 kelexs 书籍（7 本卡在整 100 章——分页 bug 受害特征）增量任务全程零错误：目录 1861 章（新增 1140）、正文 1271 篇全部采集。单书恢复：夜空中凡星点点 100→744、顶级博导 100→302、三嫁阎君 100→293、戍边配妻 100→166、你管这叫精神病 100→135；光之国(48)/诸天霸主(77)/什么叫病娇(96) 本就单页无需恢复（行为正确）
+- 【新增 src/lib/seo/engine.ts（SEO 增强引擎，纯函数）】全部以站点 id 为种子：同站输出稳定（蜘蛛重访文本一致）、跨站互异（站群间不重复）
+  - ① TDK/关键词转码 transcodeText：entity(&#x4E66;)/decimal(&#20070;)/zerowidth(U+200B/200C/200D)/mixed 四模式，仅转 CJK（ASCII/URL 不动）；document.title 为纯文本节点不解析实体 → 标题自动退化为仅零宽插入
+  - ② 内容干扰+伪原创 interfereContent：70 组同义词（词长优先合并正则）按「词+段落+出现序号+章节种子」确定性替换（60% 命中率）；36 句环境干扰句按密度(low .1/medium .22/high .38)段尾插入、章内去重轮转；零宽句内打散。渲染层变换、DB 原文不动
+  - ③ 混淆代码模式 obfuscateDom：站点专属 data-ob 标记 + 专属随机类名(och8py1-xxx)/专属 data-* 属性/站点专属 HTML 注释，强度三档（light/standard/heavy），幂等可重复扫描，视觉零变化
+- 【SiteConfig.seoConfig 字段】schema 新增 JSON 配置列 + db push；sites POST/PUT 透传（非法 JSON 回退 {}）；宽松解析 parseSeoConfig（损坏配置回退空、不阻断渲染）
+- 【preview 链路】siteMeta 透出 seoConfig；新增 type=pseo 枢纽视图（manual 站点设定词 + 书籍标签/下拉词/分类聚合 top60 + 权重计数）；preview-shell 单点接线：TDK 转码（title 零宽/meta 按模式）、章节正文干扰变换（种子=站点+章节）、渲染后 DOM 混淆扫描、PSEO TDK 模板（{keyword}/{siteName} 占位符，keyword/pseo 视图消费）
+- 【UI】站群管理对话框新增「SEO 增强」折叠面板（四区开关+参数+模板+站点设定关键词）；站点卡片显示已开启增强徽章；6 套主题页脚统一插入 PseoFooterLink（pseo.enabled 时渲染「专题导航」枢纽入口，蜘蛛内链骨架根入口）；PSEO 枢纽页为通用组件（六主题共享）
+- 【虚惊记录】uaa 页脚 pb-[max(1.5rem,env(safe-area-inset-bottom))] 疑似损坏类名，字节级核对为合法 Tailwind 任意值（工具输出显示层吞掉 [m 序列造成误读），未做任何改动
+- 【验证】tsc 0/lint 0；bun 引擎探针：转码跨站互异、伪原创确定性（同种子恒定/跨章跨站不同）、24/24 段落改写；浏览器 E2E：title 7 零宽+meta 混合转码源码（书&#39321;阁​提供‍玄​&#24187;…）+441 元素混淆标记/254 专属类名/152 专属属性/站点专属注释；章节页标题零宽 15+干扰句插入+同义词替换（望着）+正文零宽 64；PSEO 枢纽 62 关键词（manual 2+category 6+suggest 54）→ 落地页 TDK 模板展开+转码全链路；console/page errors 0；dev server 重启一次（Prisma client 重新生成后旧进程模块缓存导致 PUT 500，重启即愈）
+
+Stage Summary:
+- 五项需求全部落地：①混淆代码模式（站点唯一结构代码/外观不变）②TDK/关键词转码（entity/decimal/zerowidth/mixed，浏览器渲染不变）③句子干扰+伪原创（确定性种子、章内去重、跨章跨站不重复、DB 原文零污染）④kelexs 目录分页修复（引擎级 jsPages 升级）+ 增量任务实跑（+1140 章/1271 篇正文/0 错误，七本卡 100 章书籍全部恢复完整目录）⑤PSEO 设置（枢纽页+关键词落地页+TDK 模板+页脚内链入口）
+- SEO 增强配置为每站点独立（seoConfig），站群各站可开不同组合；全部变换渲染层发生，数据库与下载 txt 保持原文

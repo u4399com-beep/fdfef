@@ -12,6 +12,8 @@ export interface SiteMeta {
   keywords: string
   footerText: string
   mainBookId: string
+  /** SEO 增强配置原文（JSON：混淆代码/TDK转码/内容干扰/PSEO，由 preview-shell 解析消费） */
+  seoConfig: string
 }
 
 export interface BookCard {
@@ -59,6 +61,16 @@ export type SiteView =
   | { type: 'chapter'; chapterId: string }
   | { type: 'keyword'; keyword: string }
   | { type: 'toc'; bookId: string }
+  | { type: 'pseo' }
+
+/** PSEO 派生关键词（枢纽页索引项） */
+export interface PseoKeyword {
+  keyword: string
+  /** 关联书籍数（枢纽页权重展示） */
+  count: number
+  /** 来源：manual 站点设定 / book 书籍标签 / suggest 搜索下拉词 / category 分类 */
+  source: 'manual' | 'book' | 'suggest' | 'category'
+}
 
 export interface ThemeProps {
   site: SiteMeta
@@ -69,6 +81,8 @@ export interface ThemeProps {
     chapter?: ChapterDetail
     keywordBooks?: BookCard[]
     categories?: string[]
+    /** PSEO 派生关键词（pseo 枢纽视图；通用渲染不走主题） */
+    pseoKeywords?: PseoKeyword[]
   }
   loading?: boolean
   onNavigate: (v: SiteView) => void
