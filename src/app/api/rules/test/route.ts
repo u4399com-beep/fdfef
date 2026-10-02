@@ -1,5 +1,6 @@
 import { NextRequest } from 'next/server'
 import { json, badRequest, readJson, RULE_TYPES } from '../../_lib/http'
+import { requireAuth } from '@/lib/auth'
 import { testRule } from '@/lib/collect/testing'
 import type { RuleType } from '@/lib/collect-types'
 
@@ -12,6 +13,8 @@ export const maxDuration = 120
  * 入参 { type, config, url }；返回 { ok, message, elapsedMs, data }。
  */
 export async function POST(req: NextRequest) {
+  const denied = requireAuth(req)
+  if (denied) return denied
   const body = await readJson(req)
   if (!body) return badRequest('请求体必须为 JSON 对象')
   const type = typeof body.type === 'string' ? body.type : ''

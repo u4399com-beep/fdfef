@@ -3,6 +3,7 @@ import { db } from '@/lib/db'
 import { taskManager, taskLog } from '@/lib/collect/task-manager'
 import { executeTask } from '@/lib/collect/pipeline'
 import { json, badRequest, readJson, RouteCtx, ACTIVE_TASK_STATUSES } from '../../../_lib/http'
+import { requireAuth } from '@/lib/auth'
 
 export const runtime = 'nodejs'
 export const dynamic = 'force-dynamic'
@@ -12,6 +13,8 @@ const TERMINAL_STATUSES = ['done', 'failed', 'stopped']
 
 /** 任务控制：start 立即执行 / pause 暂停 / resume 继续 / stop 停止 */
 export async function POST(req: NextRequest, { params }: RouteCtx<{ id: string }>) {
+  const denied = requireAuth(req)
+  if (denied) return denied
   const { id } = await params
   const body = await readJson(req)
   if (!body) return badRequest('请求体必须为 JSON 对象')

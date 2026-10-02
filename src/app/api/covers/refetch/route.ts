@@ -1,6 +1,7 @@
 import { NextRequest } from 'next/server'
 import { refetchAllCovers } from '@/lib/collect/cover'
 import { isPlainObject, json, toBoolOrNull } from '../../_lib/http'
+import { requireAuth } from '@/lib/auth'
 
 export const runtime = 'nodejs'
 export const dynamic = 'force-dynamic'
@@ -13,6 +14,8 @@ export const maxDuration = 300
  * body: { force?: boolean }  force=true 时跳过「本地文件完好」检查，全部重做
  */
 export async function POST(req: NextRequest) {
+  const denied = requireAuth(req)
+  if (denied) return denied
   const body = await req.json().catch(() => null)
   const force = isPlainObject(body) ? toBoolOrNull(body.force) === true : false
   try {

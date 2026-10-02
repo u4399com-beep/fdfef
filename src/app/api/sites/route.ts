@@ -1,12 +1,15 @@
 import { NextRequest } from 'next/server'
 import { db } from '@/lib/db'
 import { json, badRequest, readJson, toInt } from '../_lib/http'
+import { requireAuth } from '@/lib/auth'
 
 export const runtime = 'nodejs'
 export const dynamic = 'force-dynamic'
 
 /** 站群列表 */
-export async function GET() {
+export async function GET(req: NextRequest) {
+  const denied = requireAuth(req)
+  if (denied) return denied
   const sites = await db.siteConfig.findMany({ orderBy: { createdAt: 'asc' } })
   return json({ sites })
 }
@@ -25,6 +28,8 @@ function seoConfigOr(body: unknown): string {
 
 /** 新建站点（站群：一套后台/数据库/文件，多站派生） */
 export async function POST(req: NextRequest) {
+  const denied = requireAuth(req)
+  if (denied) return denied
   const body = await readJson(req)
   if (!body) return badRequest('请求体必须为 JSON 对象')
   const siteName = String(body.siteName ?? '').trim()

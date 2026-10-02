@@ -63,3 +63,5 @@ storage/waf-cookies.json
 tool-results/
 db/custom.backup*.db
 *.backup-r7*.db
+# 后台认证密钥（自动生成，勿入库）
+db/auth-secret

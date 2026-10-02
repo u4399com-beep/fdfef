@@ -2,12 +2,15 @@ import { NextRequest } from 'next/server'
 import { db } from '@/lib/db'
 import { taskManager } from '@/lib/collect/task-manager'
 import { json, badRequest, readJson, strId, ACTIVE_TASK_STATUSES, STORAGE_MODES, stringArray, toInt } from '../_lib/http'
+import { requireAuth } from '@/lib/auth'
 
 export const runtime = 'nodejs'
 export const dynamic = 'force-dynamic'
 
 /** 任务列表（带实时状态修正：仅当运行时不存在时才将残留的 running 标记改为 stopped，避免误杀正在执行的任务） */
-export async function GET() {
+export async function GET(req: NextRequest) {
+  const denied = requireAuth(req)
+  if (denied) return denied
   const tasks = await db.collectTask.findMany({ orderBy: { updatedAt: 'desc' } })
   const stale = tasks.filter((t) => ACTIVE_TASK_STATUSES.includes(t.status) && !taskManager.has(t.id))
   for (const t of stale) {
@@ -28,6 +31,8 @@ export async function GET() {
 
 /** 新建任务 */
 export async function POST(req: NextRequest) {
+  const denied = requireAuth(req)
+  if (denied) return denied
   const body = await readJson(req)
   if (!body) return badRequest('请求体必须为 JSON 对象')
   const name = String(body.name ?? '').trim()

@@ -8,7 +8,13 @@ export async function api<T>(url: string, init?: RequestInit): Promise<T> {
     cache: 'no-store',
   })
   const data = (await res.json().catch(() => ({}))) as T & { error?: string }
-  if (!res.ok) throw new Error(data.error || `请求失败（${res.status}）`)
+  if (!res.ok) {
+    // 会话过期/未登录：管理页统一跳回后台登录墙（auth 接口本身除外，避免登录页死循环）
+    if (res.status === 401 && typeof window !== 'undefined' && !url.startsWith('/api/auth')) {
+      window.location.href = '/admin'
+    }
+    throw new Error(data.error || `请求失败（${res.status}）`)
+  }
   return data
 }
 

@@ -4,11 +4,14 @@ import fs from 'fs/promises'
 import { db } from '@/lib/db'
 import { COVERS_DIR, NOVELS_DIR } from '@/lib/collect/storage'
 import { json, RouteCtx } from '../../_lib/http'
+import { requireAuth } from '@/lib/auth'
 
 export const runtime = 'nodejs'
 export const dynamic = 'force-dynamic'
 
 export async function GET(_req: NextRequest, { params }: RouteCtx<{ id: string }>) {
+  const denied = requireAuth(_req)
+  if (denied) return denied
   const { id } = await params
   const book = await db.book.findUnique({ where: { id } })
   if (!book) return json({ error: '书籍不存在' }, { status: 404 })
@@ -16,6 +19,8 @@ export async function GET(_req: NextRequest, { params }: RouteCtx<{ id: string }
 }
 
 export async function DELETE(_req: NextRequest, { params }: RouteCtx<{ id: string }>) {
+  const denied = requireAuth(_req)
+  if (denied) return denied
   const { id } = await params
   const existing = await db.book.findUnique({
     where: { id },

@@ -128,6 +128,15 @@ model SiteConfig {
   updatedAt   DateTime @updatedAt
 }
 
+// 后台管理员账户（前后端分离：后台入口 /admin 需账户密码登录，管理 API 全部鉴权）
+model AdminUser {
+  id           String    @id @default(cuid())
+  username     String    @unique
+  passwordHash String // scrypt$salt$hash（见 src/lib/auth.ts）
+  createdAt    DateTime  @default(now())
+  lastLoginAt  DateTime?
+}
+
 // 系统级配置（单行）：内容清洗规则 + 下载注入配置
 model SystemConfig {
   id        String   @id @default("main")

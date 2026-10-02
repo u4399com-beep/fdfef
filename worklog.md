@@ -925,3 +925,25 @@ Work Log:
 Stage Summary:
 - 五项需求全部落地：①混淆代码模式（站点唯一结构代码/外观不变）②TDK/关键词转码（entity/decimal/zerowidth/mixed，浏览器渲染不变）③句子干扰+伪原创（确定性种子、章内去重、跨章跨站不重复、DB 原文零污染）④kelexs 目录分页修复（引擎级 jsPages 升级）+ 增量任务实跑（+1140 章/1271 篇正文/0 错误，七本卡 100 章书籍全部恢复完整目录）⑤PSEO 设置（枢纽页+关键词落地页+TDK 模板+页脚内链入口）
 - SEO 增强配置为每站点独立（seoConfig），站群各站可开不同组合；全部变换渲染层发生，数据库与下载 txt 保持原文
+
+---
+Task ID: R16
+Agent: orchestrator (Z.ai Code)
+Task: R16轮——前后端分离 + 后端账户密码权限（/admin 登录墙 + 管理API全量鉴权）
+
+Work Log:
+- 【架构】前后端分离落地（单页面路由约束下）：`/` = 公开前台站点（全屏主题渲染、蜘蛛/读者免登录），`/admin` = 后台入口。新增 src/middleware.ts 将 /admin（含子路径）rewrite 到唯一页面路由 `/` 并注入 x-admin-view 请求头；page.tsx 改为服务端组件按头分流（前台/后台壳），服务端直读 Cookie 校验会话，未登录渲染登录墙（管理端 UI 不再出现在公开页）
+- 【认证核心】新增 src/lib/auth.ts：scrypt(N=16384)+随机盐密码哈希（timingSafeEqual 校验）、HMAC-SHA256 签名会话令牌（payload u+exp，7 天）、密钥三级来源（AUTH_SECRET 环境变量 → db/auth-secret 文件自动生成（0600 + gitignore）→ 进程内随机兜底）、HttpOnly+SameSite=Lax 会话 Cookie（x-forwarded-proto 检测 https 时加 Secure）、内存级登录限速（IP+用户名 5 次失败/10 分钟 → 429）
+- 【账户模型】Prisma 新增 AdminUser（username unique + passwordHash + lastLoginAt），db push 完成；首次登录自动引导创建默认账户 admin/admin123（ensureDefaultAdmin 幂等+并发唯一冲突兜底）
+- 【auth API】新增 /api/auth/login（限速→验证→Set-Cookie→defaultPassword 标记）、/api/auth/logout（清 Cookie，幂等）、/api/auth/change-password（requireAuth+旧密码校验+6~72 位新密码）
+- 【API 全量鉴权】19 个管理类路由 × 共 33 个 handler 全部加 requireAuth 守卫（books×5/tasks×4/rules×3/sites×2/settings/stats/chapters/clean-test/covers-refetch）；公开白名单仅保留 /api（健康）、/api/preview（前台数据源）、/api/covers/[name]（封面图）、/api/auth/*
+- 【UI】新增 LoginForm（首次部署提示默认账户、错误提示、前台入口链接）与 AdminRoot（登录墙分支 + 管理后台/前台预览切换 + 用户名 + 「前台站点」新窗口入口 + 退出登录 + 默认密码未改 amber 横幅）；公开前台新增 FrontRoot（h-dvh 全屏 SitePreview embedded，零后台元素）；设置页新增「账户安全」卡片（旧密码/新密码/确认→修改密码）
+- 【client-api 全局 401 处理】管理页 API 收到 401（非 /api/auth）自动 window.location.href='/admin' 回登录墙
+- 【E2E 发现并修复 bug】登录成功后默认密码横幅不显示：router.refresh() 只重渲染不重挂载，AdminRoot useEffect 不重跑 sessionStorage 读取 → 改为 CustomEvent('nm-default-pw') 事件驱动（LoginForm 登录后派发、改密后派发、AdminRoot 监听重读）
+- 【curl 实证】未登录管理 API 全 401（books/stats/settings/sites/rules/tasks）✓；伪造 Cookie 401 ✓；错误密码 401→连续 5 次后 429 ✓；默认账户登录 200+defaultPassword:true ✓；改密→旧密码 400/旧密码登录 401/新密码登录 200→改回默认 ✓；logout 后 Cookie 失效 401 ✓；公开端点 preview/covers/health 200 ✓
+- 【浏览器 E2E】`/` 渲染书香阁前台（零后台元素）✓；/admin 登录墙→错误密码报错→登录进仪表盘 ✓；默认密码横幅显示（DOM+截图实证）✓；设置页改密码全流程 UI 实测 ✓；退出→登录墙 ✓；后台内嵌前台预览（UAA 主题+主题切换条）✓；/admin/xxx 子路径同样到登录墙 ✓；移动端 390px 登录墙/前台/后台响应式截图核验 ✓；console/page errors 0
+- 【验证】bunx tsc 0 错误、bun run lint 0 错误、dev.log 无错误；db/auth-secret 已 gitignore 且 0600 权限
+
+Stage Summary:
+- 前后端分离完成：公开前台（/）与管理后台（/admin）彻底分流，后台壳不再暴露给未登录访问者；全部管理 API（19 路由 33 handler）需会话，公开面收敛为 preview/covers/auth/health 四类
+- 默认账户 admin/admin123（首次登录自动创建并提示修改），支持改密码；scrypt+HMAC 会话+限速构成完整安全基线；密码修改横幅/提醒联动闭环

@@ -3,12 +3,15 @@ import { cleanContent } from '@/lib/collect/cleaner'
 import { mergeCleaning } from '@/lib/collect-types'
 import { loadSystemCleaningRaw } from '@/lib/collect/system-config'
 import { json, badRequest, isPlainObject, readJson } from '../_lib/http'
+import { requireAuth } from '@/lib/auth'
 
 export const runtime = 'nodejs'
 export const dynamic = 'force-dynamic'
 
 /** 清洗测试：输入 HTML → 输出清洗结果 */
 export async function POST(req: NextRequest) {
+  const denied = requireAuth(req)
+  if (denied) return denied
   const body = await readJson(req)
   if (!body) return badRequest('请求体必须为 JSON 对象')
   if (typeof body.html !== 'string') return badRequest('html 必须为字符串')

@@ -2,11 +2,14 @@ import { NextRequest } from 'next/server'
 import { db } from '@/lib/db'
 import { taskManager } from '@/lib/collect/task-manager'
 import { json, badRequest, readJson, RouteCtx, strId, ACTIVE_TASK_STATUSES, STORAGE_MODES, stringArray, toInt } from '../../_lib/http'
+import { requireAuth } from '@/lib/auth'
 
 export const runtime = 'nodejs'
 export const dynamic = 'force-dynamic'
 
 export async function GET(_req: NextRequest, { params }: RouteCtx<{ id: string }>) {
+  const denied = requireAuth(_req)
+  if (denied) return denied
   const { id } = await params
   const task = await db.collectTask.findUnique({ where: { id } })
   if (!task) return json({ error: '任务不存在' }, { status: 404 })
@@ -16,6 +19,8 @@ export async function GET(_req: NextRequest, { params }: RouteCtx<{ id: string }
 
 /** 编辑任务（运行中禁止编辑） */
 export async function PUT(req: NextRequest, { params }: RouteCtx<{ id: string }>) {
+  const denied = requireAuth(req)
+  if (denied) return denied
   const { id } = await params
   const existing = await db.collectTask.findUnique({ where: { id } })
   if (!existing) return json({ error: '任务不存在' }, { status: 404 })
@@ -65,6 +70,8 @@ export async function PUT(req: NextRequest, { params }: RouteCtx<{ id: string }>
 }
 
 export async function DELETE(_req: NextRequest, { params }: RouteCtx<{ id: string }>) {
+  const denied = requireAuth(_req)
+  if (denied) return denied
   const { id } = await params
   const existing = await db.collectTask.findUnique({ where: { id } })
   if (!existing) return json({ error: '任务不存在' }, { status: 404 })

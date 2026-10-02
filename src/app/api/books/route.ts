@@ -2,6 +2,7 @@ import { NextRequest } from 'next/server'
 import { Prisma, type Book } from '@prisma/client'
 import { db } from '@/lib/db'
 import { json, parsePagination } from '../_lib/http'
+import { requireAuth } from '@/lib/auth'
 
 export const runtime = 'nodejs'
 export const dynamic = 'force-dynamic'
@@ -20,6 +21,8 @@ function escapeLike(q: string): string {
 
 /** 书籍列表（搜索 / 分类筛选 / 分页） */
 export async function GET(req: NextRequest) {
+  const denied = requireAuth(req)
+  if (denied) return denied
   const q = req.nextUrl.searchParams.get('q') ?? ''
   const category = req.nextUrl.searchParams.get('category') ?? ''
   // parsePagination 内部用 toInt 防 NaN/Infinity 注入（page=1e999 → skip=Infinity → Prisma 500）

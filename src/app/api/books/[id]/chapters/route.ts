@@ -1,12 +1,15 @@
 import { NextRequest } from 'next/server'
 import { db } from '@/lib/db'
 import { json, parsePagination, RouteCtx } from '../../../_lib/http'
+import { requireAuth } from '@/lib/auth'
 
 export const runtime = 'nodejs'
 export const dynamic = 'force-dynamic'
 
 /** 章节列表（含正文摘要选项） */
 export async function GET(req: NextRequest, { params }: RouteCtx<{ id: string }>) {
+  const denied = requireAuth(req)
+  if (denied) return denied
   const { id } = await params
   const withContent = req.nextUrl.searchParams.get('content') === '1'
   // parsePagination 内部用 toInt 防 NaN/Infinity 注入（page=1e999 → skip=Infinity → Prisma 500）

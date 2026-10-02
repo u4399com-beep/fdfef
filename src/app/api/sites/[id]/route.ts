@@ -1,6 +1,7 @@
 import { NextRequest } from 'next/server'
 import { db } from '@/lib/db'
 import { json, badRequest, readJson, RouteCtx, toInt, prismaErrorToResponse } from '../../_lib/http'
+import { requireAuth } from '@/lib/auth'
 
 export const runtime = 'nodejs'
 export const dynamic = 'force-dynamic'
@@ -18,6 +19,8 @@ function seoConfigOr(body: unknown): string {
 }
 
 export async function PUT(req: NextRequest, { params }: RouteCtx<{ id: string }>) {
+  const denied = requireAuth(req)
+  if (denied) return denied
   const { id } = await params
   const body = await readJson(req)
   if (!body) return badRequest('请求体必须为 JSON 对象')
@@ -48,6 +51,8 @@ export async function PUT(req: NextRequest, { params }: RouteCtx<{ id: string }>
 }
 
 export async function DELETE(_req: NextRequest, { params }: RouteCtx<{ id: string }>) {
+  const denied = requireAuth(_req)
+  if (denied) return denied
   const { id } = await params
   try {
     await db.siteConfig.delete({ where: { id } })

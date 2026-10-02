@@ -1,12 +1,15 @@
 import { NextRequest } from 'next/server'
 import { db } from '@/lib/db'
 import { json, RouteCtx } from '../../../_lib/http'
+import { requireAuth } from '@/lib/auth'
 
 export const runtime = 'nodejs'
 export const dynamic = 'force-dynamic'
 
 /** 任务日志（支持增量拉取；gte + 客户端按 id 去重，避免同毫秒日志被 gt 跳过丢失） */
 export async function GET(req: NextRequest, { params }: RouteCtx<{ id: string }>) {
+  const denied = requireAuth(req)
+  if (denied) return denied
   const { id } = await params
   const after = req.nextUrl.searchParams.get('after')
   // 非法 after（非日期字符串）回退为全量拉取，而不是把 Invalid Date 直接丢给 Prisma 报 500

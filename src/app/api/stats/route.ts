@@ -1,11 +1,15 @@
+import { NextRequest } from 'next/server'
 import { db } from '@/lib/db'
 import { json } from '../_lib/http'
+import { requireAuth } from '@/lib/auth'
 
 export const runtime = 'nodejs'
 export const dynamic = 'force-dynamic'
 
 /** 仪表盘统计 */
-export async function GET() {
+export async function GET(req: NextRequest) {
+  const denied = requireAuth(req)
+  if (denied) return denied
   // 全部计数查询并行化（原先拆成 3 串行批次）
   const [books, chapters, tasks, sites, rules, collected, words, booksDone, booksSerial, recentTasks, recentBooks] =
     await Promise.all([

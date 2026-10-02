@@ -13,7 +13,7 @@ import { Textarea } from '@/components/ui/textarea'
 import { useToast } from '@/hooks/use-toast'
 import { api } from '@/lib/client-api'
 import { toNumOr } from '@/lib/utils'
-import { Beaker, Loader2, Save } from 'lucide-react'
+import { Beaker, KeyRound, Loader2, Save } from 'lucide-react'
 
 /** 输入过程保留空段/空行（否则逗号、换行会被 onChange 过滤吞掉，无法连续输入多段），提交前统一剔除空段 */
 function compactCleaning(c: CleaningCfg): CleaningCfg {
@@ -50,6 +50,11 @@ export function SettingsPage() {
   const [testHtml, setTestHtml] = useState('')
   const [testOut, setTestOut] = useState('')
   const [testing, setTesting] = useState(false)
+  // 账户安全：修改后台登录密码
+  const [oldPw, setOldPw] = useState('')
+  const [newPw, setNewPw] = useState('')
+  const [confirmPw, setConfirmPw] = useState('')
+  const [savingPw, setSavingPw] = useState(false)
 
   const load = useCallback(async () => {
     try {
@@ -73,6 +78,40 @@ export function SettingsPage() {
       toast({ title: '保存失败', description: e instanceof Error ? e.message : String(e), variant: 'destructive' })
     } finally {
       setSaving(false)
+    }
+  }
+
+  const changePassword = async () => {
+    if (savingPw) return
+    if (newPw.length < 6) {
+      toast({ title: '新密码至少 6 位', variant: 'destructive' })
+      return
+    }
+    if (newPw !== confirmPw) {
+      toast({ title: '两次输入的新密码不一致', variant: 'destructive' })
+      return
+    }
+    setSavingPw(true)
+    try {
+      await api('/api/auth/change-password', {
+        method: 'POST',
+        body: JSON.stringify({ oldPassword: oldPw, newPassword: newPw }),
+      })
+      setOldPw('')
+      setNewPw('')
+      setConfirmPw('')
+      try {
+        sessionStorage.removeItem('nm-default-pw')
+        // 通知 AdminRoot 重读标记，默认密码横幅即时消失
+        window.dispatchEvent(new CustomEvent('nm-default-pw'))
+      } catch {
+        /* 忽略 */
+      }
+      toast({ title: '密码已修改，下次登录请使用新密码' })
+    } catch (e) {
+      toast({ title: '修改失败', description: e instanceof Error ? e.message : String(e), variant: 'destructive' })
+    } finally {
+      setSavingPw(false)
     }
   }
 
@@ -226,6 +265,38 @@ export function SettingsPage() {
           <p className="text-[11px] text-muted-foreground">
             使用方式：书籍管理 → 详情 → 「下载 TXT」，注入在生成时实时执行。
           </p>
+        </CardContent>
+      </Card>
+
+      {/* 账户安全 */}
+      <Card>
+        <CardHeader>
+          <CardTitle className="text-base">账户安全（后台登录）</CardTitle>
+        </CardHeader>
+        <CardContent className="space-y-3">
+          <div className="space-y-1.5">
+            <Label className="text-xs">旧密码</Label>
+            <Input className="h-8" type="password" autoComplete="current-password" value={oldPw}
+              onChange={(e) => setOldPw(e.target.value)} />
+          </div>
+          <div className="grid gap-3 sm:grid-cols-2">
+            <div className="space-y-1.5">
+              <Label className="text-xs">新密码（至少 6 位）</Label>
+              <Input className="h-8" type="password" autoComplete="new-password" value={newPw}
+                onChange={(e) => setNewPw(e.target.value)} />
+            </div>
+            <div className="space-y-1.5">
+              <Label className="text-xs">确认新密码</Label>
+              <Input className="h-8" type="password" autoComplete="new-password" value={confirmPw}
+                onChange={(e) => setConfirmPw(e.target.value)} />
+            </div>
+          </div>
+          <div className="flex items-center gap-2">
+            <Button size="sm" onClick={() => void changePassword()} disabled={savingPw || !oldPw || !newPw || !confirmPw}>
+              {savingPw ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <KeyRound className="h-3.5 w-3.5" />} 修改密码
+            </Button>
+            <p className="text-[11px] text-muted-foreground">前后端分离：后台入口 /admin 与全部管理 API 均需登录会话</p>
+          </div>
         </CardContent>
       </Card>
 
