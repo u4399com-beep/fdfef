@@ -947,3 +947,24 @@ Work Log:
 Stage Summary:
 - 前后端分离完成：公开前台（/）与管理后台（/admin）彻底分流，后台壳不再暴露给未登录访问者；全部管理 API（19 路由 33 handler）需会话，公开面收敛为 preview/covers/auth/health 四类
 - 默认账户 admin/admin123（首次登录自动创建并提示修改），支持改密码；scrypt+HMAC 会话+限速构成完整安全基线；密码修改横幅/提醒联动闭环
+
+---
+Task ID: R17
+Agent: orchestrator (Z.ai Code)
+Task: R17轮——根据采集任务日志重新获取所有在库书籍封面图 + 持续审查修复 + 精简 + 六阶段验证
+
+Work Log:
+- 【恢复】核查基线：R16（鉴权/前后端分离 3ae6dd3）已推送；dev server 正常；在库 31 本书 coverLocal 全有值（其中 15 本有源站 coverUrl、15+ 本为占位封面）；6537 章
+- 【深审·任务日志】提取 TaskLog 封面失败记录：kelexs 封面 403×3 本（IP 冷却期）、《光之国》unsupported image format、历史 bug domainThrottle.reportBlock is not a function（已在先前修复，确认 fetcher.ts:433 现存）
+- 【修复·防回归】refetchBookCover 下载失败分支重构：force 重取时若本地封面仍完好 → 新增 action='keep' 保留现有文件，绝不把好封面覆盖为占位；force=false 到达下载分支说明本地已损坏 → 才降级占位；refetchAllCovers 统计与 coverLocal 回写同步排除 keep
+- 【增强·反反爬】封面下载二试机制：首试（FIXED_UA+书籍页 Referer）失败 → 二试换 randomUA+图片源站 origin Referer，绕过 UA/Referer 型防盗链
+- 【增强·执行】全库封面 force 重取：8 本下载成功（含 kelexs 3 本——实测 403 冷却已解除、书籍页 Referer 有效）、7 本源站无封面→占位重建、8 本源站不可达（rqwb 403/WAF HTML/连接失败）→ keep 保护零回归；终验 31/31 封面全部可解码（invalid=0）
+- 【深审·新模块逐行】auth.ts（scrypt/timingSafeEqual/HMAC 长度+时序安全/密钥三级兜底/限速窗口）、middleware.ts、seo/engine.ts（transcodeText 混合模式退化路径、interfereContent 确定性种子与章内去重、obfuscateDom 幂等与 dataset 键合法性、SYNONYM_RE 全局标志无 lastIndex 泄漏）、preview-shell.tsx（竞态 reqRef、head 快照还原含"原无则卸载移除"、JSON-LD textContent 防 XSS）、preview API（offset 取模、空关键词不派生泛化列表）、pseo-hub、covers/[name]（文件名白名单）、page.tsx 分流、admin-root/login-form（事件驱动横幅）——全部通过，未发现新 bug
+- 【排查·采集日志】近 72h 错误：cunshu.la 整站 403（实测确认 IP 级封锁，引擎正确识别+冷却+日志，属外部封锁非 bug）；《你管这叫精神病？》第42章"正文为空"为瞬时失败，DB 已有 3854 字+txt 11150 字节自愈确认
+- 【精简】清理 storage/covers 孤儿文件 4 个（历史删除书籍遗留），31 文件=31 本书精确对齐；移除本轮全部临时探针
+- 【验证】bunx tsc 0 错误、bun run lint 0 错误、dev.log 无错误；浏览器 E2E：前台首页渲染正常（书香阁主题+零宽转码 title 生效）、8 张重取封面全部 HTTP 200（含 3 张 kelexs 真封面）、/admin 登录墙完好、console/page errors 0
+
+Stage Summary:
+- 封面重取任务闭环：任务日志驱动的失败封面全部处置——可恢复的重取为真封面（8 本），源站无封面的占位重建（7 本），源站封锁的保留原好封面（8 本 keep 保护）；31/31 有效
+- cover.ts 两项引擎增强：keep 防回归保护（重取永不降级好封面）+ 双身份二试重取（随机 UA+origin Referer）
+- R15/R16 新增模块（SEO 变换/鉴权/分流）逐行深审通过零新 bug；孤儿封面精简；全链路验证绿

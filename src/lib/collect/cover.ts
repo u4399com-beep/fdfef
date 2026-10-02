@@ -2,7 +2,7 @@ import path from 'path'
 import fs from 'fs/promises'
 import { db } from '@/lib/db'
 import { COVERS_DIR, downloadCoverAsWebp, hashText } from './storage'
-import { FIXED_UA } from './fetcher'
+import { FIXED_UA, randomUA } from './fetcher'
 
 // ============================================================
 // 封面维护：重新下载 / 本地占位封面生成 / 全库补全
@@ -116,7 +116,7 @@ export async function coverFileValid(fileName: string): Promise<boolean> {
 export interface CoverRefetchItem {
   bookId: string
   title: string
-  action: 'skip' | 'download' | 'regenerate-placeholder'
+  action: 'skip' | 'download' | 'regenerate-placeholder' | 'keep'
   ok: boolean
   detail: string
 }
@@ -142,17 +142,29 @@ export async function refetchBookCover(
   }
   // 有源封面地址：重新下载（referer 指向书籍来源页，最大化防盗链通过率）
   if (book.coverUrl) {
+    let firstReason = ''
     try {
       const fileName = await downloadCoverAsWebp(book.coverUrl, book.id, book.sourceUrl || undefined, FIXED_UA)
       return { ...base, action: 'download', ok: true, detail: `已下载：${fileName}` }
     } catch (e) {
-      const reason = e instanceof Error ? e.message : String(e)
-      // 下载失败降级为占位封面，保证最终必有本地封面
+      firstReason = e instanceof Error ? e.message : String(e)
+    }
+    // 反反爬二试：换随机 UA + 以图片源站为 Referer，绕过 UA/Referer 型防盗链（书籍页 Referer 可能被源站拒绝）
+    try {
+      const fileName = await downloadCoverAsWebp(book.coverUrl, book.id, undefined, randomUA())
+      return { ...base, action: 'download', ok: true, detail: `二试成功（首试：${firstReason.slice(0, 60)}）：${fileName}` }
+    } catch (e2) {
+      const reason = e2 instanceof Error ? e2.message : String(e2)
+      // 下载失败时绝不把已有好封面覆盖为占位（防回归）：force 重取时本地封面仍完好则保留，
+      // 其余情形（force=false 到达此处说明本地缺失/损坏）降级生成占位封面，保证最终必有可用本地封面
+      if (opts.force && book.coverLocal && (await coverFileValid(book.coverLocal))) {
+        return { ...base, action: 'keep', ok: true, detail: `重取失败（${reason.slice(0, 80)}），已保留现有本地封面` }
+      }
       try {
-        const fileName = await generatePlaceholderCover(book.id, book.title, book.author, book.sourceName)
+        await generatePlaceholderCover(book.id, book.title, book.author, book.sourceName)
         return { ...base, action: 'regenerate-placeholder', ok: true, detail: `下载失败（${reason.slice(0, 80)}）→ 已生成占位封面` }
-      } catch (e2) {
-        return { ...base, action: 'download', ok: false, detail: `下载与占位生成均失败：${e2 instanceof Error ? e2.message : String(e2)}` }
+      } catch (e3) {
+        return { ...base, action: 'download', ok: false, detail: `下载与占位生成均失败：${e3 instanceof Error ? e3.message : String(e3)}` }
       }
     }
   }
@@ -181,10 +193,10 @@ export async function refetchAllCovers(
     const item = await refetchBookCover(book, { force: opts.force })
     summary.items.push(item)
     if (!item.ok) summary.failed++
-    else if (item.action === 'skip') summary.skipped++
+    else if (item.action === 'skip' || item.action === 'keep') summary.skipped++
     else if (item.action === 'download') summary.downloaded++
     else summary.placeholder++
-    if (item.ok && item.action !== 'skip') {
+    if (item.ok && item.action !== 'skip' && item.action !== 'keep') {
       await db.book.update({ where: { id: book.id }, data: { coverLocal: `${book.id}.webp` } })
     }
   }
