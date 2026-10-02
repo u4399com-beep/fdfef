@@ -9,6 +9,20 @@ import { cleanContent } from './cleaner'
  * （^https?|^//|^/ 才解析），需在此补全，否则多页目录会被截成单页。
  * 纯页码数字等非地址值无法安全解释（resolveUrl 会拼出 base 目录下错误地址），返回空串由调用方跳过。
  */
+/**
+ * 数字页码 → 查询参数分页地址（select 模式 option value 为纯页码的站点，如 rqwb 家族 ?page=2）。
+ * baseUrl 非法返回空串（调用方跳过该页）。
+ */
+export function buildPageParamUrl(baseUrl: string, param: string, page: number): string {
+  try {
+    const u = new URL(baseUrl)
+    u.searchParams.set(param, String(page))
+    return u.href
+  } catch {
+    return ''
+  }
+}
+
 function normalizePageLink(raw: string, baseUrl: string): string {
   const v = (raw || '').trim()
   if (!v) return ''
@@ -57,9 +71,13 @@ export async function fetchPaginated(
     const queue: string[] = []
     if (Array.isArray(rawVals)) {
       for (const v of rawVals) {
-        // 非地址值（纯页码数字等）跳过而非让 fetchPage 抛「非法 URL」使整书目录采集失败；
-        // 相对地址（list-2.html 等）按当前页补全后再去重入队
-        const abs = normalizePageLink(v, r0.finalUrl)
+        // 非地址值（纯页码数字等）默认跳过而非让 fetchPage 抛「非法 URL」使整书目录采集失败；
+        // 配置 pageParam 时纯数字页码按查询参数构造分页地址（value=2 → 当前页?page=2），
+        // 页码 1 即起始页自身跳过；服务端若无视该参数总返全量目录，重叠页由 seen 去重吸收
+        const pageNum = /^\d{1,5}$/.test(v.trim()) ? Number.parseInt(v.trim(), 10) : 0
+        const abs =
+          normalizePageLink(v, r0.finalUrl) ||
+          (pagination.pageParam && pageNum >= 2 ? buildPageParamUrl(r0.finalUrl, pagination.pageParam, pageNum) : '')
         if (!abs) continue
         if (seen.has(abs) || seen.has(abs.replace(/\/$/, ''))) continue
         seen.add(abs)

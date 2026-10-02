@@ -525,6 +525,19 @@ export async function executeTask(taskId: string): Promise<void> {
             where: { bookId },
             select: { id: true, url: true, title: true, order: true, contentLocal: true },
           })
+          // 部分解析告警：本次目录条目少于既有章节数（翻页未生效/站点截断/反爬半页）
+          // —— 既有章节照常保留（增量不删），但运维需要知道本次解析未覆盖全量
+          if (
+            toc.entries.length > 0 &&
+            existingChapters.length > 0 &&
+            toc.entries.length < existingChapters.length
+          ) {
+            await taskLog(
+              taskId,
+              'warn',
+              `《${info.title}》本次目录解析 ${toc.entries.length} 条少于既有 ${existingChapters.length} 章（翻页未完整或站点截断），保留既有章节`
+            )
+          }
           // DB 比对与内存去重同用归一化键（hash/默认端口/尾斜杠）：
           // 站点 URL 格式漂移时不再重复建章（增量）或全量删+重建（全量）
           const byUrl = new Map(existingChapters.map((c) => [normalizeTocUrlKey(c.url), c]))
@@ -615,15 +628,21 @@ export async function executeTask(taskId: string): Promise<void> {
               }
             }
           }
+          // 目录为空（瞬时反爬拦截等）时不清零已有统计，仅在有章节时覆盖；
+          // totalChapters 以对账后的真实行数为准 —— 增量模式下本次解析残缺（< 既有章节数）时
+          // 不随解析数缩水（否则界面显示章节数下降、与实际行数漂移）
+          const actualTotal = await db.chapter.count({ where: { bookId } })
+          // 局部解析守卫：本次目录条目少于既有章节数（残缺页/交互未翻页）时，
+          // 不用残缺目录的末章回写 latestChapter（会把「最新章节」倒退成中间章）
+          const tocCoversExisting = toc.entries.length >= existingChapters.length
           await db.book.update({
             where: { id: bookId },
             data: {
-              // 目录为空（瞬时反爬拦截等）时不清零已有统计，仅在有章节时覆盖
-              totalChapters: order > 0 ? order : undefined,
+              totalChapters: actualTotal > 0 ? actualTotal : undefined,
               // 乱序目录（未开启重排）的末条不可信（可能是「最新章节置顶」布局下的最旧章），
               // 此时保留库内 latestChapter，避免把最新章节回写成旧章节
               latestChapter:
-                toc.entries.length && (!toc.scrambled || tocCfg.reorder?.enabled)
+                toc.entries.length && tocCoversExisting && (!toc.scrambled || tocCfg.reorder?.enabled)
                   ? toc.entries[toc.entries.length - 1].title
                   : undefined,
             },

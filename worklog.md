@@ -968,3 +968,27 @@ Stage Summary:
 - 封面重取任务闭环：任务日志驱动的失败封面全部处置——可恢复的重取为真封面（8 本），源站无封面的占位重建（7 本），源站封锁的保留原好封面（8 本 keep 保护）；31/31 有效
 - cover.ts 两项引擎增强：keep 防回归保护（重取永不降级好封面）+ 双身份二试重取（随机 UA+origin Referer）
 - R15/R16 新增模块（SEO 变换/鉴权/分流）逐行深审通过零新 bug；孤儿封面精简；全链路验证绿
+
+---
+Task ID: R18
+Agent: orchestrator (Z.ai Code)
+Task: R18轮——全量检查采集规则目录分页设置，修复完善后按任务日志增量采集在库书籍
+
+Work Log:
+- 【规则普查】20 条规则 × 4 源站分页配置全景：kelexs toc=jsPages（R15）、biqutu toc=select、mock toc=nextLink 均已配置；rqwb toc 无分页、cunshu toc 无分页 ← 两个缺口
+- 【引擎审计】fetchPaginated 三模式（nextLink/template/select）+ jsPages 消费路径正确，缺口纯在规则配置
+- 【取证·rqwb】本机 IP 被间歇性 403（探测触发限频）→ 改用 page_reader 远程取证：《天命所归》select 下拉含「1-100章/101-200章」两页（书实际 114 章，HTTP 只见 100）；下游验证 ?p=2 服务端无视参数（raw min=1 全量）→ 目录第 2 页为 JS/AJAX 动态加载（下一页 href=javascript:;）
+- 【取证·cunshu】page_reader 探最大书（696 章）：696 chips 单页完整、无分页痕迹 → 无需修复（后实测 403 解除）
+- 【引擎增强①】PaginationConfig 新增 pageParam：select 模式 option value 为纯页码时按「当前页?page=N」构造分页地址（buildPageParamUrl，页码 1 跳过、URL 去重兜底）；mock 双夹具验证：真分页 8 章/2 页合并全量 ✓、无视参数 raw20-dup10=唯一10 ✓
+- 【引擎增强②】collectJsPages 原生 <select> 支持：收起 option 无法 force click，改为 selectedIndex 定位 + input/change 事件派发；PlaywrightElement 接口补 evaluate 签名；mock /rqtocjs JS 动态夹具端到端验证 13 raw→去重后 8 章（首屏 5 + AJAX 追加 3）✓
+- 【规则修复】rqwb toc 先配 select+pageParam（服务端无视参数，仅去重吸收零副作用）→ 实证 AJAX 加载后切换 jsPages（itemsSelector=.chapter_page select option + skipFirst + maxPages10）
+- 【实战胜果】rqwb 增量任务：《天命所归》目录 100→114 章（+14 章正文同步入库），其余 ≤100 章书不受影响
+- 【Bug 修复 A】pipeline totalChapters 缩水：增量模式下解析残缺（100<208）时 totalChapters 被写成解析数 → 改为对账后 db.chapter.count 真实行数；latestChapter 增加「解析数<既有数」局部解析守卫（残缺目录末章不再倒退覆盖最新章节）
+- 【观测增强】新增部分解析 warn 日志（解析条目<既有章节数时提示翻页未完整/站点截断，保留既有章节）
+- 【实盘排查】《高考刚结束》连续两轮 3 快照同 100 章（站点侧对该书 2/3 页重复内容；其他多页书正常）→ 数据 208 章保全 + warn 可观测；修复后复核 totalChapters=208=actual ✓
+- 【增量采集】4 任务跑全部在库 31 本：kelexs 9 本（+1 章/+96 篇正文）、rqwb 5 本（+14 章/+14 篇）、cunshu 15 本（+242 章/+505 篇正文）、mock 2 本（回归 0 新增）——合计 +243 章/+615 篇正文/0 错误
+- 【验证】tsc 0 错误、lint 0 错误、dev.log 无错误、前台 E2E 渲染正常
+
+Stage Summary:
+- 目录分页体系闭环：5 源站 toc 分页配置全覆盖（kelexs jsPages / rqwb jsPages原生下拉 / biqutu select / mock nextLink / cunshu 单页无需）；引擎新增 pageParam 查询参数分页 + 原生 select 翻页两个通用能力
+- rqwb《天命所归》从长期 100 章修复到 114 章全量；cunshu 书籍连载追更 +242 章；管线 totalChapters/latestChapter 数据一致性加固 + 部分解析可观测性

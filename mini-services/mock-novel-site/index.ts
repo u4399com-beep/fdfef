@@ -109,6 +109,65 @@ function listPage(page: number): string {
 <body><ul class="book-list">${items}</ul>${next}</body></html>`
 }
 
+/**
+ * rqwb 家族式目录夹具：select 下拉页码（option value 为纯页码）+ ?page=N 查询参数。
+ * book 2（10章）：服务端无视 page 参数总返全量目录 —— 验证重叠页被 URL 去重吸收；
+ * book 3（8章）：服务端按 page 参数真分页（每页 5 章）—— 验证多页合并全量。
+ */
+function rqTocPage(b: MockBook, page: number, fullList: boolean): string {
+  const per = 5
+  const totalPages = Math.ceil(b.chapters / per)
+  const from = fullList ? 1 : (page - 1) * per + 1
+  const to = fullList ? b.chapters : Math.min(page * per, b.chapters)
+  const items = Array.from({ length: to - from + 1 }, (_, i) => {
+    const n = from + i
+    return `<dd><a href="/chapter/${b.id}/${n}.html">${chapterTitle(b, n)}</a></dd>`
+  }).join('\n')
+  const opts = Array.from({ length: totalPages }, (_, i) => {
+    const p = i + 1
+    const label = `${(p - 1) * per + 1}-${Math.min(p * per, b.chapters)}章`
+    return `<option value="${p}">${label}</option>`
+  }).join('')
+  return `<!DOCTYPE html><html><head><meta charset="utf-8"><title>${b.title} 目录</title></head>
+<body><h1>${b.title} 正文卷</h1><div id="list">${items}</div>
+<div class="page2 font12"><span class="selectW chapter_page"><select class="select">${opts}</select></span>
+<a class="next" href="javascript:;">下一页</a></div></body></html>`
+}
+
+/**
+ * rqwb 式 JS 动态目录夹具：原生 <select> + change 监听 AJAX 式追加后续页章节（URL 不变）。
+ * 验证 jsPages 原生下拉支持（selectedIndex+change 派发）能捕获动态拼接的全量目录。
+ */
+function rqTocJsPage(b: MockBook): string {
+  const per = 5
+  const firstPage = Array.from({ length: Math.min(per, b.chapters) }, (_, i) => {
+    const n = i + 1
+    return `<dd><a href="/chapter/${b.id}/${n}.html">${chapterTitle(b, n)}</a></dd>`
+  }).join('\n')
+  const totalPages = Math.ceil(b.chapters / per)
+  const opts = Array.from({ length: totalPages }, (_, i) => {
+    const p = i + 1
+    return `<option value="${p}">${(p - 1) * per + 1}-${Math.min(p * per, b.chapters)}章</option>`
+  }).join('')
+  return `<!DOCTYPE html><html><head><meta charset="utf-8"><title>${b.title} 目录JS</title></head>
+<body><h1>${b.title} 正文卷</h1><div id="list">${firstPage}</div>
+<div class="page2 font12"><span class="selectW chapter_page"><select class="select" id="pagesel">${opts}</select></span></div>
+<script>
+document.getElementById('pagesel').addEventListener('change', function () {
+  var p = Number(this.value)
+  if (p < 2) return
+  var list = document.getElementById('list')
+  var from = (p - 1) * ${per} + 1
+  var to = Math.min(p * ${per}, ${b.chapters})
+  for (var n = from; n <= to; n++) {
+    var dd = document.createElement('dd')
+    dd.innerHTML = '<a href="/chapter/${b.id}/' + n + '.html">第' + n + '章 ${b.title}风云突变</a>'
+    list.appendChild(dd)
+  }
+})
+</script></body></html>`
+}
+
 Bun.serve({
   port: PORT,
   fetch(req) {
@@ -123,6 +182,8 @@ Bun.serve({
     const m5 = /^\/chapter\/(\d+)\/(\d+)_2\.html$/.exec(p)
     const m6 = /^\/chapter\/(\d+)\/(\d+)\.html$/.exec(p)
     const m7 = /^\/list\/(\d+)\.html$/.exec(p)
+    const m8 = /^\/rqtoc\/(\d+)\.html$/.exec(p)
+    const m9 = /^\/rqtocjs\/(\d+)\.html$/.exec(p)
     if (m1) {
       const b = BOOKS.find((x) => x.id === Number(m1[1]))
       body = b ? coverSvg(b) : 'x'
@@ -147,6 +208,13 @@ Bun.serve({
       body = b ? chapterPage(b, Number(m6[2]), 1) : 'x'
     } else if (m7) {
       body = listPage(Number(m7[1]))
+    } else if (m8) {
+      const b = BOOKS.find((x) => x.id === Number(m8[1]))
+      const page = Math.max(1, Number(url.searchParams.get('page') ?? '1'))
+      body = b ? rqTocPage(b, page, b.id === 2) : 'x'
+    } else if (m9) {
+      const b = BOOKS.find((x) => x.id === Number(m9[1]))
+      body = b ? rqTocJsPage(b) : 'x'
     } else if (p === '/') {
       body = '<html><head><meta charset="utf-8"><title>模拟小说站</title></head><body><a href="/list/1.html">进入书库</a></body></html>'
     }

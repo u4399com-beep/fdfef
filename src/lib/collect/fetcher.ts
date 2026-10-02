@@ -1347,7 +1347,20 @@ async function collectJsPages(
       const items = await page.$$(js.itemsSelector)
       if (i >= items.length) break
       try {
-        await items[i].click({ timeout: CLICK_TIMEOUT, force: true })
+        // 原生 <select><option> 分页：收起的 option 无法被 force click 选中（Chromium 不派发变更），
+        // 改为 selectedIndex 定位后派发 input+change（AJAX 翻页站点标准事件接线）
+        const isOption = await items[i].evaluate((el) => (el as HTMLElement).tagName === 'OPTION').catch(() => false)
+        if (isOption) {
+          await items[i].evaluate((el) => {
+            const sel = (el as HTMLElement).closest('select')
+            if (!sel) return
+            sel.selectedIndex = (el as HTMLOptionElement).index
+            sel.dispatchEvent(new Event('input', { bubbles: true }))
+            sel.dispatchEvent(new Event('change', { bubbles: true }))
+          })
+        } else {
+          await items[i].click({ timeout: CLICK_TIMEOUT, force: true })
+        }
         await page.waitForTimeout(wait)
         await page.waitForLoadState('domcontentloaded', { timeout: 5000 }).catch(() => undefined)
         snapshots.push(await page.content())
@@ -1466,6 +1479,8 @@ interface PlaywrightElement {
   screenshot: (opts?: Record<string, unknown>) => Promise<string | Buffer>
   fill: (v: string) => Promise<void>
   click: (opts?: Record<string, unknown>) => Promise<void>
+  /** 页面上下文内求值（ElementHandle.evaluate）：jsPages 原生 <select> 翻页派发 change 事件用 */
+  evaluate: <T>(fn: (el: Element) => T) => Promise<T>
 }
 interface PlaywrightPage {
   goto: (url: string, o: Record<string, unknown>) => Promise<unknown>

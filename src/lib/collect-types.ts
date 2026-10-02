@@ -45,6 +45,13 @@ export interface PaginationConfig {
   mode: 'nextLink' | 'template' | 'select'
   nextLink?: FieldSelector // 下一页链接（select 模式下为 option value 选择器，配 multiple:true）
   urlTemplate?: string // 含 {page} 占位符
+  /**
+   * select 模式专用：option value 为纯页码数字（非地址）时的查询参数名。
+   * 配置后按 `<当前页URL>?<pageParam>=<N>` 构造各分页地址
+   * （如 rqwb 家族：option value="2" → /book/X.html?page=2）。
+   * 服务端若不按该参数分页而总返全量目录，多取页与首页重叠由 URL 去重自然吸收，无副作用。
+   */
+  pageParam?: string
   startPage?: number
   endPage?: number
   maxPages?: number // 安全上限
