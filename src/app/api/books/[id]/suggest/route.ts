@@ -16,7 +16,8 @@ export async function POST(_req: NextRequest, { params }: RouteCtx<{ id: string 
   const results = await fetchSuggestKeywords(book.title)
   const merged = mergeSuggestKeywords(results, book.title)
   const existing = book.suggestKeywords.split(',').filter(Boolean)
-  const combined = [...new Set([...existing, ...merged])]
+  // 封顶防重复触发的无限增长（单轮 mergeSuggestKeywords 上限 30）
+  const combined = [...new Set([...existing, ...merged])].slice(0, 40)
 
   await db.book.update({ where: { id }, data: { suggestKeywords: combined.join(',') } })
   return json({

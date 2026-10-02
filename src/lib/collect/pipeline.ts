@@ -447,7 +447,8 @@ export async function executeTask(taskId: string): Promise<void> {
               if (info.latestChapter) updateData.latestChapter = info.latestChapter
               if (info.suggestKeywords) {
                 const merged = [...new Set([...existing.suggestKeywords.split(',').filter(Boolean), ...info.suggestKeywords.split(',').filter(Boolean)])]
-                updateData.suggestKeywords = merged.join(',')
+                // 封顶防跨轮无限增长（单轮 fetchSuggest 上限 30，跨轮合并同样要有界）
+                updateData.suggestKeywords = merged.slice(0, 40).join(',')
               }
             }
             await db.book.update({ where: { id: existing.id }, data: updateData })
@@ -524,23 +525,46 @@ export async function executeTask(taskId: string): Promise<void> {
             where: { bookId },
             select: { id: true, url: true, title: true, order: true, contentLocal: true },
           })
-          const byUrl = new Map(existingChapters.map((c) => [c.url, c]))
+          // DB 比对与内存去重同用归一化键（hash/默认端口/尾斜杠）：
+          // 站点 URL 格式漂移时不再重复建章（增量）或全量删+重建（全量）
+          const byUrl = new Map(existingChapters.map((c) => [normalizeTocUrlKey(c.url), c]))
           let order = 0
           const toCreate: { bookId: string; title: string; order: number; url: string }[] = []
           const toUpdate: { id: string; title: string; order: number }[] = []
+          const urlHeals: { id: string; url: string }[] = []
           for (const entry of toc.entries) {
             order++
             const urlKey = entry.url || `local:${hashText(entry.title)}`
-            const ex = byUrl.get(urlKey)
+            const ex = byUrl.get(entry.url ? normalizeTocUrlKey(entry.url) : urlKey)
             if (ex) {
               if (ex.title !== entry.title || ex.order !== order) {
                 toUpdate.push({ id: ex.id, title: entry.title, order })
+              }
+              // URL 治愈：同一章（归一化同键）源地址格式漂移时回写最新地址，后续正文采集直达新址
+              if (entry.url && ex.url !== entry.url) {
+                urlHeals.push({ id: ex.id, url: entry.url })
               }
               stats.chapters++
             } else {
               toCreate.push({ bookId, title: entry.title, order, url: urlKey })
               stats.chapters++
               stats.chaptersNew++
+            }
+          }
+          // 全量重采清理失效章节（先于建/改执行，缩小唯一约束冲突窗口）：
+          // 源目录已不再列出的旧章节（连同其 txt 文件）一并移除，
+          // 否则残留旧 order 与新目录序号冲突（目录/上下章导航错乱）、totalChapters 与实际行数漂移。
+          // 防御目录瞬时残缺（反爬半页/选择器失配）：仅当本次目录条目数 ≥ 现有章节数才清理，
+          // 目录变少（解析残缺）一律保留旧章节不动
+          if (task.mode === 'full' && toc.entries.length >= existingChapters.length) {
+            const freshKeys = new Set(toc.entries.map((e) => (e.url ? normalizeTocUrlKey(e.url) : `local:${hashText(e.title)}`)))
+            const stale = existingChapters.filter((c) => !freshKeys.has(normalizeTocUrlKey(c.url)))
+            if (stale.length > 0) {
+              for (let i = 0; i < stale.length; i += 500) {
+                await db.chapter.deleteMany({ where: { id: { in: stale.slice(i, i + 500).map((c) => c.id) } } })
+              }
+              await Promise.all(stale.map((c) => (c.contentLocal ? removeChapterTxt(c.contentLocal) : undefined)))
+              await taskLog(taskId, 'info', `《${info.title}》全量重采清理失效章节 ${stale.length} 条（源目录已不列出）`)
             }
           }
           if (toCreate.length > 0) {
@@ -572,19 +596,23 @@ export async function executeTask(taskId: string): Promise<void> {
               )
             )
           }
-          // 全量重采清理失效章节：源目录已不再列出的旧章节（连同其 txt 文件）一并移除，
-          // 否则残留旧 order 与新目录序号冲突（目录/上下章导航错乱）、totalChapters 与实际行数漂移。
-          // 防御目录瞬时残缺（反爬半页/选择器失配）：仅当本次目录条目数 ≥ 现有章节数才清理，
-          // 目录变少（解析残缺）一律保留旧章节不动
-          if (task.mode === 'full' && toc.entries.length >= existingChapters.length) {
-            const freshKeys = new Set(toc.entries.map((e) => e.url || `local:${hashText(e.title)}`))
-            const stale = existingChapters.filter((c) => !freshKeys.has(c.url))
-            if (stale.length > 0) {
-              for (let i = 0; i < stale.length; i += 500) {
-                await db.chapter.deleteMany({ where: { id: { in: stale.slice(i, i + 500).map((c) => c.id) } } })
+          // URL 治愈批量提交：目标地址与既有他行冲突（legacy 重复行）时整块回退逐条跳过
+          for (let i = 0; i < urlHeals.length; i += 500) {
+            const chunk = urlHeals.slice(i, i + 500)
+            try {
+              await db.$transaction(chunk.map((h) => db.chapter.update({ where: { id: h.id }, data: { url: h.url } })))
+            } catch (e) {
+              if (e instanceof Prisma.PrismaClientKnownRequestError && e.code === 'P2002') {
+                for (const h of chunk) {
+                  try {
+                    await db.chapter.update({ where: { id: h.id }, data: { url: h.url } })
+                  } catch {
+                    /* 治愈目标与他行 URL 冲突：跳过该章 */
+                  }
+                }
+              } else {
+                throw e
               }
-              await Promise.all(stale.map((c) => (c.contentLocal ? removeChapterTxt(c.contentLocal) : undefined)))
-              await taskLog(taskId, 'info', `《${info.title}》全量重采清理失效章节 ${stale.length} 条（源目录已不列出）`)
             }
           }
           await db.book.update({
@@ -606,7 +634,7 @@ export async function executeTask(taskId: string): Promise<void> {
           const chapters = await db.chapter.findMany({
             where: { bookId },
             orderBy: { order: 'asc' },
-            select: { id: true, url: true, title: true, order: true, collected: true },
+            select: { id: true, url: true, title: true, order: true, collected: true, contentLocal: true },
           })
           // local: 章节无源地址，抓取必然失败；排除以免每轮全量/重采都刷一遍错误
           const todo = (task.mode === 'full' ? chapters : chapters.filter((c) => !c.collected)).filter(
@@ -648,12 +676,21 @@ export async function executeTask(taskId: string): Promise<void> {
                 }
                 if (task.storageMode === 'db' || task.storageMode === 'both') data.content = text
                 if (task.storageMode === 'txt' || task.storageMode === 'both') {
-                  data.contentLocal = await saveChapterTxt(info.title, {
+                  const newRel = await saveChapterTxt(info.title, {
                     title: chapter.title,
                     order: chapter.order,
                     content: text,
                   })
+                  // 重采后文件名（order/标题）变化时移除旧 txt，防孤儿文件随轮次累积
+                  if (chapter.contentLocal && chapter.contentLocal !== newRel) {
+                    await removeChapterTxt(chapter.contentLocal)
+                  }
+                  data.contentLocal = newRel
                   if (task.storageMode === 'txt') data.content = ''
+                } else if (chapter.contentLocal) {
+                  // 存储切换为 db：旧 txt 文件与指针一并清除
+                  await removeChapterTxt(chapter.contentLocal)
+                  data.contentLocal = ''
                 }
                 await db.chapter.update({ where: { id: chapter.id }, data })
                 stats.contents++

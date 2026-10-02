@@ -878,3 +878,28 @@ Stage Summary:
 - preview 数据源深审确认健壮（已知取舍 2 项记录在案）
 - 在库 20 条规则 5 站 × 四链路实盘回归全部通过（乱序重排/去重/WAF cookie 复用/正文清洗全链路在位）
 - R12 遗留 covers/cover.ts/system-config.ts 仅文件权限位差异，无内容变化
+
+---
+Task ID: R14
+Agent: orchestrator (Z.ai Code)
+Task: R14轮——pipeline.ts 全文逐行深审 + storage.ts/下载链路深审 + 规则回归抽查 + 集成推送
+
+Work Log:
+- 【恢复】确认 R13 已提交（31a4d51）、dev(3000)/mock(3031) 健康；未提交项仅数据文件（小说 txt/封面）。盘点未深审模块：pipeline.ts（730 行采集主管线，从未全文深审）、storage.ts（89 行，从未深审）、下载消费链路、/api/stats
+- 【深审·pipeline.ts 全文逐行】线程池收尾/epoch 代际/停止哨兵/writeStats 竞态/批量比对写入/P2002 兜底逐项复核——发现 2 个真实 bug + 1 处无界增长：
+  - Bug① txt 孤儿文件：正文重采时 saveChapterTxt 新文件名（order/标题变化→文件名变化）直接覆盖 contentLocal，旧文件永不删除；且内容阶段 select 未取 contentLocal，旧文件无从清理。千章书全量重采可留上千孤儿
+  - Bug② 目录 URL 归一化不一致：内存去重用 normalizeTocUrlKey（hash/默认端口/尾斜杠），对 DB 既有章节的比对（byUrl/freshKeys）却用原始 URL——站点 URL 格式漂移时增量模式重复建章、全量模式全量删+重建大churn
+  - Bug③ suggestKeywords 跨轮合并无上限（单轮 fetchSuggest 上限 30，跨轮 Set 合并无界）
+- 【修复①】内容阶段 select 补 contentLocal：txt/both 模式重采后文件名变化即移除旧 txt；db 模式清除旧 txt 文件+指针（存储切换彻底化）
+- 【修复②】DB 比对与清理全链路同用 normalizeTocUrlKey：byUrl/freshKeys/stale 判定归一化；新增 urlHeals（同一章归一化同键但源地址漂移→回写最新 URL，批量事务+P2002 逐条跳过兜底）；失效章节清理先于建/改执行（缩小唯一约束冲突窗口）
+- 【修复③】管线 suggestKeywords 合并 slice(0,40) 封顶；suggest 路由 POST 同步封顶
+- 【假警报排除】/api/stats 的 SUM(wordCount) 内层 LIMIT/OFFSET 为 Prisma SQLite 聚合实现细节——实测 API 11,464,147 与 raw SQL 全表 SUM 完全一致，非 bug
+- 【其余巡检】storage.ts 全文（safeFileName Windows 保留名/截断二次收尾、readChapterTxt 路径越界守卫、封面 20MB 拒转、hashText）确认健壮；download-builder txt 兜底读取在位；books/[id]/chapters/suggest/covers 路由巡检无恙
+- 【探针实证（mock 站真实任务三轮）】Run1 txt 基线 12 章/12 文件 ✓ → 注入漂移（URL 全加尾斜杠+文件改名 drift-*）→ Run2 全量重采：chaptersNew=0、章节 id 逐条稳定（治愈不重建）、尾斜杠残留 0、drift 孤儿 0 ✓ → Run3 存储切换 txt→db：content 全量入库、contentLocal 清零、磁盘 0 文件 ✓；探针首跑曾报「1 章 id 漂移」，定位为探针自身把斜杠追加进 query 串（?dup=0 夹具）的人为偏差——normalizeTocUrlKey 不动 query 属正确语义，修正探针后全绿；探针与临时书/任务用后即删零残留
+- 【在库规则稳定性回归·2 站四链路】kelexs：list 20（http 策略）→《高考刚结束，结果你手撕异神？》→ toc 100 章 → 正文 2986 字/2 页 ✓；biqutu：list 60 →《女巫别怕！玩家来救你了》→ toc 253 章（去重 49、乱序检测在位）→ 正文 2075 字/3 页 ✓
+- 【验证】bunx tsc 0 错误、bun run lint 0 错误、dev.log 无错误；Agent Browser E2E：后台仪表盘/书籍管理（封面补全+分类 chips）渲染 ✓、前台 UAA 蓝调书香阁渲染 ✓、console/page errors 0
+- 【集成】worklog 追加 + git commit + push
+
+Stage Summary:
+- 采集主管线（前 13 轮唯一未全文深审的核心模块）深审收官：修复 3 类（txt 孤儿文件根治、目录 URL 归一化比对一致化+URL 治愈、suggest 无界封顶），全部经 mock 站真实任务三轮探针实证；/api/stats 假警报排除；kelexs/biqutu 四链路回归全通
+- 至此引擎 13 模块全部完成逐行深审（fetcher/parser/cleaner/matcher/suggest/download-builder/collect-types/task-manager/paginated/preview/pipeline/storage/testing）
