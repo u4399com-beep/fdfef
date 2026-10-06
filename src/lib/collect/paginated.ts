@@ -133,11 +133,13 @@ function pageBase(url: string): string {
 /**
  * 抓取并清洗章节正文（内容页分页合并 + 广告清洗）。
  * 采集管线与规则测试引擎共用此实现，避免双份逻辑漂移。
+ * context（书名/章节标题）透传给清洗器用于章首结构性垃圾识别。
  */
 export async function fetchCleanedContent(
   startUrl: string,
   rule: ContentRuleConfig,
-  cleaningCfg: CleaningConfig
+  cleaningCfg: CleaningConfig,
+  context: { bookTitle?: string; chapterTitle?: string } = {}
 ): Promise<{ text: string; pages: number }> {
   const parts: string[] = []
   const pagination = rule.pagination
@@ -153,7 +155,7 @@ export async function fetchCleanedContent(
     visited.add(res.finalUrl)
     const rawHtml = parseContentHtml(res.html, rule.content)
     if (rawHtml) {
-      const cleaned = cleanContent(rawHtml, cleaningCfg, rule.extraAdPatterns ?? [])
+      const cleaned = cleanContent(rawHtml, cleaningCfg, rule.extraAdPatterns ?? [], context)
       parts.push(cleaned.text)
     }
     if (!pagination?.enabled || !pagination.nextLink?.expr) break

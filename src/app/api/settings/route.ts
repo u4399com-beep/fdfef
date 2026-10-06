@@ -1,26 +1,23 @@
 import { NextRequest } from 'next/server'
 import { db } from '@/lib/db'
-import { DEFAULT_CLEANING, DEFAULT_DOWNLOAD } from '@/lib/collect-types'
+import { DEFAULT_DOWNLOAD, mergeCleaning } from '@/lib/collect-types'
 import { json, badRequest, isPlainObject, readJson } from '../_lib/http'
 import { requireAuth } from '@/lib/auth'
 
 export const runtime = 'nodejs'
 export const dynamic = 'force-dynamic'
 
-/** 读取系统配置（清洗规则 + 下载注入） */
+/** 读取系统配置（清洗规则 + 下载注入）。清洗配置经 mergeCleaning 收敛：
+ * 存量库中旧版配置缺新增字段（如启发式开关）时补默认值，UI 开关不会收到 undefined */
 export async function GET(req: NextRequest) {
   const denied = requireAuth(req)
   if (denied) return denied
   const row = await db.systemConfig.findUnique({ where: { id: 'main' } })
-  let cleaning = { ...DEFAULT_CLEANING }
   let download = { ...DEFAULT_DOWNLOAD }
-  try {
-    if (row?.cleaning) cleaning = { ...cleaning, ...JSON.parse(row.cleaning) }
-  } catch { /* keep defaults */ }
   try {
     if (row?.download) download = { ...download, ...JSON.parse(row.download) }
   } catch { /* keep defaults */ }
-  return json({ cleaning, download })
+  return json({ cleaning: mergeCleaning(row?.cleaning), download })
 }
 
 /** 保存系统配置 */

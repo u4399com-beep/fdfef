@@ -702,7 +702,11 @@ export async function executeTask(taskId: string): Promise<void> {
             intervalMax: task.intervalMax,
             process: async (chapter) => {
               try {
-                const { text } = await fetchCleanedContent(chapter.url, contentCfg, cleaningCfg)
+                // 书名/章节标题透传清洗器：章首混入的书名行/标题行冗余（Chapter.title 已存）可被识别清除
+                const { text } = await fetchCleanedContent(chapter.url, contentCfg, cleaningCfg, {
+                  bookTitle: info.title,
+                  chapterTitle: chapter.title,
+                })
                 if (!text) {
                   await taskLog(taskId, 'warn', `正文为空《${info.title}》${chapter.title}`)
                   stats.errors++

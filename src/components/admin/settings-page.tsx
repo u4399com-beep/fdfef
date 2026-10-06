@@ -29,6 +29,10 @@ interface CleaningCfg {
   decodeEntities: boolean
   normalizeParagraphs: boolean
   minParagraphLength: number
+  stripInlineUrls: boolean
+  removeHeaderJunk: boolean
+  removePromoRepeats: boolean
+  stripInvisibleChars: boolean
 }
 
 interface DownloadCfg {
@@ -119,11 +123,32 @@ export function SettingsPage() {
     if (!cleaning || !testHtml.trim()) return
     setTesting(true)
     try {
-      const r = await api<{ text: string; wordCount: number; removedLines: number }>('/api/clean-test', {
+      const r = await api<{
+        text: string
+        wordCount: number
+        removedLines: number
+        stats?: Record<string, number>
+        removedSamples?: string[]
+      }>('/api/clean-test', {
         method: 'POST',
         body: JSON.stringify({ html: testHtml, cleaning: compactCleaning(cleaning) }),
       })
-      setTestOut(r.text || '（清洗后为空）')
+      // 输出清洗后正文 + 各机制移除统计 + 被移除行样本（便于确认误杀率）
+      const parts: string[] = [r.text || '（清洗后为空）']
+      if (r.stats && Object.values(r.stats).some((n) => n > 0)) {
+        const label: Record<string, string> = {
+          adPattern: '广告正则', inlineUrl: '行内URL剥离', headerJunk: '章首垃圾',
+          promoRepeat: '重复推广行', punctuation: '纯符号行', tooShort: '过短段落', invisibleChars: '不可见字符数',
+        }
+        parts.push(
+          '\n—— 移除统计 ——\n' +
+            Object.entries(r.stats).filter(([, n]) => n > 0).map(([k, n]) => `${label[k] ?? k}: ${n}`).join('，')
+        )
+      }
+      if (r.removedSamples?.length) {
+        parts.push('\n—— 移除样本 ——\n' + r.removedSamples.map((s, i) => `${i + 1}. ${s}`).join('\n'))
+      }
+      setTestOut(parts.join('\n'))
       toast({ title: `清洗完成：${r.wordCount} 字，移除 ${r.removedLines} 行` })
     } catch (e) {
       toast({ title: '测试失败', description: e instanceof Error ? e.message : String(e), variant: 'destructive' })
@@ -167,6 +192,34 @@ export function SettingsPage() {
               </div>
               <Switch checked={cleaning.normalizeParagraphs} onCheckedChange={(v) => setCleaning({ ...cleaning, normalizeParagraphs: v })} />
             </div>
+            <div className="flex items-center justify-between rounded-md border p-2.5">
+              <div>
+                <p className="text-sm">行内链接剥离</p>
+                <p className="text-[11px] text-muted-foreground">正文中的 URL/短链/域名</p>
+              </div>
+              <Switch checked={cleaning.stripInlineUrls} onCheckedChange={(v) => setCleaning({ ...cleaning, stripInlineUrls: v })} />
+            </div>
+            <div className="flex items-center justify-between rounded-md border p-2.5">
+              <div>
+                <p className="text-sm">章首垃圾识别</p>
+                <p className="text-[11px] text-muted-foreground">书名/作者/简介/纯序号行</p>
+              </div>
+              <Switch checked={cleaning.removeHeaderJunk} onCheckedChange={(v) => setCleaning({ ...cleaning, removeHeaderJunk: v })} />
+            </div>
+            <div className="flex items-center justify-between rounded-md border p-2.5">
+              <div>
+                <p className="text-sm">重复推广行</p>
+                <p className="text-[11px] text-muted-foreground">同行重复≥2 且含群号/域名等</p>
+              </div>
+              <Switch checked={cleaning.removePromoRepeats} onCheckedChange={(v) => setCleaning({ ...cleaning, removePromoRepeats: v })} />
+            </div>
+            <div className="flex items-center justify-between rounded-md border p-2.5">
+              <div>
+                <p className="text-sm">不可见字符剥离</p>
+                <p className="text-[11px] text-muted-foreground">零宽字符/方向控制符/BOM</p>
+              </div>
+              <Switch checked={cleaning.stripInvisibleChars} onCheckedChange={(v) => setCleaning({ ...cleaning, stripInvisibleChars: v })} />
+            </div>
           </div>
           <div className="space-y-1.5">
             <Label className="text-xs">最短段落字数（0 = 不过滤）</Label>
@@ -185,7 +238,7 @@ export function SettingsPage() {
               </Button>
             </div>
             {testOut && (
-              <ScrollArea className="max-h-40 rounded-md border bg-muted/30 p-3">
+              <ScrollArea className="max-h-72 rounded-md border bg-muted/30 p-3">
                 <pre className="whitespace-pre-wrap text-xs leading-relaxed">{testOut}</pre>
               </ScrollArea>
             )}

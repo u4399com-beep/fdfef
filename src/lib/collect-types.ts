@@ -191,6 +191,14 @@ export const DEFAULT_CLEANING = {
   decodeEntities: true,
   normalizeParagraphs: true, // 合并空行、规范段落缩进
   minParagraphLength: 0, // 过短段落过滤（0 = 不过滤）
+  /** 行内 URL/裸域名剥离：正文行中任何链接/域名 token 均视为推广（小说正文不含合法链接） */
+  stripInlineUrls: true,
+  /** 章首结构性垃圾：内容选择器范围过大时混入的书名/作者行/「简介：」/纯序号标题行 */
+  removeHeaderJunk: true,
+  /** 章内重复推广行：同一行（规范化后）重复≥2 次且含群号/域名/推广强特征词 */
+  removePromoRepeats: true,
+  /** 不可见字符剥离：零宽字符/方向控制符/BOM（反爬水印或复制垃圾，正文不可能合法出现） */
+  stripInvisibleChars: true,
 }
 
 export const DEFAULT_DOWNLOAD = {
@@ -259,6 +267,10 @@ export function mergeCleaning(raw?: string | null): CleaningConfig {
     decodeEntities: asBool(parsed.decodeEntities, DEFAULT_CLEANING.decodeEntities),
     normalizeParagraphs: asBool(parsed.normalizeParagraphs, DEFAULT_CLEANING.normalizeParagraphs),
     minParagraphLength: Math.max(0, asFiniteNumber(parsed.minParagraphLength, DEFAULT_CLEANING.minParagraphLength)),
+    stripInlineUrls: asBool(parsed.stripInlineUrls, DEFAULT_CLEANING.stripInlineUrls),
+    removeHeaderJunk: asBool(parsed.removeHeaderJunk, DEFAULT_CLEANING.removeHeaderJunk),
+    removePromoRepeats: asBool(parsed.removePromoRepeats, DEFAULT_CLEANING.removePromoRepeats),
+    stripInvisibleChars: asBool(parsed.stripInvisibleChars, DEFAULT_CLEANING.stripInvisibleChars),
   }
 }
 

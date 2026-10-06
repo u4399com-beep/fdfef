@@ -1100,3 +1100,23 @@ Stage Summary:
 - 部署服务器验证码突破两条路：全自动（配 CAPTCHA_VISION_* 三环境变量，推荐智谱免费 glm-4v-flash）或手动过码（1 分钟，cookie+固定 UA）；解题成功 cookie 自动持久化 storage/waf-cookies.json 复用
 - 与前两轮形成部署期故障完整闭环：launch 崩溃→中文修复指引；连接失败→四步排查指引；验证码→双通道识别+手动教程
 - 沙箱侧 kelexs 挑战页活跃（与用户同态），为后续解题链回归提供了真实靶场
+
+---
+Task ID: R19-clean-v2
+Agent: Z.ai Code (main)
+Task: 清洗系统增强——用户报告采集入库内容仍有噪声（QQ群推广/短链云盘/章首结构垃圾/混淆变形广告）
+
+Work Log:
+- 【噪声采样】抽查三本书实际入库文本定位噪声形态：①每日更新qq群+群号（重复行）②搜书神器/kdocs云盘/孤https://行 ③行尾粘连短链「…每日 推文 :https://9lnk.io/yeC9」（.io 不在旧 TLD 表）④章首结构性垃圾（第1段/书名行/作者行/简介：）⑤混淆变形广告（「备用qq群 八jiu三jiu…」「毁小说qq群灭伞其全人类」token 插入正文）
+- 【引擎重写】cleaner.ts 主循环重排：URL/裸域名剥离（INLINE_URL_RE + BARE_DOMAIN_RE，TLD 表扩 io/cn/app 等 27 项，前向后向断言防 xxx.company 误剥）提到广告正则之前（残壳话术由行尾模式兜底）；新增 CleanContext（bookTitle/chapterTitle 全等识别章首混入的书名/标题行）、HEADER_JUNK_RES（第N段/小说/简介：/作者：行/纯数字行，仅前 8 行）、promoRepeat（章级 freq 预统计：重复≥2+强特征词+行长≤60，防对话误杀）、stripInvisibleChars（零宽/方向控制/BOM）；CleanResult 增 stats 七项计数 + removedSamples（≤12 条移除样本）
+- 【内置噪声层】BUILTIN_NOISE_PATTERNS 独立于用户可编辑 adPatterns（存量部署 SystemConfig 整存旧版列表不会自动获得新模式，内置层保证升级即生效）；顺序敏感：整行话术→变形推广（前缀必选防正文合法「qq群」误吞）→兜底纯数字群号→残壳行（每日更新/孤协议）
+- 【上下文透传】fetchCleanedContent 加 context 参数，pipeline 传 info.title/chapter.title
+- 【配置面】DEFAULT_CLEANING 新增 4 开关（stripInlineUrls/removeHeaderJunk/removePromoRepeats/stripInvisibleChars）+ mergeCleaning 收敛；settings GET 改用 mergeCleaning（旧库存量配置补默认值）；设置页 6 开关网格 + 清洗测试输出移除统计/样本
+- 【验证】tests/test-cleaner-v2.ts 27 断言全绿（含幂等性/开关/防误杀/变形推广）；tsc 0 错误、lint 通过；clean-test API E2E + agent-browser 设置页 UI 实测（6 开关渲染/清洗测试统计样本展示/移动端布局）
+- 【存量收敛】tests/reclean-db.ts 升级：context 透传 + 循环收敛（章首垃圾前移暴露，最多 4 轮）+「去空白文本比较」判断回写（removedLines 不计部分剥离行，token 剥除形态漏回写——实测修复）；三轮全库共回写 1052 章，移除 2581+ 行；库内全文推广词扫描归零（GLOB 复扫确认无域名/工具/变形广告残留）
+- 【踩坑记录】①BUILTIN 模式顺序：qq群+群号先于整行话术执行会残剩「每日更新」行→调序+补残壳模式；②reclean 判据：部分剥离（行保留文本变短）removedLines=0→改文本比较；③GLOB LIKE 扫描有误报，最终以正则确认为准
+
+Stage Summary:
+- 清洗系统 v2 落地：6 层清洗管线（不可见字符→URL/裸域名剥离→广告正则三层→章首垃圾→重复推广行→段落规范）+ 统计/样本可审计
+- 三本书全部真实噪声形态清零且正文无损（防误杀测试覆盖对话重复/合法qq群提及/章首8行外作者行）
+- 已部署用户无需改配置即生效（内置噪声层）；存量 1052 章已全库再清洗
