@@ -518,6 +518,25 @@ export async function executeTask(taskId: string): Promise<void> {
               'info',
               `《${info.title}》目录 ${toc.entries.length} 章${toc.scrambled ? '（检测到乱序，已重排）' : ''}，去重移除 ${toc.dupRemoved} 条`
             )
+            // 目录截断守卫（与下方「部分解析告警」互补——那条依赖库内既有章节数，
+            // 首采/库内条目更少时不触发；本守卫用书籍页声明的最新章节做存在性校验，
+            // 卷组织站点（卷内重编号）与首采场景均覆盖）：
+            // 最新章节（空白归一+包含比对）不在目录条目中 → 翻页未生效/站点截断的强信号
+            const normTitle = (s: string) => s.replace(/\s+/g, '')
+            const latest = normTitle(info.latestChapter)
+            if (
+              latest &&
+              !toc.entries.some((e) => {
+                const t = normTitle(e.title)
+                return t === latest || t.includes(latest)
+              })
+            ) {
+              await taskLog(
+                taskId,
+                'warn',
+                `《${info.title}》目录疑似截断：站点最新章节「${info.latestChapter}」未出现在目录 ${toc.entries.length} 条中（翻页未生效或站点截断），请检查目录页分页设置`
+              )
+            }
           }
           // 批量比对写入：1 次读全量 + createMany 批量建 + 仅差量 update
           // （原逐条 findUnique+create/update 对千章书是 2400+ 次串行 DB 往返）

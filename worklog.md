@@ -992,3 +992,21 @@ Work Log:
 Stage Summary:
 - 目录分页体系闭环：5 源站 toc 分页配置全覆盖（kelexs jsPages / rqwb jsPages原生下拉 / biqutu select / mock nextLink / cunshu 单页无需）；引擎新增 pageParam 查询参数分页 + 原生 select 翻页两个通用能力
 - rqwb《天命所归》从长期 100 章修复到 114 章全量；cunshu 书籍连载追更 +242 章；管线 totalChapters/latestChapter 数据一致性加固 + 部分解析可观测性
+
+---
+Task ID: R14-merge
+Agent: orchestrator (Z.ai Code)
+Task: R14本地分叉整合——发现远程已含 R14-R18（含同名 R18 目录分页指令的完整落地），采纳远程为基线，回补本地独有增强后统一推送
+
+Work Log:
+- 【分叉发现】git push 被拒后发现远程 main 已领先 6 个提交（37b1a78 R14 / 590537e R15 / 3ae6dd3 R16 / bd5a4ee R17 / 91d8867 / e6a3853 R18）——上一会话摘要所述 R14-R17 工作实际已在远程落地（本地 checkout 落后未同步），且远程 R18 已用同思路完成「目录分页核查+增量采集」指令（rqwb jsPages 原生 select 支持+114 章全量恢复+31 本增量 +243 章/0 错误）
+- 【远程方案审读】①fetcher.ts:861 jsPages.enabled → 直升 Playwright（规则声明 JS 交互即视为 HTTP 不完整，简单直接，kelexs +1140 章/rqwb +114 章实绩验证）②collectJsPages OPTION 分支 selectedIndex+input+change 事件接线（AJAX 翻页站点标准）③pipeline 部分解析守卫（本次目录条目 < 库内章节数→告警+保留）④cover.ts keep 防回归+randomUA 双身份（与本地重新实现等价）⑤select 分页模式扩展 pageParam（纯数字页码→?page=N 构造）
+- 【整合动作】git reset --hard origin/main 采纳远程基线 → 从本地提交 b638e82 恢复 mock 三种验证页（/jstoc li锚点下拉、/qtoc ?page=N 查询参数、/ajaxtoc select change→AJAX 1:1 复刻 rqwb + 书4《万古神话路》18章）→ 回补本地独有增强①collectJsPages 锚点后代优先点击（li 类分页项 force-click 几何中心可能落在内部 <a> 之外致导航型控件快照重复首页——本轮 mock 实测 18 vs 6 的真实修复）→ 叠加互补守卫②pipeline 目录截断 membership 校验（站点最新章节不在目录条目中→告警；覆盖远程部分解析守卫的首采盲区：库内无既有章节时后者不触发）③Prisma client 重生成（AdminUser 模型）+ dev server 重启
+- 【合并后全回归】mock 三分页机制：nextLink 12 章 ✓、jstoc li 锚点 18 章 ✓（锚点增强在远程基线生效）、ajaxtoc select option→change 18 章 ✓；鉴权链路：/admin 登录墙 ✓、admin 登录→后台控制台 ✓、前台书香阁渲染+分类 chips 数据连通 ✓、console/page errors 0
+- 【运维实录】重启 dev server 时 pkill 误杀 mock 服务 → 引擎熔断器对 localhost:3031 正确触发（6 次失败→熔断 122s→半开复检恢复）——熔断机制首次实战验证；mock 重启后自动恢复
+- 验证：bunx tsc --noEmit 0 错误（Prisma generate 后）、bun run lint 0 错误、mock 三分页回归 3/3、E2E 登录墙+后台+前台全绿
+
+Stage Summary:
+- 仓库状态收敛：本地分叉与远程 R14-R18 合并完成，远程已验证的方案（jsPages 直升+OPTION 事件接线+部分解析守卫+cover keep）为基线，本地补入两项增量（锚点后代点击 + membership 截断守卫）形成互补全覆盖
+- 用户指令「目录分页核查修复+增量采集」由远程 R18 完成（rqwb 114 章全量恢复、31 本增量 +243 章/0 错误），本轮整合后基线更强：交互模型覆盖 li 锚点/select option/下一页链接三类，截断检测覆盖增量+首采两场景
+- 遗留：cunshu/kelexs 源站集群（140.188.128.0/24）对本机出口 IP 的 TCP 层封禁通常数小时内自行解除，解封后任务可直接复跑；admin 默认密码 admin123 建议登录后立即修改

@@ -1359,7 +1359,12 @@ async function collectJsPages(
             sel.dispatchEvent(new Event('change', { bubbles: true }))
           })
         } else {
-          await items[i].click({ timeout: CLICK_TIMEOUT, force: true })
+          // 锚点后代优先：li 类分页项 force-click 命中的是几何中心，可能落在内部 <a> 之外
+          // （导航型控件点击无效，快照重复首页）；点击 <a> 既触发导航，事件又冒泡到
+          // li 自身的 JS 处理器（JS 渲染型站点）——两类交互模型都覆盖
+          const anchor = await items[i].$('a').catch(() => null)
+          const target = anchor ?? items[i]
+          await target.click({ timeout: CLICK_TIMEOUT, force: true })
         }
         await page.waitForTimeout(wait)
         await page.waitForLoadState('domcontentloaded', { timeout: 5000 }).catch(() => undefined)
