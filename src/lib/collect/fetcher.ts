@@ -1433,8 +1433,74 @@ async function collectJsPages(
   return snapshots.length > 1 ? snapshots.join('<!--JSPAGE-->') : firstPageHtml
 }
 
-/** VLM 识别验证码图片，返回识别出的字符 */
-async function recognizeCaptcha(pngBuffer: Buffer): Promise<string> {
+/** 验证码识别提示词（两通道共用） */
+const CAPTCHA_PROMPT =
+  '图片中是一个网站验证码。请准确识别其中的全部字符（可能包含数字与英文字母，注意区分大小写与易混字符如 0/O、1/l/I、6/b、8/B）。只输出识别出的验证码字符本身，不要任何解释、标点或空格。'
+
+/** 自定义视觉识别 API 配置（OpenAI 兼容；三个环境变量齐全才启用该通道） */
+interface VisionApiConf {
+  baseUrl: string
+  apiKey: string
+  model: string
+}
+
+function getCustomVisionConf(): VisionApiConf | null {
+  const baseUrl = process.env.CAPTCHA_VISION_API_BASE?.trim()
+  const apiKey = process.env.CAPTCHA_VISION_API_KEY?.trim()
+  const model = process.env.CAPTCHA_VISION_MODEL?.trim()
+  if (!baseUrl || !apiKey || !model) return null
+  return { baseUrl: baseUrl.replace(/\/+$/, ''), apiKey, model }
+}
+
+/**
+ * OpenAI 兼容视觉识别（自定义通道）：兼容 OpenAI / 智谱 GLM-4V / 本地 Ollama(llava,qwen2-vl) 等
+ * 任何实现 POST {base}/chat/completions 且支持 image_url 消息的服务端。
+ */
+async function recognizeViaCustomApi(pngBase64: string, conf: VisionApiConf): Promise<string> {
+  const res = await fetch(`${conf.baseUrl}/chat/completions`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json', authorization: `Bearer ${conf.apiKey}` },
+    body: JSON.stringify({
+      model: conf.model,
+      messages: [
+        {
+          role: 'user',
+          content: [
+            { type: 'text', text: CAPTCHA_PROMPT },
+            { type: 'image_url', image_url: { url: `data:image/png;base64,${pngBase64}` } },
+          ],
+        },
+      ],
+      max_tokens: 32,
+      temperature: 0,
+    }),
+    signal: AbortSignal.timeout(25_000),
+  })
+  if (!res.ok) {
+    const t = await res.text().catch(() => '')
+    throw new Error(`HTTP ${res.status}: ${t.slice(0, 120)}`)
+  }
+  const data = (await res.json()) as { choices?: { message?: { content?: string } }[] }
+  return (data.choices?.[0]?.message?.content ?? '').replace(/[^a-zA-Z0-9]/g, '').slice(0, 8)
+}
+
+/** 识别不可用时的中文解决指引（前置动作，日志截断仍可见） */
+const CAPTCHA_MANUAL_GUIDE =
+  '验证码自动识别不可用。解决方式——' +
+  '①(全自动·推荐) 配置任意 OpenAI 兼容视觉 API 并重启服务: CAPTCHA_VISION_API_BASE(如 https://open.bigmodel.cn/api/paas/v4) + CAPTCHA_VISION_API_KEY + CAPTCHA_VISION_MODEL(如 glm-4v-flash 免费); ' +
+  '②(手动·1分钟) 本机浏览器打开目标站完成验证码 → F12 应用/网络面板复制 Cookie(如 ge_wc_20=...) → 粘贴到规则「Cookie」字段并关闭「UA 随机轮换」(通行cookie与UA绑定, 需同浏览器UA)'
+
+/**
+ * VLM 识别验证码图片，返回识别出的字符。
+ * 双通道降级：z-ai 平台 SDK（沙箱/平台内可用）→ 自定义 OpenAI 兼容视觉 API
+ * （CAPTCHA_VISION_* 环境变量，部署服务器无平台凭证时的自动化方案）。
+ * 两通道均不可用/失败时抛出带手动过码教程的错误。
+ */
+export async function recognizeCaptcha(pngBuffer: Buffer): Promise<string> {
+  const base64 = pngBuffer.toString('base64')
+  const errors: string[] = []
+
+  // 通道 1：z-ai 平台 SDK
   const spec = 'z-ai-web-dev-sdk'
   const mod = (await import(/* webpackIgnore: true */ spec).catch(() => null)) as {
     default: {
@@ -1449,47 +1515,66 @@ async function recognizeCaptcha(pngBuffer: Buffer): Promise<string> {
       }>
     }
   } | null
-  if (!mod) throw new Error('z-ai-web-dev-sdk 不可用，无法自动识别验证码')
-  const zai = await mod.default.create()
-  const base64 = pngBuffer.toString('base64')
-  // VLM 调用带 25s 超时保护，避免网络异常时请求挂起；竞速结束后必须清定时器，
-  // 否则成功路径下事件循环被无用的 25s 定时器拖住
-  let vlmTimer: ReturnType<typeof setTimeout> | undefined
-  try {
-    const response = await Promise.race([
-      zai.chat.completions.createVision({
-        messages: [
-          {
-            role: 'user',
-            content: [
-              {
-                type: 'text',
-                text: '图片中是一个网站验证码。请准确识别其中的全部字符（可能包含数字与英文字母，注意区分大小写与易混字符如 0/O、1/l/I、6/b、8/B）。只输出识别出的验证码字符本身，不要任何解释、标点或空格。',
-              },
-              // Vision API 迁移期兼容格式（2026-10 实测）：校验层要求 file 对象
-              // （file_id/file_url/file_data 至少其一，缺任一报 400 code 1214），
-              // 而视觉后端实际消费 image_url——单独 image_url 被校验拒绝、单独
-              // file_data 校验通过但图片不会送达模型（模型回复「请上传图片」）。
-              // 双字段并存为唯一可行载荷，此结论经红圆无歧义图实测确认。
-              {
-                type: 'image_url',
-                image_url: { url: `data:image/png;base64,${base64}` },
-                file: { file_data: `data:image/png;base64,${base64}` },
-              },
-            ],
-          },
-        ],
-        thinking: { type: 'disabled' },
-      }),
-      new Promise<never>((_, reject) => {
-        vlmTimer = setTimeout(() => reject(new Error('VLM 验证码识别超时')), 25000)
-      }),
-    ])
-    const content = response.choices?.[0]?.message?.content ?? ''
-    return content.replace(/[^a-zA-Z0-9]/g, '').slice(0, 8)
-  } finally {
-    if (vlmTimer) clearTimeout(vlmTimer)
+  if (mod) {
+    // VLM 调用带 25s 超时保护，避免网络异常时请求挂起；竞速结束后必须清定时器，
+    // 否则成功路径下事件循环被无用的 25s 定时器拖住
+    let vlmTimer: ReturnType<typeof setTimeout> | undefined
+    try {
+      const zai = await mod.default.create()
+      const response = await Promise.race([
+        zai.chat.completions.createVision({
+          messages: [
+            {
+              role: 'user',
+              content: [
+                { type: 'text', text: CAPTCHA_PROMPT },
+                // Vision API 迁移期兼容格式（2026-10 实测）：校验层要求 file 对象
+                // （file_id/file_url/file_data 至少其一，缺任一报 400 code 1214），
+                // 而视觉后端实际消费 image_url——单独 image_url 被校验拒绝、单独
+                // file_data 校验通过但图片不会送达模型（模型回复「请上传图片」）。
+                // 双字段并存为唯一可行载荷，此结论经红圆无歧义图实测确认。
+                {
+                  type: 'image_url',
+                  image_url: { url: `data:image/png;base64,${base64}` },
+                  file: { file_data: `data:image/png;base64,${base64}` },
+                },
+              ],
+            },
+          ],
+          thinking: { type: 'disabled' },
+        }),
+        new Promise<never>((_, reject) => {
+          vlmTimer = setTimeout(() => reject(new Error('VLM 验证码识别超时')), 25000)
+        }),
+      ])
+      const code = (response.choices?.[0]?.message?.content ?? '').replace(/[^a-zA-Z0-9]/g, '').slice(0, 8)
+      if (code) return code
+      errors.push('z-ai: 空回复')
+    } catch (e) {
+      errors.push(`z-ai: ${e instanceof Error ? e.message : String(e)}`.slice(0, 160))
+    } finally {
+      if (vlmTimer) clearTimeout(vlmTimer)
+    }
+  } else {
+    errors.push('z-ai SDK 不可用（部署环境无平台凭证，属预期）')
   }
+
+  // 通道 2：自定义 OpenAI 兼容视觉 API（环境变量齐全才启用）
+  const conf = getCustomVisionConf()
+  if (conf) {
+    try {
+      const code = await recognizeViaCustomApi(base64, conf)
+      if (code) return code
+      errors.push('自定义API: 空回复')
+    } catch (e) {
+      errors.push(`自定义API: ${e instanceof Error ? e.message : String(e)}`.slice(0, 160))
+    }
+  } else {
+    errors.push('自定义API: 未配置 CAPTCHA_VISION_* 环境变量')
+  }
+
+  if (!conf) throw new Error(`${CAPTCHA_MANUAL_GUIDE}（明细: ${errors.join('；')}）`)
+  throw new Error(`验证码识别失败（z-ai 与自定义视觉 API 两通道均失败）: ${errors.join('；')}`)
 }
 
 /**
@@ -1518,9 +1603,10 @@ async function solveWafChallenge(page: PlaywrightPage): Promise<boolean> {
       if (!isWafChallengeHtml(html)) return true
     } catch (e) {
       // 解题环节异常必须留痕（此前静默吞掉导致 VLM API 契约变更后解题
-      // 全链路失效且无任何日志线索），warn 级不打断重试节奏
+      // 全链路失效且无任何日志线索），warn 级不打断重试节奏；
+      // slice 放宽到 400：识别不可用时的中文解决指引（含环境变量名）需完整落日志
       console.warn(
-        `[waf-solve] 第 ${attempt + 1}/4 次解题异常: ${e instanceof Error ? e.message.slice(0, 200) : String(e)}`
+        `[waf-solve] 第 ${attempt + 1}/4 次解题异常: ${e instanceof Error ? e.message.slice(0, 400) : String(e)}`
       )
     }
     // 刷新验证码后重试

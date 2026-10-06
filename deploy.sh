@@ -69,6 +69,10 @@ run_env() {
   # 可选项显式导出为空值（避免 set -e 下 AND 列表短路返回非零导致误退出）
   export HYPERBROWSER_API_KEY="${HYPERBROWSER_API_KEY:-}"
   export AUTH_SECRET="${AUTH_SECRET:-}"
+  # 验证码自动识别·自定义视觉通道（OpenAI 兼容；可选）
+  export CAPTCHA_VISION_API_BASE="${CAPTCHA_VISION_API_BASE:-}"
+  export CAPTCHA_VISION_API_KEY="${CAPTCHA_VISION_API_KEY:-}"
+  export CAPTCHA_VISION_MODEL="${CAPTCHA_VISION_MODEL:-}"
 }
 
 is_running() {

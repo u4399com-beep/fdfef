@@ -319,8 +319,42 @@ git pull && INSTALL_PLAYWRIGHT=true docker compose up -d --build
 ### Hyperbrowser（云端，无需本地浏览器）
 
 1. 到 hyperbrowser.ai 获取 API Key
-2. 配置 `HYPERBROWSER_API_KEY` 环境变量（见第 2 节第 5 步）
+2. 配置 `HYPERBROWSER_API_KEY` 环境变量（见第 3 节第 5 步）
 3. 在规则编辑页把抓取策略切换为「Hyperbrowser (云隐身)」
+
+### 验证码自动识别（WAF 挑战页全自动过码）
+
+目标站弹出验证码（GoEdge 类 WAF，如 kelexs/存书啦/人气完本）时，系统自动走：
+HTTP 直连 → 检测到挑战页 → 升级 Playwright（stealth）→ 截图验证码 → **视觉模型识别** → 填表提交 → 通行 cookie 回写并持久化到 `storage/waf-cookies.json`（7 天 TTL，重启不丢）。
+
+视觉识别有两条通道（自动降级）：
+
+| 通道 | 适用环境 | 配置 |
+|---|---|---|
+| 内置 z-ai SDK | 平台沙箱内开箱即用 | 无需配置 |
+| **自定义 OpenAI 兼容视觉 API** | **自部署服务器（推荐配置）** | 三个环境变量（缺一不启用） |
+
+自部署服务器配置（推荐智谱 `glm-4v-flash`，免费）：
+
+```bash
+# Docker：写入 .env 后 docker compose up -d --force-recreate
+CAPTCHA_VISION_API_BASE=https://open.bigmodel.cn/api/paas/v4
+CAPTCHA_VISION_API_KEY=你的key
+CAPTCHA_VISION_MODEL=glm-4v-flash
+
+# 裸机：export 到环境后 ./deploy.sh restart（或写入 .env 经 systemd Environment 注入）
+```
+
+> 兼容任何 OpenAI `/chat/completions` 视觉端点：OpenAI（`gpt-4o-mini`）、本地 Ollama（`http://127.0.0.1:11434/v1` + `llava`/`qwen2-vl`，完全离线）等。
+
+### 手动过码（不配置任何 API，1 分钟生效）
+
+1. 本机浏览器打开目标站任意页面，完成验证码
+2. F12 → 应用(Application)/网络(Network) 面板 → 复制该站 Cookie（GoEdge 站形如 `ge_wc_20=...`）
+3. 后台规则编辑 → 「Cookie」字段粘贴 → **关闭「UA 随机轮换」**，并把 UA 填成你浏览器的 UA（通行 cookie 与 UA 绑定，换 UA 即失效）
+4. 任务线程数建议 1~2、间隔 2000~5000ms（`throttleGap: 1500`）
+
+> 通行 cookie 通常有效数小时～数天；失效后重复以上步骤即可。解题成功的 cookie 系统也会自动持久化复用，无需每次手动。
 
 ---
 

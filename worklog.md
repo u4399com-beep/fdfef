@@ -1082,3 +1082,21 @@ Stage Summary:
 - 用户侧立即动作：服务器上 curl -vI / nslookup 分层定位（DNS vs TCP），封 IP 则配镜像或切 Hyperbrowser 云策略
 - 错误面优化：今后连接层故障的任务日志直接含四步中文排查指引 + 目标域名，不再只有低信息量英文文案
 - 与上轮 launch 诊断包装形成完整覆盖：浏览器启动失败 / 网络不可达两大部署期高频故障均有可执行指引
+
+---
+Task ID: R19-deploy-captcha
+Agent: Z.ai Code (main)
+Task: 服务器采集 kelexs（可乐）弹出 WAF 验证码挑战 —— 解题链双通道增强与部署环境适配
+
+Work Log:
+- 【现状实测】沙箱 curl kelexs.com → 307 → /WAF/VERIFY/CAPTCHA（GoEdge 验证码挑战），与用户服务器一致；用户进度链推演：连不上(已修) → 现在到验证码层
+- 【断点定位】solveWafChallenge → recognizeCaptcha → import('z-ai-web-dev-sdk')——SDK 凭证仅平台沙箱存在，自部署服务器 mod 为 null 抛错 → 4 次重试全灭 → 挑战页 status 403 返回。这是部署环境验证码突破失败的确定性根因
+- 【双通道改造】recognizeCaptcha 重构为降级链：①z-ai SDK（沙箱可用，保留迁移期双字段载荷实测结论）→ ②自定义 OpenAI 兼容视觉 API（CAPTCHA_VISION_API_BASE/KEY/MODEL 三 env 齐全启用，POST {base}/chat/completions + image_url base64，兼容智谱 GLM-4V/OpenAI/本地 Ollama 完全离线方案，AbortSignal 25s 超时）→ 全失败抛 CAPTCHA_MANUAL_GUIDE 中文教程（配 env 全自动 / 手动过码填 cookie 步骤）；prompt 提取常量复用；export recognizeCaptcha 供实测；solveWafChallenge warn slice 200→400 保证教程完整落日志
+- 【端到端实测】SVG+干扰线 → sharp 转 PNG（"7K2M"）→ recognizeCaptcha → z-ai 通道识别 7K2M 完全正确——解题链核心环节实测通过
+- 【透传与文档】docker-compose.yml + deploy.sh run_env 透传 CAPTCHA_VISION_*；DEPLOY.md 第 6 节新增「验证码自动识别」双通道表 + 自部署配置示例（推荐 glm-4v-flash 免费）+ 「手动过码 1 分钟」教程（浏览器过码→F12 复制 ge_wc_20→填规则 Cookie+关 rotateUA+同 UA）
+- 【验证】tsc 0 错误、lint 通过、bash -n/YAML 合法
+
+Stage Summary:
+- 部署服务器验证码突破两条路：全自动（配 CAPTCHA_VISION_* 三环境变量，推荐智谱免费 glm-4v-flash）或手动过码（1 分钟，cookie+固定 UA）；解题成功 cookie 自动持久化 storage/waf-cookies.json 复用
+- 与前两轮形成部署期故障完整闭环：launch 崩溃→中文修复指引；连接失败→四步排查指引；验证码→双通道识别+手动教程
+- 沙箱侧 kelexs 挑战页活跃（与用户同态），为后续解题链回归提供了真实靶场

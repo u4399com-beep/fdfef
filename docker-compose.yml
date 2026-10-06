@@ -17,6 +17,11 @@ services:
       - AUTH_SECRET=${AUTH_SECRET:-}
       # 云端隐身采集（可选）：配置后可使用 Hyperbrowser 抓取策略
       - HYPERBROWSER_API_KEY=${HYPERBROWSER_API_KEY:-}
+      # 验证码自动识别·自定义视觉通道（可选，部署环境无平台凭证时启用）：
+      # 任意 OpenAI 兼容视觉 API（智谱 GLM-4V / OpenAI / 本地 Ollama 等），三者齐全生效
+      - CAPTCHA_VISION_API_BASE=${CAPTCHA_VISION_API_BASE:-}
+      - CAPTCHA_VISION_API_KEY=${CAPTCHA_VISION_API_KEY:-}
+      - CAPTCHA_VISION_MODEL=${CAPTCHA_VISION_MODEL:-}
       - TZ=Asia/Shanghai
     volumes:
       # 数据库持久化（SQLite；git clone 自带全部在库数据）
