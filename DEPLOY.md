@@ -293,7 +293,27 @@ INSTALL_PLAYWRIGHT=true docker compose up -d --build
 ### 裸机：进项目目录执行
 
 ```bash
-cd /opt/novel-system && bunx playwright install chromium
+cd /opt/novel-system && bunx playwright install --with-deps chromium
+```
+
+> 必须带 `--with-deps`：只装浏览器不装系统库，launch 时会报
+> `Target page, context or browser has been closed`（缺 libnss3/libgbm 等）。
+
+### 已装浏览器但启动崩溃（browser has been closed）？
+
+症状：采集日志报 `WAF 拦截且浏览器策略不可用：launch: Target page, context or browser has been closed`。
+原因：chromium 二进制存在但 Linux 系统依赖库缺失，chrome 进程启动即崩。
+修复（装完依赖即时生效，无需重启服务——浏览器是每次采集按需拉起的子进程）：
+
+```bash
+# 裸机
+cd /opt/novel-system && bunx playwright install-deps chromium
+
+# Docker 容器（即时生效，但容器重建后丢失；根治见下方重新构建）
+docker compose exec novel-system bun node_modules/playwright/cli.js install-deps chromium
+
+# Docker 根治：更新代码后带构建参数重建（镜像层固化依赖）
+git pull && INSTALL_PLAYWRIGHT=true docker compose up -d --build
 ```
 
 ### Hyperbrowser（云端，无需本地浏览器）
@@ -333,6 +353,9 @@ docker compose restart
 
 **Q2：采集时目标站返回 403/验证码？**
 依次尝试：规则里配置 Cookie 与 Referer → 切换 Playwright 策略（JS 渲染）→ 切换 Hyperbrowser 云隐身策略；并适当加大任务「间隔时间范围」。
+
+**Q2.5：JS 渲染策略报 `launch: Target page, context or browser has been closed`？**
+chromium 已装但缺系统依赖库。裸机：`bunx playwright install-deps chromium`；Docker：`docker compose exec novel-system bun node_modules/playwright/cli.js install-deps chromium`（根治：`INSTALL_PLAYWRIGHT=true docker compose up -d --build`）。详见第 6 节。
 
 **Q3：章节正文乱码？**
 在对应规则「编码」中选择 GBK/GB2312/Big5（默认自动识别可覆盖大部分站点）。

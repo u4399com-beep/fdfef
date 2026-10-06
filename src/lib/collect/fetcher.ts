@@ -1153,6 +1153,25 @@ const globalForBrowser = globalThis as unknown as { [BROWSER_STATE_KEY]?: Browse
 const browserState: BrowserState = globalForBrowser[BROWSER_STATE_KEY] ?? { browser: null, starting: null }
 globalForBrowser[BROWSER_STATE_KEY] = browserState
 
+/**
+ * launch 失败诊断包装：浏览器二进制存在但缺系统共享库时，chrome 进程启动即崩溃，
+ * Playwright 表现为笼统的 "Target page, context or browser has been closed"。
+ * 识别特征并替换为可执行的中文修复指引，原始错误附在末尾保留现场。
+ */
+function diagnoseLaunchError(e: unknown): Error {
+  const msg = e instanceof Error ? e.message : String(e)
+  if (/has been closed|loading shared libraries|dlerror|libnss|libgbm|libatk|libasound|error while loading/i.test(msg)) {
+    return new Error(
+      'Chromium 启动失败（浏览器已安装但缺 Linux 系统依赖库）。修复方式——' +
+        '裸机：cd 项目目录 && bunx playwright install-deps chromium；' +
+        'Docker：docker compose exec novel-system bun node_modules/playwright/cli.js install-deps chromium，' +
+        '或用 INSTALL_PLAYWRIGHT=true docker compose up -d --build 重新构建（已内置依赖安装）。' +
+        `原始错误：${msg.slice(0, 300)}`,
+    )
+  }
+  return e instanceof Error ? e : new Error(msg)
+}
+
 async function getSharedBrowser(): Promise<PlaywrightBrowser | null> {
   const pwSpec = 'playwright'
   const pw = (await import(/* webpackIgnore: true */ pwSpec).catch(() => null)) as {
@@ -1178,6 +1197,10 @@ async function getSharedBrowser(): Promise<PlaywrightBrowser | null> {
       .then((b) => {
         browserState.browser = b
         return b
+      })
+      .catch((e) => {
+        // 包装后重抛：让上层（WAF 升级链/任务日志）看到可执行的修复指引而非原始 launch 崩溃
+        throw diagnoseLaunchError(e)
       })
       .finally(() => {
         browserState.starting = null
@@ -1486,6 +1509,8 @@ interface PlaywrightElement {
   click: (opts?: Record<string, unknown>) => Promise<void>
   /** 页面上下文内求值（ElementHandle.evaluate）：jsPages 原生 <select> 翻页派发 change 事件用 */
   evaluate: <T>(fn: (el: Element) => T) => Promise<T>
+  /** 查询后代元素（ElementHandle.$）：jsPages 锚点后代优先点击用 */
+  $: (sel: string) => Promise<PlaywrightElement | null>
 }
 interface PlaywrightPage {
   goto: (url: string, o: Record<string, unknown>) => Promise<unknown>

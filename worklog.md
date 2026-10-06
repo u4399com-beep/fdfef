@@ -1048,3 +1048,20 @@ Stage Summary:
 - 一键部署三网络层级全覆盖：可直连 → raw 一行命令；国内 → jsDelivr 一行命令（脚本内克隆/依赖/引擎三层自动镜像回退）；jsDelivr 也不可达 → git clone（github.com 通常可达，重则镜像前缀）+ deploy.sh up
 - MIRROR=1 贯穿两条部署路径（oneclick 自动置位 / 手动显式传入 deploy.sh），npm 依赖 + Prisma 引擎二进制全部可走 npmmirror
 - 已知边界：国内 Docker Hub 拉取 oven/bun 基础镜像仍需用户配置 registry-mirrors（文档已说明）；第三方克隆镜像仅用于公开仓库获取，安全提示已内嵌输出
+
+---
+Task ID: R19-deploy-pw
+Agent: Z.ai Code (main)
+Task: 服务器部署后 JS 渲染策略报 "launch: Target page, context or browser has been closed" —— chromium 缺系统依赖修复
+
+Work Log:
+- 【根因定位】chromium 二进制已存在（/root/.cache/ms-playwright/chromium_headless_shell-1243），但 Linux 系统共享库缺失（libnss3/libgbm/libatk 等）→ chrome 进程启动即崩，Playwright 笼统报 "browser has been closed"。两条布线缺陷：①Dockerfile 原用 --with-deps 一步装（bun runtime 跑 CLI 时 apt 环节可能静默失败，slim 基底无 apt 索引）②DEPLOY.md 裸机指引只写 install chromium 未带 --with-deps
+- 【fetcher.ts 增强】getSharedBrowser 的 launch Promise 加 .catch 包装 → diagnoseLaunchError：正则识别 has-been-closed/shared-libraries/dlerror/libnss 等特征 → 替换为可执行中文修复指引（裸机 install-deps / 容器 exec install-deps / 重新构建三选一，原始错误截断保留现场）；顺手修复既有 tsc 错误——PlaywrightElement 接口补 $ 后代查询声明（R18 锚点点击代码引入，此前被 ignoreBuildErrors 掩盖）
+- 【Dockerfile】INSTALL_PLAYWRIGHT=true 拆步显式：apt-get update → install chromium → install-deps chromium → rm apt lists（每步失败构建显式报错，不再静默）
+- 【DEPLOY.md】裸机命令改 --with-deps + 缘由注释；第 6 节新增「已装浏览器但启动崩溃」排障小节（裸机/容器临时/容器根治三路径，注明装完依赖即时生效无需重启——浏览器为每次采集按需拉起子进程）；FAQ 新增 Q2.5
+- 【验证】tsc --noEmit 0 错误（含既有错误修复后）、lint 0 错误、dev server 正常（preview API 200）；stash 对照确认 tsc 错误为既有而非本轮引入
+
+Stage Summary:
+- 交付用户立即修复命令：裸机 bunx playwright install-deps chromium / 容器 docker compose exec novel-system bun node_modules/playwright/cli.js install-deps chromium / Docker 根治 git pull && INSTALL_PLAYWRIGHT=true docker compose up -d --build
+- 错误面优化：同类问题今后在任务日志中直接可见中文修复指引，无需人工对照英文 launch 崩溃栈排障
+- Dockerfile --with-deps 静默失败隐患消除（拆步显式化）

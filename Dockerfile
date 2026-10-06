@@ -80,9 +80,14 @@ COPY --from=builder /app/node_modules/playwright-core ./node_modules/playwright-
 
 # 可选增强：构建时安装 chromium（约 +400MB），启用规则中的「JS 渲染」策略
 # 用法：INSTALL_PLAYWRIGHT=true docker compose up -d --build
+# 注意必须拆步显式安装：slim 基底无 apt 索引，--with-deps 内部的 apt 环节可能静默失败，
+# 导致"浏览器二进制在但缺系统库 → launch 即崩（browser has been closed）"
 ARG INSTALL_PLAYWRIGHT=false
 RUN if [ "$INSTALL_PLAYWRIGHT" = "true" ]; then \
-      bun node_modules/playwright/cli.js install --with-deps chromium; \
+      apt-get update \
+      && bun node_modules/playwright/cli.js install chromium \
+      && bun node_modules/playwright/cli.js install-deps chromium \
+      && rm -rf /var/lib/apt/lists/*; \
     fi
 
 # 数据与文件存储目录（挂载卷持久化；db 由宿主机 bind mount / git clone 内容提供）
