@@ -13,6 +13,7 @@
 # 可用环境变量：
 #   PORT=3000                 监听端口
 #   FORCE_BUILD=1             up 时强制重新构建
+#   MIRROR=1                  受限网络模式：依赖与 Prisma 引擎走 npmmirror 国内镜像
 #   HYPERBROWSER_API_KEY=xxx  云端隐身采集（可选）
 #   AUTH_SECRET=xxx           会话签名密钥（可选，>=16 字符）
 # ============================================================
@@ -25,6 +26,11 @@ PID_FILE="$RUN_DIR/server.pid"
 LOG_FILE="$ROOT/server.log"
 DB_URL="file:$ROOT/db/custom.db"
 
+# 受限网络模式（MIRROR=1）：npm 依赖与 Prisma 引擎二进制走 npmmirror 国内镜像
+if [ "${MIRROR:-0}" = "1" ]; then
+  export PRISMA_ENGINES_MIRROR="https://registry.npmmirror.com/-/binary/prisma"
+fi
+
 # ---------- 输出工具 ----------
 info()  { echo -e "\033[1;32m[deploy]\033[0m $*"; }
 warn()  { echo -e "\033[1;33m[deploy]\033[0m $*"; }
@@ -34,10 +40,22 @@ fail()  { echo -e "\033[1;31m[deploy]\033[0m $*" >&2; exit 1; }
 ensure_bun() {
   if command -v bun >/dev/null 2>&1; then return; fi
   warn "未检测到 Bun，正在自动安装…"
-  curl -fsSL https://bun.sh/install | bash
-  export BUN_INSTALL="$HOME/.bun"
+  if curl -fsSL https://bun.sh/install | bash; then
+    export BUN_INSTALL="$HOME/.bun"
+    export PATH="$BUN_INSTALL/bin:$PATH"
+  fi
+  if ! command -v bun >/dev/null 2>&1; then
+    warn "bun.sh 安装失败（网络受限？），回退 npmmirror 镜像安装…"
+    if command -v npm >/dev/null 2>&1; then
+      npm install -g bun --registry=https://registry.npmmirror.com 2>/dev/null || true
+    fi
+    if ! command -v bun >/dev/null 2>&1 && [ "$(id -u)" != 0 ] && command -v sudo >/dev/null 2>&1 && command -v npm >/dev/null 2>&1; then
+      sudo npm install -g bun --registry=https://registry.npmmirror.com 2>/dev/null || true
+    fi
+  fi
+  command -v bun >/dev/null 2>&1 || fail "Bun 安装失败，请手动执行其一后重试：\n  curl -fsSL https://bun.sh/install | bash\n  npm install -g bun --registry=https://registry.npmmirror.com"
+  export BUN_INSTALL="${BUN_INSTALL:-$HOME/.bun}"
   export PATH="$BUN_INSTALL/bin:$PATH"
-  command -v bun >/dev/null 2>&1 || fail "Bun 安装失败，请手动执行：curl -fsSL https://bun.sh/install | bash"
   info "Bun $(bun --version) 安装完成"
 }
 
@@ -72,7 +90,11 @@ wait_healthy() {
 do_install() {
   ensure_bun
   info "安装依赖（bun install --frozen-lockfile）…"
-  (cd "$ROOT" && bun install --frozen-lockfile)
+  if [ "${MIRROR:-0}" = "1" ]; then
+    (cd "$ROOT" && bun install --frozen-lockfile --registry=https://registry.npmmirror.com)
+  else
+    (cd "$ROOT" && bun install --frozen-lockfile)
+  fi
   info "生成 Prisma Client…"
   (cd "$ROOT" && bunx prisma generate)
 }

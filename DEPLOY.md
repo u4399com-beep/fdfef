@@ -39,6 +39,26 @@ curl -fsSL https://raw.githubusercontent.com/u4399com-beep/fdfef/main/scripts/on
   | INSTALL_DIR=/opt/novel-system PORT=3000 HYPERBROWSER_API_KEY=你的key bash
 ```
 
+### 国内服务器 · 网络受限自适应
+
+`raw.githubusercontent.com` 在国内常被重置（报 `curl: (35) Connection reset by peer`），改用 jsDelivr CDN：
+
+```bash
+curl -fsSL https://cdn.jsdelivr.net/gh/u4399com-beep/fdfef@main/scripts/oneclick.sh | bash
+# 若上者仍慢，换 Fastly 节点：
+curl -fsSL https://fastly.jsdelivr.net/gh/u4399com-beep/fdfef@main/scripts/oneclick.sh | bash
+```
+
+脚本内部已内置受限网络自适应：GitHub 直连克隆失败 → **自动切换镜像加速**（ghfast/gh-proxy/moeyy，可用 `CLONE_MIRRORS` 覆盖）；bun.sh 安装失败 → **自动回退 npmmirror**；并自动进入 `MIRROR=1` 模式（npm 依赖与 Prisma 引擎走国内镜像）。
+
+也可跳过脚本直接克隆（github.com 域名通常可达）：
+
+```bash
+git clone https://github.com/u4399com-beep/fdfef.git novel-system && cd novel-system && bash deploy.sh up
+# 若 clone 也被重置，用镜像前缀：
+git clone https://ghfast.top/https://github.com/u4399com-beep/fdfef.git novel-system && cd novel-system && MIRROR=1 bash deploy.sh up
+```
+
 ### 已有 Docker 的服务器 · 两条命令
 
 ```bash
@@ -304,6 +324,9 @@ docker compose restart
 ---
 
 ## 8. 常见问题（FAQ）
+
+**Q0：一键命令报 `curl: (35) Recv failure: Connection reset by peer`？**
+服务器无法直连 `raw.githubusercontent.com`（国内常见）。改用 jsDelivr CDN 版一键命令（见第 1 节「国内服务器」）；若容器构建拉取 `oven/bun` 基础镜像也失败，需在 `/etc/docker/daemon.json` 配置 `registry-mirrors` 镜像加速，或直接走裸机路径 `bash deploy.sh up`（自动 MIRROR 模式）。
 
 **Q1：访问 3000 端口无响应？**
 `docker compose logs novel-system` 查看日志；确认云服务器安全组/防火墙放行 3000（或用 Nginx 80/443 反代）。

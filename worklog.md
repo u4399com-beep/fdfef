@@ -1031,3 +1031,20 @@ Stage Summary:
 - 仓库公开 + 数据随仓库自带（DB+3955 存储文件）→ 任何服务器克隆即得完整可运行系统；镜像不再内嵌 dev DB（体积 -60MB 且不泄漏采集数据）
 - INSTALL_PLAYWRIGHT 构建参数补齐 JS 渲染策略容器化缺口；AUTH_SECRET 链路完整（env → db/auth-secret → 进程内随机三级兜底）
 - 待办延续：R18 主线（目录分页全规则核查+增量采集）已由远程基线完成并合并；后续可做 Docker Hub 预构建镜像发布与 GitHub Actions CI
+
+---
+Task ID: R19-deploy-cn
+Agent: Z.ai Code (main)
+Task: 一键部署命令在国内服务器报 curl: (35) Connection reset by peer —— 网络受限自适应升级
+
+Work Log:
+- 【根因定位】用户服务器对 raw.githubusercontent.com 的 TLS 握手被重置（国内网络典型封锁，非脚本问题）；沙箱实测 raw 200 正常（沙箱非国内网络），jsDelivr 双 CDN（cdn.jsdelivr.net / fastly.jsdelivr.net）均 200 可服务脚本
+- 【oneclick.sh 升级】①fetch_code 直连克隆失败 → 自动回退镜像链（ghfast.top/gh-proxy.com/github.moeyy.xyz 前缀式，CLONE_MIRRORS 可覆盖）并置 MIRROR=1，镜像来源打印安全提示②ensure_bun：bun.sh 失败 → ensure_npm（apt/dnf/yum 自动补装 nodejs npm）→ npm install -g bun --registry=npmmirror（root/sudo 双尝试）③非 git 目录残留给出明确 fail 指引④容器路径在 MIRROR 模式提示 Docker Hub 镜像加速配置
+- 【deploy.sh 升级】①MIRROR=1 导出 PRISMA_ENGINES_MIRROR=npmmirror/-/binary/prisma（prisma generate/db push 引擎二进制国内直连）②do_install 的 bun install 追加 --registry=npmmirror 分支③独立入口 ensure_bun 同步 bun.sh→npmmirror 回退链（与 oneclick 一致）④头部文档补 MIRROR 用法
+- 【DEPLOY.md】第 1 节新增「国内服务器 · 网络受限自适应」（jsDelivr 双节点命令 + 自适应机制说明 + 镜像前缀 clone 直接路径）；FAQ 新增 Q0 专答 curl 35（含 Docker Hub registry-mirrors 提示）
+- 【验证】bash -n 双脚本通过；deploy.sh status/down 分支复测正确；MIRROR=1 时 PRISMA_ENGINES_MIRROR 导出实测生效；jsDelivr 双 CDN 实测 200
+
+Stage Summary:
+- 一键部署三网络层级全覆盖：可直连 → raw 一行命令；国内 → jsDelivr 一行命令（脚本内克隆/依赖/引擎三层自动镜像回退）；jsDelivr 也不可达 → git clone（github.com 通常可达，重则镜像前缀）+ deploy.sh up
+- MIRROR=1 贯穿两条部署路径（oneclick 自动置位 / 手动显式传入 deploy.sh），npm 依赖 + Prisma 引擎二进制全部可走 npmmirror
+- 已知边界：国内 Docker Hub 拉取 oven/bun 基础镜像仍需用户配置 registry-mirrors（文档已说明）；第三方克隆镜像仅用于公开仓库获取，安全提示已内嵌输出
