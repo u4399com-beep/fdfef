@@ -1,6 +1,10 @@
 services:
   novel-system:
-    build: .
+    build:
+      context: .
+      args:
+        # 一键启用 JS 渲染策略：INSTALL_PLAYWRIGHT=true docker compose up -d --build
+        - INSTALL_PLAYWRIGHT=${INSTALL_PLAYWRIGHT:-false}
     image: novel-system:latest
     container_name: novel-system
     restart: unless-stopped
@@ -9,13 +13,15 @@ services:
     environment:
       - NODE_ENV=production
       - DATABASE_URL=file:/app/db/custom.db
+      # 后台会话签名密钥（可选，>=16 字符）：不设置时自动生成 db/auth-secret 文件持久化
+      - AUTH_SECRET=${AUTH_SECRET:-}
       # 云端隐身采集（可选）：配置后可使用 Hyperbrowser 抓取策略
       - HYPERBROWSER_API_KEY=${HYPERBROWSER_API_KEY:-}
       - TZ=Asia/Shanghai
     volumes:
-      # 数据库持久化（SQLite）
+      # 数据库持久化（SQLite；git clone 自带全部在库数据）
       - ./db:/app/db
-      # 本地文件持久化（封面 webp / 章节 txt / 下载文件）
+      # 本地文件持久化（封面 webp / 章节 txt / WAF 通行 cookie）
       - ./storage:/app/storage
       - ./download:/app/download
     healthcheck:

@@ -1,7 +1,7 @@
 # ============================================================
 # 小说管理系统 生产镜像（多阶段构建，开箱即用）
-# 构建：docker build -t novel-system .
-# 运行：docker compose up -d
+# 一键：docker compose up -d --build
+# 可选 JS 渲染增强：INSTALL_PLAYWRIGHT=true docker compose up -d --build
 # ============================================================
 
 # ---------- 阶段 1：构建 ----------
@@ -15,9 +15,12 @@ COPY package.json bun.lock ./
 RUN bun install --frozen-lockfile
 
 # 拷贝源码并构建
+# （db/ 已被 .dockerignore 排除：所有页面均为 force-dynamic，构建期不查库）
 COPY . .
-ENV DATABASE_URL=file:/app/db/custom.db
+# 构建前同步一次空库 schema 兜底：即便个别 GET 路由被构建期静态化触发查库，
+# 也能保证 SQLite 文件存在且表结构完整，避免 build 因"表不存在"失败
 RUN bunx prisma generate \
+  && DATABASE_URL=file:/app/db/custom.db bunx prisma db push --accept-data-loss --skip-generate \
   && bun run build
 
 # ---------- 阶段 2：运行时 ----------
@@ -33,7 +36,6 @@ ENV NODE_ENV=production \
 # Next standalone 产物（package.json build 脚本已把 static/public 复制进去）
 COPY --from=builder /app/.next/standalone ./
 COPY --from=builder /app/prisma ./prisma
-COPY --from=builder /app/db ./db
 
 # Prisma CLI（容器启动时同步 schema）
 # 注意：prisma CLI 的依赖闭包不止 @prisma/*（bun 扁平 hoist），缺下列任一包会在
@@ -72,8 +74,19 @@ COPY --from=builder /app/node_modules/rc9 ./node_modules/rc9
 COPY --from=builder /app/node_modules/readdirp ./node_modules/readdirp
 COPY --from=builder /app/node_modules/tinyexec ./node_modules/tinyexec
 
-# 数据与文件存储目录（挂载卷持久化）
-RUN mkdir -p /app/storage/covers /app/storage/novels /app/download
+# Playwright 包体（JS 渲染策略按需动态 import；未装浏览器时该策略优雅降级报错，HTTP 策略不受影响）
+COPY --from=builder /app/node_modules/playwright ./node_modules/playwright
+COPY --from=builder /app/node_modules/playwright-core ./node_modules/playwright-core
+
+# 可选增强：构建时安装 chromium（约 +400MB），启用规则中的「JS 渲染」策略
+# 用法：INSTALL_PLAYWRIGHT=true docker compose up -d --build
+ARG INSTALL_PLAYWRIGHT=false
+RUN if [ "$INSTALL_PLAYWRIGHT" = "true" ]; then \
+      bun node_modules/playwright/cli.js install --with-deps chromium; \
+    fi
+
+# 数据与文件存储目录（挂载卷持久化；db 由宿主机 bind mount / git clone 内容提供）
+RUN mkdir -p /app/db /app/storage/covers /app/storage/novels /app/download
 VOLUME ["/app/db", "/app/storage"]
 
 COPY docker-entrypoint.sh /app/docker-entrypoint.sh

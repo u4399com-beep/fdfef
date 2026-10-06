@@ -5,8 +5,21 @@ dev.log
 server.log
 storage
 download
+upload
+# 数据目录不入镜像：git clone 自带 db/custom.db，运行时经 bind mount 挂入容器
+db
+# 环境与密钥文件（DATABASE_URL 等在 Dockerfile/compose 中显式注入）
+.env
+.env.local
 *.md
 !README.md
 tests
 examples
-.env.local
+skills
+mini-services
+.zscripts
+tool-results
+.claude
+.tmp-*
+tsconfig.tsbuildinfo
+Caddyfile

@@ -2,27 +2,75 @@
 
 > 技术栈：Next.js 16（App Router）+ TypeScript + SQLite（Prisma）+ Tailwind / shadcn
 > 一套后台 + 一套数据库 + 一套本地文件，通过「站群系统」派生多个前台站点。
-> 本文档提供 **Docker（推荐）** 与 **裸机直跑** 两种部署方式，全部命令可直接复制执行。
+> 本文档提供 **一键部署 / Docker（推荐）** 与 **裸机直跑** 几种部署方式，全部命令可直接复制执行。
 
 ---
 
 ## 目录
 
-1. [功能总览](#1-功能总览)
-2. [方式一：Docker 部署（推荐）](#2-方式一docker-部署推荐)
-3. [方式二：裸机部署（bun）](#3-方式二裸机部署bun)
-4. [站群上线：多域名反向代理](#4-站群上线多域名反向代理)
-5. [可选：启用 Playwright / Hyperbrowser 采集策略](#5-可选启用-playwright--hyperbrowser-采集策略)
-6. [数据备份与恢复](#6-数据备份与恢复)
-7. [常见问题（FAQ）](#7-常见问题faq)
+1. [一键部署（30 秒开始）](#1-一键部署30-秒开始)
+2. [功能总览](#2-功能总览)
+3. [方式一：Docker 部署（推荐）](#3-方式一docker-部署推荐)
+4. [方式二：裸机部署（bun / deploy.sh）](#4-方式二裸机部署bun--deploysh)
+5. [站群上线：多域名反向代理](#5-站群上线多域名反向代理)
+6. [可选：启用 Playwright / Hyperbrowser 采集策略](#6-可选启用-playwright--hyperbrowser-采集策略)
+7. [数据备份与恢复](#7-数据备份与恢复)
+8. [常见问题（FAQ）](#8-常见问题faq)
 
 ---
 
-## 1. 功能总览
+## 1. 一键部署（30 秒开始）
+
+仓库为公开仓库，**自带全部在库数据**（数据库 + 封面 + 章节 txt），克隆即得、开箱即用。
+
+### 全新服务器 · 零依赖一行命令
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/u4399com-beep/fdfef/main/scripts/oneclick.sh | bash
+```
+
+脚本自动完成：安装 git/Bun → 克隆代码 → **有 Docker 走容器、无 Docker 自动裸机直跑** → 建库 → 构建 → 启动 → 健康检查。
+
+可选参数（放在管道前）：
+
+```bash
+# 自定义安装目录 / 端口 / 云采集 Key
+curl -fsSL https://raw.githubusercontent.com/u4399com-beep/fdfef/main/scripts/oneclick.sh \
+  | INSTALL_DIR=/opt/novel-system PORT=3000 HYPERBROWSER_API_KEY=你的key bash
+```
+
+### 已有 Docker 的服务器 · 两条命令
+
+```bash
+git clone https://github.com/u4399com-beep/fdfef.git novel-system && cd novel-system
+docker compose up -d --build
+```
+
+### 无 Docker 的服务器 · 三条命令（Bun 裸机）
+
+```bash
+git clone https://github.com/u4399com-beep/fdfef.git novel-system && cd novel-system
+bash deploy.sh up
+```
+
+`deploy.sh` 是完整的裸机管理脚本：`up / down / restart / status / logs / update / build`。
+
+### 部署完成后（必读）
+
+| 项 | 说明 |
+|---|---|
+| 访问地址 | `http://服务器IP:3000/`，后台管理 `/admin` |
+| 首次登录 | 用户名 `admin` / 密码 `admin123`，**请立即在后台修改密码** |
+| 数据位置 | `./db`（SQLite 数据库）、`./storage`（封面 webp / 章节 txt），均为目录挂载持久化，可直接备份 |
+| 后续升级 | 裸机：`./deploy.sh update`；Docker：`git pull && docker compose up -d --build` |
+
+---
+
+## 2. 功能总览
 
 | 模块 | 说明 |
 |---|---|
-| 采集规则 | 列表页 / 书籍信息页 / 章节目录页 / 章节内容页四类规则；**CSS、正则、XPath 三种选择器可混用**；每类规则编辑页内置「测试」功能 |
+| 采集规则 | 列表页 / 书籍信息页 / 章节目录页 / 章节内容页四类规则；**CSS、正则、XPath 三种选择器可混用**；**目录页支持完整分页采集（下一页/select 下拉/URL 模板三种模式）**；每类规则编辑页内置「测试」功能 |
 | 书籍字段 | 书名、作者、分类、关键词、简介、封面图；封面自动下载转 **webp** 存储 |
 | 反反爬 | UA 随机轮换、Cookie/Referer/自定义 Header、随机超时；抓取策略可切换 **HTTP 直连 / Playwright（JS 渲染）/ Hyperbrowser（云端隐身）** |
 | 内容清洗 | script/iframe 标签剔除、广告正则清洗（整行/行内）、HTML 实体解码、段落规范化；全局规则可配置、可即时测试 |
@@ -38,7 +86,9 @@
 
 ---
 
-## 2. 方式一：Docker 部署（推荐）
+## 3. 方式一：Docker 部署（推荐）
+
+> 一键命令见第 1 节；本节为分步说明与原理。
 
 ### 第 1 步：安装 Docker
 
@@ -56,10 +106,12 @@ docker --version && docker compose version
 ### 第 2 步：获取代码
 
 ```bash
-git clone <你的仓库地址> novel-system && cd novel-system
+git clone https://github.com/u4399com-beep/fdfef.git novel-system && cd novel-system
 # 或直接上传整个项目目录到服务器，例如：
 # scp -r ./my-project root@your-server:/opt/novel-system
 ```
+
+> 仓库已包含当前全部数据：`db/custom.db`（书籍/章节/规则/任务/站点配置）与 `storage/`（封面 webp + 章节 txt），克隆后无需重新采集即可运行。
 
 ### 第 3 步：一键构建并启动
 
@@ -87,12 +139,14 @@ curl -I http://127.0.0.1:3000/
 
 浏览器打开 `http://服务器IP:3000/` 即可看到管理后台。
 
-### 第 5 步：（可选）配置 Hyperbrowser 云采集
+### 第 5 步：（可选）配置 Hyperbrowser 云采集 / 会话密钥
 
 编辑 `.env`（与 docker-compose.yml 同目录）：
 
 ```env
 HYPERBROWSER_API_KEY=你的key
+# 可选：显式指定后台会话签名密钥（>=16 字符）；不设置时自动生成 db/auth-secret 文件持久化
+# AUTH_SECRET=一串足够长的随机字符串
 ```
 
 然后 `docker compose up -d --force-recreate` 生效。未配置时 HTTP 与 Playwright 策略不受影响。
@@ -111,42 +165,56 @@ HYPERBROWSER_API_KEY=你的key
 
 ---
 
-## 3. 方式二：裸机部署（bun）
+## 4. 方式二：裸机部署（bun / deploy.sh）
+
+### 推荐用法：deploy.sh 一键脚本
 
 ```bash
-# 1. 安装 bun（已装跳过）
-curl -fsSL https://bun.sh/install | bash
+# 首次部署：自动装依赖 → 建库 → 构建 → 启动 → 健康检查
+cd novel-system && bash deploy.sh up
 
-# 2. 安装依赖
-cd novel-system && bun install
+# 日常管理
+bash deploy.sh status      # 运行状态 + 健康检查
+bash deploy.sh logs        # 实时日志（Ctrl+C 退出）
+bash deploy.sh restart     # 重启
+bash deploy.sh down        # 停止
+bash deploy.sh update      # git pull + 重建 + 重启（一条命令完成升级）
 
-# 3. 配置环境变量
-echo 'DATABASE_URL=file:/opt/novel-system/db/custom.db' > .env
+# 指定端口 / 强制重建
+PORT=8080 bash deploy.sh up
+FORCE_BUILD=1 bash deploy.sh restart
+```
 
-# 4. 同步数据库
-bun run db:push
+脚本内置最易踩坑的处理：standalone 产物以 `.next/standalone` 为工作目录、不读项目根 `.env`，`deploy.sh` 会把 `DATABASE_URL`（绝对路径）显式注入启动环境。
 
-# 5. 构建生产产物
-bun run build
+### systemd 常驻（可选）
 
-# 6. 启动（建议 pm2/systemd 守护）
-#    注意：standalone 产物启动后以 .next/standalone 为工作目录，不会读取项目根目录的 .env，
-#    因此 DATABASE_URL 必须显式注入环境变量，否则启动后接口报 PrismaClientInitializationError：
-set -a; source .env; set +a
-bun run start          # 等价于 NODE_ENV=production bun .next/standalone/server.js
+若希望 systemd 托管（而非 deploy.sh 的 PID 管理），把 ExecStart 指向 deploy.sh 不适用；请直接配置：
 
-# systemd 示例（/etc/systemd/system/novel.service）
-# [Service]
-# WorkingDirectory=/opt/novel-system
-# ExecStart=/root/.bun/bin/bun .next/standalone/server.js
-# Environment=NODE_ENV=production PORT=3000
-# Environment=DATABASE_URL=file:/opt/novel-system/db/custom.db
-# Restart=always
+```ini
+# /etc/systemd/system/novel.service
+[Unit]
+Description=Novel System
+After=network.target
+
+[Service]
+WorkingDirectory=/opt/novel-system
+ExecStart=/root/.bun/bin/bun .next/standalone/server.js
+Environment=NODE_ENV=production PORT=3000
+Environment=DATABASE_URL=file:/opt/novel-system/db/custom.db
+Restart=always
+
+[Install]
+WantedBy=multi-user.target
+```
+
+```bash
+systemctl daemon-reload && systemctl enable --now novel
 ```
 
 ---
 
-## 4. 站群上线：多域名反向代理
+## 5. 站群上线：多域名反向代理
 
 系统内「站群管理」添加站点（域名/站名/主题/TDK/偏移量）后，把各域名解析到本服务器，并用 Nginx 或 Caddy 把**所有站点域名指向同一个 3000 端口**即可。
 
@@ -191,21 +259,21 @@ novel1.example.com, novel2.example.com, novel3.example.com {
 
 ---
 
-## 5. 可选：启用 Playwright / Hyperbrowser 采集策略
+## 6. 可选：启用 Playwright / Hyperbrowser 采集策略
 
 规则中的「抓取策略」默认为 HTTP 直连（最轻量）。需要 JS 渲染时：
 
-### Docker 容器内追加 Playwright（示例 Dockerfile.playwright）
-
-```dockerfile
-FROM novel-system:latest
-USER root
-RUN bun add playwright && bunx playwright install --with-deps chromium
-```
+### Docker：构建参数一键开启（推荐）
 
 ```bash
-docker build -f Dockerfile.playwright -t novel-system:pw .
-# 然后把 docker-compose.yml 的 image 改为 novel-system:pw，重新 up -d
+# 构建时安装 chromium（镜像约 +400MB），容器内 JS 渲染策略立即可用
+INSTALL_PLAYWRIGHT=true docker compose up -d --build
+```
+
+### 裸机：进项目目录执行
+
+```bash
+cd /opt/novel-system && bunx playwright install chromium
 ```
 
 ### Hyperbrowser（云端，无需本地浏览器）
@@ -216,7 +284,7 @@ docker build -f Dockerfile.playwright -t novel-system:pw .
 
 ---
 
-## 6. 数据备份与恢复
+## 7. 数据备份与恢复
 
 ```bash
 # 备份（数据库 + 文件；download/ 为生成产物，可选备份）
@@ -235,7 +303,7 @@ docker compose restart
 
 ---
 
-## 7. 常见问题（FAQ）
+## 8. 常见问题（FAQ）
 
 **Q1：访问 3000 端口无响应？**
 `docker compose logs novel-system` 查看日志；确认云服务器安全组/防火墙放行 3000（或用 Nginx 80/443 反代）。

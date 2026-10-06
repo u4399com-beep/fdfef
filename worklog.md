@@ -1010,3 +1010,24 @@ Stage Summary:
 - 仓库状态收敛：本地分叉与远程 R14-R18 合并完成，远程已验证的方案（jsPages 直升+OPTION 事件接线+部分解析守卫+cover keep）为基线，本地补入两项增量（锚点后代点击 + membership 截断守卫）形成互补全覆盖
 - 用户指令「目录分页核查修复+增量采集」由远程 R18 完成（rqwb 114 章全量恢复、31 本增量 +243 章/0 错误），本轮整合后基线更强：交互模型覆盖 li 锚点/select option/下一页链接三类，截断检测覆盖增量+首采两场景
 - 遗留：cunshu/kelexs 源站集群（140.188.128.0/24）对本机出口 IP 的 TCP 层封禁通常数小时内自行解除，解封后任务可直接复跑；admin 默认密码 admin123 建议登录后立即修改
+
+---
+Task ID: R19-deploy
+Agent: Z.ai Code (main)
+Task: 生成一键部署命令（deploy.sh 裸机一键 + oneclick.sh 远程一行 + Docker 体系升级 + DEPLOY.md 一键章节）
+
+Work Log:
+- 【恢复/探查】确认仓库为公开仓库（git ls-remote 匿名可达）；db/custom.db + storage 3955 文件（封面/章节 txt）已入库 → git clone 即自带全部数据；全部 page.tsx 均 force-dynamic → 构建期无 DB 依赖；Playwright 为可选增强（动态 import + 缺失时优雅降级）；管理账户首登自动引导（admin/admin123）
+- 【Dockerfile 升级】①.strip 60MB dev DB：.dockerignore 排除 db/.env/upload/.tmp-*/mini-services/skills 等 12 项，runner 改 mkdir -p /app/db（数据经 bind mount 从 git clone 内容提供）②builder 构建前 prisma db push 生成空库兜底（防个别路由构建期查库）③新增 ARG INSTALL_PLAYWRIGHT：INSTALL_PLAYWRIGHT=true docker compose up -d --build 一键安装 chromium（~+400MB）启用 JS 渲染策略④runner 显式 COPY playwright/playwright-core 包体（standalone nft 对动态 import 追踪不可靠）
+- 【docker-compose.yml】build.args 传递 INSTALL_PLAYWRIGHT；新增 AUTH_SECRET 透传（可选，不设时 db/auth-secret 文件自动生成兜底）
+- 【deploy.sh 新建】裸机一键管理脚本：up（装依赖→prisma generate→db push→构建→nohup 启动→60s 健康轮询）/down/restart/status/logs/build/update 子命令；PID 文件管理（.run/server.pid）；PORT/FORCE_BUILD/FORCE_INSTALL 环境变量；关键坑内置——standalone cwd 不读根 .env，DATABASE_URL 绝对路径显式注入；修复 set -e 陷阱（run_env 中 AND 短路列表返回非零致误退出 → 改显式 export 默认空值）
+- 【scripts/oneclick.sh 新建】全新服务器一行部署：curl -fsSL .../scripts/oneclick.sh | bash；自动装 git（apt/dnf/yum）→ clone（--depth 1）→ 有 Docker 走 compose up --build、无 Docker 自动装 Bun 走 deploy.sh up → 完成后输出访问地址/首登账密/数据位置/升级命令/改密提醒；HYPERBROWSER_API_KEY 可经环境变量写入 .env
+- 【DEPLOY.md 升级】顶部新增「1. 一键部署（30 秒开始）」三种路径（一行命令/两条命令/三条命令）+ 部署完成必读表；目录重排 1-8；裸机章节改为 deploy.sh 用法 + systemd 可选；Playwright 章节改为构建参数一键开启；Docker 分步补充数据随仓库自带说明
+- 【清理精简】git rm .tmp-jsp.ts / .tmp-rqread.json（前会话临时探针误入库）
+- 【验证】bash -n 三脚本通过；docker-compose.yml python yaml 合法；deploy.sh status/down/未知命令分支实测行为正确（不触发构建）；沙箱无 docker 无法实测镜像构建，Dockerfile 逻辑经逐行审查（保留 prisma CLI 闭包清单——上轮实测踩坑成果）
+
+Stage Summary:
+- 一键部署三路径落地：①零依赖一行（oneclick.sh 自动 Docker/Bun 择路）②git clone + docker compose up -d --build ③git clone + bash deploy.sh up
+- 仓库公开 + 数据随仓库自带（DB+3955 存储文件）→ 任何服务器克隆即得完整可运行系统；镜像不再内嵌 dev DB（体积 -60MB 且不泄漏采集数据）
+- INSTALL_PLAYWRIGHT 构建参数补齐 JS 渲染策略容器化缺口；AUTH_SECRET 链路完整（env → db/auth-secret → 进程内随机三级兜底）
+- 待办延续：R18 主线（目录分页全规则核查+增量采集）已由远程基线完成并合并；后续可做 Docker Hub 预构建镜像发布与 GitHub Actions CI
