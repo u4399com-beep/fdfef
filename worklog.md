@@ -1065,3 +1065,20 @@ Stage Summary:
 - 交付用户立即修复命令：裸机 bunx playwright install-deps chromium / 容器 docker compose exec novel-system bun node_modules/playwright/cli.js install-deps chromium / Docker 根治 git pull && INSTALL_PLAYWRIGHT=true docker compose up -d --build
 - 错误面优化：同类问题今后在任务日志中直接可见中文修复指引，无需人工对照英文 launch 崩溃栈排障
 - Dockerfile --with-deps 静默失败隐患消除（拆步显式化）
+
+---
+Task ID: R19-deploy-net
+Agent: Z.ai Code (main)
+Task: 服务器采集任务报 "请求失败: Unable to connect. Is the computer able to access the url?" —— 连接层故障诊断增强
+
+Work Log:
+- 【根因定位】"Unable to connect..." 是 Bun fetch 的 TCP/DNS 连接层失败文案（引擎 isNetworkUnreachableError 已正确识别，注释明确 Bun 下 DNS 失败与连接拒绝同文案）——非 WAF 403，是服务器到目标站的网络不可达（机房 IP 被封/DNS 问题/出站防火墙/地域限制）。引擎行为正确：重试→熔断记录→镜像轮换（若配置）→任务失败落日志
+- 【fetcher.ts 增强】新增 diagnoseNetworkError（与 diagnoseLaunchError 同风格）：fetchPage 全部策略统一出口处对网络类最终错误做中文诊断包装——四步排查指引（服务器 curl 验证连通 / nslookup 检查 DNS / mirrorUrls 镜像或切 Hyperbrowser 云出口 / 出站防火墙放行 80/443）+ 原始错误保留；防重入检查；关键约束：原始文案完整保留在 message 内保证 isNetworkUnreachableError 全文匹配不受影响
+- 【回归实测】临时探针验证：原始错误识别 true / 包装后识别 true（熔断器与镜像轮换不受影响）/ HTTP 403 不误判 false；探针用后即删
+- 【验证】tsc --noEmit 0 错误、lint 0 错误
+- 【遗留】连接层失败不自动升级策略（playwright 同 IP 无意义；hyperbrowser 需 API Key 且有调用成本）——以诊断指引引导用户配置 mirrorUrls 或手动切云策略，属稳妥决策
+
+Stage Summary:
+- 用户侧立即动作：服务器上 curl -vI / nslookup 分层定位（DNS vs TCP），封 IP 则配镜像或切 Hyperbrowser 云策略
+- 错误面优化：今后连接层故障的任务日志直接含四步中文排查指引 + 目标域名，不再只有低信息量英文文案
+- 与上轮 launch 诊断包装形成完整覆盖：浏览器启动失败 / 网络不可达两大部署期高频故障均有可执行指引

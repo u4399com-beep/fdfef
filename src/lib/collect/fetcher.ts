@@ -747,11 +747,15 @@ export async function fetchPage(url: string, cfg: FetchConfig = {}): Promise<Fet
           lastErr = err
         }
       }
-      // 透传最后一个错误；已有「请求失败:」前缀的不重复叠加
-      if (lastErr instanceof Error && !lastErr.message.startsWith('请求失败:')) {
-        throw new Error(`请求失败: ${lastErr.message}`)
-      }
-      throw lastErr instanceof Error ? lastErr : e
+      // 透传最后一个错误；已有「请求失败:」前缀的不重复叠加；
+      // 网络类故障升级为带排查步骤的中文诊断（保留原始文案以维持网络类识别）
+      const finalErr =
+        lastErr instanceof Error
+          ? lastErr.message.startsWith('请求失败:')
+            ? lastErr
+            : new Error(`请求失败: ${lastErr.message}`)
+          : e
+      throw diagnoseNetworkError(finalErr, url)
     }
     throw e
   }
@@ -841,6 +845,33 @@ export function swapOrigin(url: string, mirror: string): string | null {
   } catch {
     return null
   }
+}
+
+/**
+ * 连接层故障的最终诊断包装：fetchPage 全部重试/镜像轮换均失败后，
+ * 把 "请求失败: Unable to connect..." 这类低信息量错误升级为可行动的中文排查指引。
+ * 注意：原始错误文案完整保留在 message 内——isNetworkUnreachableError 按全文匹配
+ * （如 /unable to connect/i），包装后后续链路仍能正确识别为网络类错误。
+ */
+function diagnoseNetworkError(e: unknown, url: string): Error {
+  const raw = e instanceof Error ? e.message : String(e)
+  // 防重入：已诊断过直接返回
+  if (raw.includes('连接失败（服务器无法访问目标站')) return e instanceof Error ? e : new Error(raw)
+  let host = ''
+  try {
+    host = new URL(url).hostname
+  } catch {
+    /* ignore */
+  }
+  const brief = url.length > 80 ? `${url.slice(0, 80)}…` : url
+  return new Error(
+    `连接失败（服务器无法访问目标站 [${host}]，DNS/TCP 网络层故障，非 WAF 拦截）。排查步骤——` +
+      `① 在服务器上执行 curl -vI --max-time 15 ${brief} 验证连通；` +
+      `② 执行 nslookup ${host} 检查 DNS 解析（Bun 下 DNS 失败与连接拒绝同文案）；` +
+      `③ 若目标站封机房 IP：在规则配置 mirrorUrls 镜像域名，或将抓取策略切换为「Hyperbrowser 云隐身」（云出口 IP 与服务器不同）；` +
+      `④ 检查服务器出站防火墙/安全组是否放行 80/443。` +
+      `原始错误：${raw.slice(0, 200)}`,
+  )
 }
 
 async function fetchPageInner(url: string, cfg: FetchConfig): Promise<FetchResult> {
