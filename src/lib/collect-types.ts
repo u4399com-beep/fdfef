@@ -4,7 +4,7 @@
 
 export type SelectorMode = 'css' | 'regex' | 'xpath'
 export type RuleType = 'list' | 'book' | 'toc' | 'content'
-export type FetchStrategy = 'http' | 'playwright' | 'hyperbrowser'
+export type FetchStrategy = 'http' | 'playwright' | 'hyperbrowser' | 'curl'
 
 /** 单字段选择器：所有字段统一抽象 */
 export interface FieldSelector {
@@ -21,6 +21,14 @@ export interface FieldSelector {
    * 交由清洗器转行。无此需求的字段不填即无副作用。
    */
   transform?: 'base64'
+  /**
+   * 提取后正则改写（URL/值变换增强）：命中 pattern 时按 replacement 改写
+   * （String.replace 语义，$1..$9 引用捕获组，仅替换首次命中）。
+   * 典型场景：杰奇系站点把书籍页 og:novel:read_url 变换为 AJAX 全量目录地址
+   * （/book/6527/index.html → /ajax_novels/chapterlist/6527.html），
+   * 静态目录页只带首尾章节、全量靠懒加载时，直接改指 AJAX 端点即可纯 HTTP 采全。
+   */
+  replace?: { pattern: string; replacement: string }
 }
 
 /** 列表项内相对子选择器 */

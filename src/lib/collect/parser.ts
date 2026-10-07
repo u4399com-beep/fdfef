@@ -118,6 +118,18 @@ function applyTransform(value: string, transform: FieldSelector['transform']): s
   }
 }
 
+/** 提取后正则改写（FieldSelector.replace）：命中 pattern 时按 replacement 改写，$1..$9 引捕获组 */
+function applyValueReplace(value: string, replace?: FieldSelector['replace']): string {
+  if (!replace?.pattern || !value) return value
+  try {
+    const re = new RegExp(replace.pattern)
+    // pattern 已含 g 标志时 replace 本身会全局替换；默认仅首次命中（URL 变换场景足够）
+    return value.replace(re, replace.replacement)
+  } catch {
+    return value // 非法正则静默跳过，不破坏原值
+  }
+}
+
 function cleanText(s: string): string {
   return collapseWs(s.replace(/\u00a0/g, ' '))
 }
@@ -182,6 +194,7 @@ export function selectValue(html: string, sel: FieldSelector, opts: SelectorOpts
   const finish = (v: string) => {
     let out = trim ? v.trim() : v
     out = applyTransform(out, sel.transform)
+    out = applyValueReplace(out, sel.replace)
     if (opts.baseUrl && out) {
       const looksUrl = /^(https?:\/\/|\/\/|\/)/i.test(out)
       if (urlSemantics) {

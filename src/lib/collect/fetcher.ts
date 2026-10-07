@@ -552,14 +552,30 @@ const WAF_SIGNATURES = [
   // Cloudflare 挑战页（headless 无法通过，但至少给出明确的 WAF 报错而非静默解析为空）
   /<title>[^<]*just a moment[^<]*<\/title>/i,
   /challenges\.cloudflare\.com\//i,
+  // Cloudflare 中文变体挑战页：zh-cn「请稍候…」/ zh-tw「請稍候…」
+  /<title>[^<]*(?:请|請)稍候[^<]*<\/title>/,
+  /_cf_chl_opt|_cf_chl_rt_tk/,
+]
+
+/**
+ * 长页面（>20KB）专用高特异度签名：CF 中文挑战页带内联脚本可超 20KB，
+ * 原逻辑只查前 2 个 GoEdge 签名导致漏判 → 挑战页被当正常内容交给解析器（静默 0 结果）。
+ * 这些 token 只出现在 WAF 挑战脚本里，正文页几乎不可能含，误判风险极低。
+ */
+const WAF_LONGPAGE_SIGNATURES = [
+  /WAF\/VERIFY\/CAPTCHA/i,
+  /GOEDGE_WAF_CAPTCHA/i,
+  /challenges\.cloudflare\.com\//i,
+  /_cf_chl_opt|_cf_chl_rt_tk/,
+  /<title>[^<]*(?:请|請)稍候[^<]*<\/title>/,
 ]
 
 /** 判断 HTML 是否为 WAF/验证码挑战页或硬拒绝页（403 黑名单） */
 export function isWafChallengeHtml(html: string): boolean {
   if (isHardDeniedHtml(html)) return true
   if (!html || html.length > 20000) {
-    // 验证页很小；超长页面再做签名兜底检查（避免正文误判）
-    return WAF_SIGNATURES.slice(0, 2).some((re) => re.test(html))
+    // 验证页很小；超长页面再用高特异度签名兜底检查（避免正文误判）
+    return WAF_LONGPAGE_SIGNATURES.some((re) => re.test(html))
   }
   return WAF_SIGNATURES.some((re) => re.test(html))
 }
@@ -1038,6 +1054,111 @@ async function solveCookiesViaIv8(
   })
 }
 
+// ============================================================
+// curl 子进程通道：TLS/HTTP2 指纹级反反爬兜底
+// ============================================================
+// Cloudflare 等按客户端 TLS/JA3 指纹打分的 WAF 会拦截 Bun fetch（BoringSSL
+// 指纹）与 headless Chromium（自动化信号），但常规放行系统 curl（OpenSSL
+// 大众指纹）。实测（101kks.com，2026-10）：同 IP 同 UA 下 bun fetch 403 挑战、
+// CloakBrowser 隐身引擎 18s 等待后仍「请稍候…」，系统 curl 稳定 200。
+// 该通道 spawn 系统 curl 完整复刻规则 headers，作为 http 策略遇挑战时的
+// 第一顺位降级（成功后 Set-Cookie 吸入全局罐，后续 bun fetch 直连复用）。
+
+interface CurlFetchResult {
+  html: string
+  status: number
+  finalUrl: string
+}
+
+async function fetchViaCurl(url: string, cfg: FetchConfig, timeout: number): Promise<CurlFetchResult> {
+  const os = await import('node:os')
+  const fsp = await import('node:fs/promises')
+  const path = await import('node:path')
+  const headerFile = path.join(os.tmpdir(), `novel-curl-hdr-${Date.now()}-${Math.random().toString(36).slice(2, 8)}.txt`)
+  const headers = buildHeaders(cfg, url)
+  const args: string[] = [
+    '-s',
+    '-L',
+    '--compressed',
+    '--max-redirs', '8',
+    '--connect-timeout', String(Math.max(5, Math.min(15, Math.ceil(timeout / 2000)))),
+    '-m', String(Math.max(5, Math.ceil(timeout / 1000))),
+    '-D', headerFile, // 响应头落盘：解析 status 与 Set-Cookie（多跳全部转储，取最后一跳）
+    '-o', '-', // 正文走 stdout
+    // 写在正文尾部再剥离（含 url_effective 精确最终地址；正文含同名标记的概率可忽略）
+    '-w', '\n__NOVEL_CURL_EFFECTIVE__%{url_effective}',
+  ]
+  for (const [k, v] of Object.entries(headers)) {
+    const kl = k.toLowerCase()
+    if (kl === 'cookie' || kl === 'content-length' || kl === 'host') continue
+    args.push('-H', `${k}: ${v}`)
+  }
+  args.push(url)
+
+  const proc = (await import('node:child_process')).spawn('curl', args, { stdio: ['ignore', 'pipe', 'ignore'] })
+  try {
+    const chunks: Buffer[] = []
+    for await (const chunk of proc.stdout) chunks.push(chunk as Buffer)
+    const exitCode = await new Promise<number>((resolve, reject) => {
+      proc.on('error', reject) // ENOENT：curl 未安装
+      proc.on('close', (code) => resolve(code ?? -1))
+    })
+    const buf = Buffer.concat(chunks)
+    if (exitCode !== 0) {
+      // 28=总超时 7=连接失败 6=DNS 解析失败 60=证书校验失败（-k 不启用，证书异常应当暴露）
+      throw new Error(`curl 子进程退出码 ${exitCode}（28=超时/7=连接失败/6=DNS 失败/60=证书校验失败）`)
+    }
+    if (buf.length > MAX_HTML_BYTES) throw new Error(`页面过大（curl 通道 ${buf.length} 字节 > ${MAX_HTML_BYTES}）`)
+
+    // 剥离尾部 url_effective 标记
+    const MARKER = '__NOVEL_CURL_EFFECTIVE__'
+    let htmlBuf = buf
+    let finalUrl = url
+    const text0 = buf.toString('utf8')
+    const mi = text0.lastIndexOf(MARKER)
+    if (mi >= 0) {
+      finalUrl = text0.slice(mi + MARKER.length).trim() || url
+      htmlBuf = buf.subarray(0, Buffer.byteLength(text0.slice(0, mi), 'utf8'))
+    }
+
+    // 解析转储头：status 取最后一跳；Set-Cookie 全部吸入全局罐
+    const headerText = await fsp.readFile(headerFile, 'utf8').catch(() => '')
+    let status = 0
+    const statusMatches = [...headerText.matchAll(/^HTTP\/[\d.]+ (\d{3})/gim)]
+    if (statusMatches.length) status = Number(statusMatches[statusMatches.length - 1][1])
+    const setCookies = [...headerText.matchAll(/^set-cookie:\s*(.+)$/gim)].map((m) => m[1].trim())
+    if (setCookies.length) {
+      const h = new Headers()
+      for (const sc of setCookies) h.append('set-cookie', sc)
+      cookieJar.absorbFromFetch(urlHost(finalUrl), h)
+    }
+
+    const charset = detectCharset(htmlBuf, '', cfg.encoding ?? 'auto')
+    return { html: decodeBuffer(htmlBuf, charset), status, finalUrl }
+  } finally {
+    fsp.unlink(headerFile).catch(() => undefined)
+    proc.kill()
+  }
+}
+
+/** curl 通道完整抓取（节流 + 硬封禁识别 + WAF 标记，与 http 策略产出同构） */
+async function fetchWithCurl(url: string, cfg: FetchConfig, timeout: number, started: number): Promise<FetchResult> {
+  await domainThrottle.wait(url, cfg.throttleGap)
+  const { html, status, finalUrl } = await fetchViaCurl(url, cfg, timeout)
+  if (isHardDeniedHtml(html)) {
+    domainThrottle.reportBlock(finalUrl, 180_000)
+    throw new Error(`目标站拒绝访问（IP 临时封禁，HTTP 403）：${finalUrl}。已自动冷却 3 分钟`)
+  }
+  return {
+    html,
+    status,
+    finalUrl,
+    strategy: 'curl',
+    elapsedMs: Date.now() - started,
+    wafChallenged: isWafChallengeHtml(html),
+  }
+}
+
 async function fetchPageInner(url: string, cfg: FetchConfig): Promise<FetchResult> {
   if (!/^https?:\/\//i.test(url)) throw new Error(`非法 URL：${url}`)
   // 熔断检查（含 playwright/hyperbrowser 策略）：打开则快速失败，
@@ -1049,6 +1170,7 @@ async function fetchPageInner(url: string, cfg: FetchConfig): Promise<FetchResul
 
   if (strategy === 'playwright') return fetchWithPlaywright(url, cfg, timeout, started)
   if (strategy === 'hyperbrowser') return fetchWithHyperbrowser(url, cfg, timeout, started)
+  if (strategy === 'curl') return fetchWithCurl(url, cfg, timeout, started)
 
   // JS 翻页交互（jsPages）依赖浏览器点击逐页拼接快照：HTTP 直连只能拿到首屏。
   // 规则配置了 jsPages 即视为内容需要 JS 交互才完整 → 自动升级 Playwright
@@ -1106,9 +1228,19 @@ async function fetchPageInner(url: string, cfg: FetchConfig): Promise<FetchResul
       }
       return { html, status, finalUrl, strategy: 'http', elapsedMs: Date.now() - started }
     }
-    // WAF 挑战：先试纯 HTTP 无浏览器求解（GoEdge 系验证码可全程 HTTP 突破，
-    // 服务器无需安装 Playwright/chromium；成功后通行 cookie 全局复用）；
-    // 失败再升级浏览器渲染策略（DOM 求解兑底）
+    // WAF 挑战：第一顺位降级为系统 curl 指纹重放（TLS 指纹型 WAF（如 Cloudflare）
+    // 拦截 Bun/headless Chromium 但放行 curl，成功即吸收通行 cookie 全局复用）；
+    // curl 未安装/仍被挑战 → 再试纯 HTTP 无浏览器求解（GoEdge 系验证码可全程 HTTP 突破，
+    // 服务器无需安装 Playwright/chromium）；最后升级浏览器渲染策略（DOM 求解兑底）
+    try {
+      const curlResult = await fetchWithCurl(url, cfg, timeout, started)
+      if (!curlResult.wafChallenged) {
+        console.warn(`[curl-fallback] WAF 挑战页降级 curl 指纹重放成功：${url.slice(0, 100)}`)
+        return { ...curlResult, elapsedMs: Date.now() - started }
+      }
+    } catch {
+      /* curl 不可用（未安装/网络层失败）→ 继续原有求解链 */
+    }
     const solvedHttp = await withWafSolveLock(url, () => solveWafCaptchaOverHttp(url, cfg, timeout, started))
     if (solvedHttp) return { ...solvedHttp, elapsedMs: Date.now() - started }
     // HTTP 求解未通过：升级为 Playwright（带验证码求解），仅尝试一次
@@ -1753,6 +1885,26 @@ async function fetchWithPlaywright(url: string, cfg: FetchConfig, timeout: numbe
     await page.waitForLoadState('networkidle', { timeout: 6000 }).catch(() => undefined)
     await page.waitForTimeout(800)
 
+    // Cloudflare 托管挑战自动放行等待：挑战页（Just a moment / 请稍候…）会在
+    // 浏览器内自动解题 5~10s 后重定向回原页。轮询 page.title() 天然跨导航
+    // （waitForFunction 在导航时随执行上下文销毁而抛错，不可用）。
+    // 挑战从未出现 → 立即通过；始终不通过 → 等满上限后照常截图，
+    // 由 isWafChallengeHtml 给出明确的 WAF 报错（而非静默解析为空）。
+    const cfWaitMs = Math.min(18000, Math.max(timeout, 10000))
+    const cfDeadline = Date.now() + cfWaitMs
+    let cfChallengeSeen = false
+    while (Date.now() < cfDeadline) {
+      const title = (await page.title().catch(() => '')) || ''
+      if (!/just a moment|请稍候|請稍候|attention required|checking your browser|安全验证/i.test(title)) break
+      cfChallengeSeen = true
+      await page.waitForTimeout(800)
+    }
+    if (cfChallengeSeen) {
+      // 挑战通过后的重定向目标页：等网络稳定再截图，避免抓到半渲染 DOM
+      await page.waitForLoadState('networkidle', { timeout: 6000 }).catch(() => undefined)
+      await page.waitForTimeout(600)
+    }
+
     let html = await page.content()
     let finalUrl = page.url()
 
@@ -2081,6 +2233,7 @@ interface PlaywrightPage {
   waitForTimeout: (ms: number) => Promise<void>
   content: () => Promise<string>
   url: () => string
+  title: () => Promise<string>
   reload: (o?: Record<string, unknown>) => Promise<unknown>
   $: (sel: string) => Promise<PlaywrightElement | null>
   $$: (sel: string) => Promise<PlaywrightElement[]>

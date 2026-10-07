@@ -267,6 +267,7 @@ function FetchFields({ cfg, onChange }: { cfg: Record<string, unknown>; onChange
             <SelectTrigger className="h-8 text-xs"><SelectValue /></SelectTrigger>
             <SelectContent>
               <SelectItem value="http">HTTP 直连</SelectItem>
+              <SelectItem value="curl">curl 指纹（TLS级反盾）</SelectItem>
               <SelectItem value="playwright">Playwright (JS渲染)</SelectItem>
               <SelectItem value="hyperbrowser">Hyperbrowser (云隐身)</SelectItem>
             </SelectContent>
