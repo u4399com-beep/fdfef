@@ -1,4 +1,6 @@
 import { NextRequest } from 'next/server'
+import fs from 'node:fs'
+import path from 'node:path'
 import { db } from '@/lib/db'
 import { DEFAULT_DOWNLOAD, mergeCleaning } from '@/lib/collect-types'
 import { json, badRequest, isPlainObject, readJson } from '../_lib/http'
@@ -6,6 +8,31 @@ import { requireAuth } from '@/lib/auth'
 
 export const runtime = 'nodejs'
 export const dynamic = 'force-dynamic'
+
+/** 只读运行时引擎状态（反反爬面板展示用）：不触发下载/安装，仅探测 env 与本地文件存在性 */
+function engineStatus() {
+  const pkg = (p: string) => fs.existsSync(path.join(process.cwd(), 'node_modules', p))
+  const engineEnv = (process.env.BROWSER_ENGINE ?? '').trim().toLowerCase()
+  const browserEngine =
+    engineEnv === 'cloakbrowser' || engineEnv === 'cloak'
+      ? 'cloakbrowser'
+      : engineEnv
+        ? 'playwright'
+        : process.env.CLOAKBROWSER_LICENSE_KEY || process.env.CLOAKBROWSER_BINARY_PATH
+          ? 'cloakbrowser'
+          : 'playwright'
+  return {
+    browserEngine,
+    playwrightInstalled: pkg('playwright') || pkg('playwright-core'),
+    cloakbrowserInstalled: pkg('cloakbrowser'),
+    hyperbrowserConfigured: Boolean((process.env.HYPERBROWSER_API_KEY ?? '').trim()),
+    iv8Configured: Boolean((process.env.IV8_COMMAND ?? '').trim() || (process.env.IV8_ENABLED ?? '').trim() === '1'),
+    iv8SolverPresent: fs.existsSync(path.join(process.cwd(), 'scripts', 'iv8-solver.py')),
+    captchaVisionConfigured: Boolean(
+      (process.env.CAPTCHA_VISION_API_BASE ?? '').trim() && (process.env.CAPTCHA_VISION_API_KEY ?? '').trim(),
+    ),
+  }
+}
 
 /** 读取系统配置（清洗规则 + 下载注入）。清洗配置经 mergeCleaning 收敛：
  * 存量库中旧版配置缺新增字段（如启发式开关）时补默认值，UI 开关不会收到 undefined */
@@ -17,7 +44,7 @@ export async function GET(req: NextRequest) {
   try {
     if (row?.download) download = { ...download, ...JSON.parse(row.download) }
   } catch { /* keep defaults */ }
-  return json({ cleaning: mergeCleaning(row?.cleaning), download })
+  return json({ cleaning: mergeCleaning(row?.cleaning), download, engines: engineStatus() })
 }
 
 /** 保存系统配置 */

@@ -94,6 +94,13 @@ export interface FetchConfig {
     waitAfterClick?: number // 点击后等待渲染 ms，默认 1200
     maxPages?: number // 安全上限，默认 30
   }
+  /**
+   * iv8 补环境求解通道（JS 计算型 cookie 挑战，瑞数/acw_sc__v2 类）：
+   * true = 该规则强制启用（即使未设 IV8_ENABLED）；false/缺省 = 仅当
+   * IV8_ENABLED=1 或 IV8_COMMAND 配置后随启发式自动触发。
+   * 需服务器具备求解命令（内置 scripts/iv8-solver.py + pip install iv8）
+   */
+  iv8Cookies?: boolean
 }
 
 /** 列表页规则 */

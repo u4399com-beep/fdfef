@@ -1,9 +1,10 @@
+import { spawn } from 'node:child_process'
 import fs from 'node:fs'
 import path from 'node:path'
 import type { FetchConfig } from '../collect-types'
 
 // ============================================================
-// 抓取器：多策略（http / playwright / hyperbrowser）
+// 抓取器：多策略（http / playwright / cloakbrowser / hyperbrowser）
 // 反反爬增强层：
 //   1. CookieJar 会话保持（WAF 通过后 cookie 全局复用，磁盘持久化跨重启保留）
 //   2. UA 轮换 + Client Hints / Sec-Fetch 真实浏览器指纹
@@ -15,6 +16,13 @@ import type { FetchConfig } from '../collect-types'
 //   5. 验证码图片预处理（放大+二值化去噪）后再交 VLM——识别率关键环节
 //   6. HTTP 被 WAF 拦截时自动升级为浏览器渲染
 //   7. 编码识别（GBK/GB2312/Big5 经 iconv-lite）
+//   8. 浏览器引擎可插拔（BROWSER_ENGINE）：playwright（默认，社区开源）|
+//      cloakbrowser（源码级 87 处 C++ 隐身补丁的 Chromium，npm 包同 API，
+//      Cloudflare Turnstile/FingerprintJS 实测满分；启动失败自动降级 playwright）
+//   9. iv8 补环境求解通道（外部 Python 命令）：JS 计算型 cookie 挑战
+//      （瑞数/acw_sc__v2 等混淆 JS 写 cookie 后刷新，无验证码图可识）——
+//      页面 HTML 喂给 iv8（V8 内核 C++ 层 BOM/DOM 模拟）跑出通行 cookie 后重放，
+//      不需真实浏览器。IV8_ENABLED=1 或 IV8_COMMAND 自定义命令启用
 // ============================================================
 
 const UA_LIST = [
@@ -887,6 +895,149 @@ function diagnoseNetworkError(e: unknown, url: string): Error {
   )
 }
 
+// ============================================================
+// iv8 补环境求解通道（外部 Python 命令）
+// 适用：JS 计算型 cookie 挑战——响应 200 但 body 是混淆 JS，执行后
+// document.cookie= 计算值并刷新（瑞数系 / acw_sc__v2 / acw_tc 类），
+// 无验证码图片可识、无表单可提交，纯 HTTP 无法直接突破。
+// 原理：把挑战页 HTML 喂给外部 iv8 求解器（Python 原生 V8 扩展，
+// C++ 层模拟 BOM/DOM，不启动真实浏览器），在补环境里跑出通行 cookie，
+// 吸收进 CookieJar 后重放请求。iv8 未配置时该通道静默跳过，零开销。
+// env：IV8_ENABLED=1（使用内置 scripts/iv8-solver.py，需 pip install iv8）
+//      IV8_COMMAND="python3 /path/to/your-solver.py"（自定义命令，stdin 收
+//      JSON {url,ua,html}，stdout 回 JSON {ok,cookies[],finalUrl?,error?}）
+// ============================================================
+
+/** JS 计算型 cookie 挑战页启发式识别（保守：特征不全不触发，宁漏勿误） */
+export function looksLikeJsCookieChallenge(html: string): boolean {
+  if (!html || html.length < 300 || html.length > 600_000) return false
+  if (!/<script/i.test(html)) return false
+  // 瑞数系特征：大段变量运算流 + 标志性模式（无明文 document.cookie）
+  if (/\$[a-z0-9_$]{1,12}\s*=\s*~\[\]|FSSBBIl1UgzbN7N|while\s*\(\s*!\s*!\s*\[\]\s*\)|\$_ts=\s*window/.test(html)) return true
+  // 通用特征：JS 明文写 cookie 且随后刷新/跳转（acw_sc__v2 等标准形态）
+  const cookieWrite = /document\s*\.\s*cookie\s*=\s*['"`][^'"`]{3,}['"`]/.test(html) || /document\s*\.\s*cookie\s*=\s*[a-zA-Z_$]/.test(html)
+  if (!cookieWrite) return false
+  const reload =
+    /location\.reload\s*\(|location\.replace\s*\(|window\.location(?:\.href)?\s*=|document\.location(?:\.href)?\s*=|location\.href\s*=\s*location\.href/.test(html)
+  return reload
+}
+
+function extractLastJson(text: string): unknown {
+  const s = text.trim()
+  try {
+    return JSON.parse(s)
+  } catch {
+    /* 容忍求解器输出日志行：扫描全部顶层 '{' 位置，从最后一个尝试解析 */
+  }
+  const candidates: number[] = []
+  let depth = 0
+  let inStr: string | null = null
+  for (let i = 0; i < s.length; i++) {
+    const ch = s[i]
+    if (inStr) {
+      if (ch === '\\') i++
+      else if (ch === inStr) inStr = null
+      continue
+    }
+    if (ch === '"' || ch === "'") inStr = ch
+    else if (ch === '{') {
+      if (depth === 0) candidates.push(i)
+      depth++
+    } else if (ch === '}') depth = Math.max(0, depth - 1)
+  }
+  for (let k = candidates.length - 1; k >= 0; k--) {
+    try {
+      return JSON.parse(s.slice(candidates[k]))
+    } catch {
+      /* try next */
+    }
+  }
+  return null
+}
+
+interface Iv8SolverResult {
+  ok: boolean
+  cookies?: { name: string; value: string; domain?: string }[]
+  finalUrl?: string
+  error?: string
+}
+
+function iv8Configured(): boolean {
+  return Boolean((process.env.IV8_COMMAND ?? '').trim() || (process.env.IV8_ENABLED ?? '').trim() === '1')
+}
+
+function getIv8Command(): string | null {
+  const explicit = (process.env.IV8_COMMAND ?? '').trim()
+  if (explicit) return explicit
+  if ((process.env.IV8_ENABLED ?? '').trim() === '1') {
+    const local = path.join(process.cwd(), 'scripts', 'iv8-solver.py')
+    if (fs.existsSync(local)) return `python3 "${local}"`
+    // standalone 构建不携带 scripts/：一次性提示而非每次请求刷屏
+    console.warn('[iv8] IV8_ENABLED=1 但未找到 scripts/iv8-solver.py（standalone 部署需手动携带或用 IV8_COMMAND 指定），iv8 通道跳过')
+  }
+  return null
+}
+
+/** 调用外部 iv8 求解器：stdin 传 {url,ua,html}，stdout 收 {ok,cookies[]}；失败/超时返回非阻断结果 */
+async function solveCookiesViaIv8(
+  url: string,
+  ua: string,
+  html: string,
+  timeoutMs = 45_000,
+): Promise<Iv8SolverResult> {
+  const command = getIv8Command()
+  if (!command) return { ok: false, error: 'iv8 未配置（IV8_ENABLED=1 或 IV8_COMMAND）' }
+  const payload = JSON.stringify({ url, ua, html, timeout: timeoutMs })
+  return new Promise<Iv8SolverResult>((resolve) => {
+    let settled = false
+    const done = (r: Iv8SolverResult) => {
+      if (!settled) {
+        settled = true
+        resolve(r)
+      }
+    }
+    let stdout = ''
+    try {
+      const child = spawn(command, { shell: true, stdio: ['pipe', 'pipe', 'pipe'] })
+      const timer = setTimeout(() => {
+        try {
+          child.kill('SIGKILL')
+        } catch {
+          /* ignore */
+        }
+        done({ ok: false, error: `iv8 求解超时（${timeoutMs}ms）` })
+      }, timeoutMs)
+      child.stdout?.on('data', (d: Buffer) => {
+        stdout += d.toString()
+        if (stdout.length > 2_000_000) {
+          try {
+            child.kill('SIGKILL')
+          } catch {
+            /* ignore */
+          }
+        }
+      })
+      child.on('error', (e: Error) => {
+        clearTimeout(timer)
+        done({ ok: false, error: `iv8 命令启动失败：${e.message}` })
+      })
+      child.on('close', () => {
+        clearTimeout(timer)
+        const parsed = extractLastJson(stdout)
+        if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+          const r = parsed as Iv8SolverResult
+          if (typeof r.ok === 'boolean') return done(r)
+        }
+        done({ ok: false, error: `iv8 输出无法解析：${stdout.slice(0, 200) || '(空)'}` })
+      })
+      child.stdin?.write(payload)
+      child.stdin?.end()
+    } catch (e) {
+      done({ ok: false, error: e instanceof Error ? e.message : String(e) })
+    }
+  })
+}
+
 async function fetchPageInner(url: string, cfg: FetchConfig): Promise<FetchResult> {
   if (!/^https?:\/\//i.test(url)) throw new Error(`非法 URL：${url}`)
   // 熔断检查（含 playwright/hyperbrowser 策略）：打开则快速失败，
@@ -910,9 +1061,12 @@ async function fetchPageInner(url: string, cfg: FetchConfig): Promise<FetchResul
   let status = 0
   let finalUrl = url
   for (let attempt = 0; attempt < 2; attempt++) {
+    // 显式构建 headers：iv8 求解需要拿到「本次请求实际使用的 UA」
+    //（JS 计算的 cookie 通常与 UA 绑定，重放必须同 UA 才有效）
+    const headers = buildHeaders(cfg, url)
     const { res, finalUrl: fetchedUrl } = await fetchWithRetry(
       url,
-      buildHeaders(cfg, url),
+      headers,
       timeout,
       2,
       cfg.rotateUA === false,
@@ -936,6 +1090,20 @@ async function fetchPageInner(url: string, cfg: FetchConfig): Promise<FetchResul
       throw new Error(`目标站拒绝访问（IP 临时封禁，HTTP 403）：${finalUrl}。已自动冷却 3 分钟`)
     }
     if (!isWafChallengeHtml(html)) {
+      // JS 计算型 cookie 挑战（200 + 混淆 JS 写 cookie 刷新）：iv8 外部求解通道
+      // 触发条件：启发式命中 且（env 启用 或 规则显式 iv8Cookies=true）
+      if (looksLikeJsCookieChallenge(html) && (cfg.iv8Cookies || iv8Configured())) {
+        console.warn(`[iv8-solve] 命中 JS cookie 挑战（${effectiveFinal.slice(0, 100)}），调用外部 iv8 求解器…`)
+        const solved = await solveCookiesViaIv8(effectiveFinal, headers['User-Agent'] ?? '', html)
+        if (solved.ok && solved.cookies?.length) {
+          // 通行 cookie 入 jar（同 UA 重放；absorbFromBrowser 签名兼容 {name,value}）
+          cookieJar.absorbFromBrowser(urlHost(effectiveFinal), solved.cookies)
+          console.warn(`[iv8-solve] 求解成功：获得 ${solved.cookies.length} 枚 cookie（${solved.cookies.map((c) => c.name).slice(0, 6).join(', ')}），携带重试`)
+          if (attempt === 0) continue // 消耗第二轮：带新 cookie 重新请求
+        } else {
+          console.warn(`[iv8-solve] 求解未成功：${(solved.error ?? '未知原因').slice(0, 200)}`)
+        }
+      }
       return { html, status, finalUrl, strategy: 'http', elapsedMs: Date.now() - started }
     }
     // WAF 挑战：先试纯 HTTP 无浏览器求解（GoEdge 系验证码可全程 HTTP 突破，
@@ -1394,9 +1562,11 @@ const BROWSER_STATE_KEY = '__novelPwBrowser'
 interface BrowserState {
   browser: PlaywrightBrowser | null
   starting: Promise<PlaywrightBrowser> | null
+  /** 当前共享浏览器实际使用的引擎（fetchWithPlaywright 据此决定 stealth 注入与结果标注） */
+  engine: BrowserEngine
 }
 const globalForBrowser = globalThis as unknown as { [BROWSER_STATE_KEY]?: BrowserState }
-const browserState: BrowserState = globalForBrowser[BROWSER_STATE_KEY] ?? { browser: null, starting: null }
+const browserState: BrowserState = globalForBrowser[BROWSER_STATE_KEY] ?? { browser: null, starting: null, engine: 'playwright' }
 globalForBrowser[BROWSER_STATE_KEY] = browserState
 
 /**
@@ -1418,28 +1588,83 @@ function diagnoseLaunchError(e: unknown): Error {
   return e instanceof Error ? e : new Error(msg)
 }
 
-async function getSharedBrowser(): Promise<PlaywrightBrowser | null> {
+// ============================================================
+// 浏览器引擎可插拔：playwright（默认）| cloakbrowser（源码级隐身 Chromium）
+// CloakBrowser：87 处 C++ 源码级指纹补丁（canvas/WebGL/音频/字体/GPU/网络时序/
+// 自动化信号），过 Cloudflare Turnstile、FingerprintJS、BrowserScan 等 30+ 检测，
+// Playwright 同 API（返回标准 Browser 对象），npm 包 cloakbrowser，二进制首次
+// 启动自动下载（~200MB）。env：BROWSER_ENGINE=cloakbrowser 强制启用；
+// CLOAKBROWSER_LICENSE_KEY（Pro）/ CLOAKBROWSER_BINARY_PATH（本地二进制，免下载）
+// 存在时自动启用。启动失败自动降级 playwright，采集不中断。
+// ============================================================
+
+type BrowserEngine = 'playwright' | 'cloakbrowser'
+
+function selectBrowserEngine(): BrowserEngine {
+  const env = (k: string) => (process.env[k] ?? '').trim()
+  const explicit = env('BROWSER_ENGINE').toLowerCase()
+  if (explicit === 'cloakbrowser' || explicit === 'cloak') return 'cloakbrowser'
+  if (explicit === 'playwright' || explicit === 'pw') return 'playwright'
+  // 自动判据：配置了许可证或本地二进制 → 有现成隐身引擎可用
+  if (env('CLOAKBROWSER_LICENSE_KEY') || env('CLOAKBROWSER_BINARY_PATH')) return 'cloakbrowser'
+  return 'playwright'
+}
+
+async function launchBrowserEngine(engine: BrowserEngine): Promise<PlaywrightBrowser> {
+  const args = [
+    '--no-sandbox',
+    '--disable-blink-features=AutomationControlled',
+    '--disable-features=IsolateOrigins,site-per-process',
+    '--disable-infobars',
+    '--window-size=1366,850',
+  ]
+  if (engine === 'cloakbrowser') {
+    const cloakSpec = 'cloakbrowser'
+    const cloak = (await import(/* webpackIgnore: true */ cloakSpec).catch(() => null)) as {
+      launch: (o: Record<string, unknown>) => Promise<PlaywrightBrowser>
+    } | null
+    if (!cloak) {
+      throw new Error('cloakbrowser 包未安装：请在项目目录执行 `bun add cloakbrowser`（首次启动会自动下载隐身 Chromium 二进制，约 200MB）')
+    }
+    // stealthArgs 默认开启（引擎自身的隐身参数集）；--no-sandbox 容器/root 必需
+    return cloak.launch({ headless: true, args })
+  }
   const pwSpec = 'playwright'
   const pw = (await import(/* webpackIgnore: true */ pwSpec).catch(() => null)) as {
     chromium: { launch: (o: Record<string, unknown>) => Promise<PlaywrightBrowser> }
   } | null
-  if (!pw) return null
+  if (!pw) {
+    throw new Error('Playwright 未安装：请在服务器执行 `bun add playwright && bunx playwright install chromium` 后使用 js 渲染策略')
+  }
+  return pw.chromium.launch({ headless: true, args })
+}
+
+async function getSharedBrowser(): Promise<PlaywrightBrowser | null> {
   // 复用存活实例
   const existing = browserState.browser
   if (existing && typeof existing.isConnected === 'function' && existing.isConnected()) return existing
   // 并发去重：共享同一个启动 Promise
   if (!browserState.starting) {
-    browserState.starting = pw.chromium
-      .launch({
-        headless: true,
-        args: [
-          '--no-sandbox',
-          '--disable-blink-features=AutomationControlled',
-          '--disable-features=IsolateOrigins,site-per-process',
-          '--disable-infobars',
-          '--window-size=1366,850',
-        ],
-      })
+    const startPromise = (async () => {
+      const engine = selectBrowserEngine()
+      try {
+        const b = await launchBrowserEngine(engine)
+        browserState.engine = engine
+        return b
+      } catch (e) {
+        if (engine === 'cloakbrowser') {
+          // 隐身引擎不可用（未装包/下载失败/二进制损坏）→ 自动降级，采集不中断
+          console.warn(
+            `[browser-engine] CloakBrowser 启动失败，自动降级 Playwright：${e instanceof Error ? e.message.slice(0, 240) : String(e)}`,
+          )
+          const b = await launchBrowserEngine('playwright')
+          browserState.engine = 'playwright'
+          return b
+        }
+        throw e
+      }
+    })()
+    browserState.starting = startPromise
       .then((b) => {
         browserState.browser = b
         return b
@@ -1461,6 +1686,7 @@ async function fetchWithPlaywright(url: string, cfg: FetchConfig, timeout: numbe
   if (!browser) {
     throw new Error('Playwright 未安装：请在服务器执行 `bun add playwright && bunx playwright install chromium` 后使用 js 渲染策略')
   }
+  const activeEngine: BrowserEngine = browserState.engine ?? 'playwright'
   const headers = buildHeaders(cfg, url)
   const jarCookie = cookieJar.header(url)
   // Cookie 单独经 addCookies 注入（context 级会话），避免 extraHTTPHeaders 里的静态 Cookie 头
@@ -1484,7 +1710,9 @@ async function fetchWithPlaywright(url: string, cfg: FetchConfig, timeout: numbe
   // try 覆盖 newContext 之后的全部步骤：addInitScript/addCookies 抛错时
   // context 也必须关闭，否则浏览器 context（含页面进程）泄漏
   try {
-    await context.addInitScript(STEALTH_SCRIPT)
+    // CloakBrowser 的隐身能力在 Chromium 源码层（87 处 C++ 补丁），运行时 JS 补丁
+    // 不再需要——重复注入反而引入可观测的行为差异，仅 playwright 引擎注入
+    if (activeEngine !== 'cloakbrowser') await context.addInitScript(STEALTH_SCRIPT)
 
     // 显式 cookies + jar 会话 cookies 一并注入
     const jarCookies: { name: string; value: string; domain?: string }[] = jarCookie
@@ -1576,7 +1804,7 @@ async function fetchWithPlaywright(url: string, cfg: FetchConfig, timeout: numbe
       html,
       status: isWafChallengeHtml(html) ? 403 : 200,
       finalUrl,
-      strategy: 'playwright',
+      strategy: activeEngine === 'cloakbrowser' ? 'cloakbrowser' : 'playwright',
       elapsedMs: Date.now() - started,
       wafChallenged: isWafChallengeHtml(html),
     }

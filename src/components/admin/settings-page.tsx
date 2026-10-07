@@ -46,6 +46,16 @@ interface DownloadCfg {
   obfuscationRate: number
 }
 
+interface EngineStatus {
+  browserEngine: 'playwright' | 'cloakbrowser'
+  playwrightInstalled: boolean
+  cloakbrowserInstalled: boolean
+  hyperbrowserConfigured: boolean
+  iv8Configured: boolean
+  iv8SolverPresent: boolean
+  captchaVisionConfigured: boolean
+}
+
 export function SettingsPage() {
   const { toast } = useToast()
   const [cleaning, setCleaning] = useState<CleaningCfg | null>(null)
@@ -59,12 +69,22 @@ export function SettingsPage() {
   const [newPw, setNewPw] = useState('')
   const [confirmPw, setConfirmPw] = useState('')
   const [savingPw, setSavingPw] = useState(false)
+  const [engines, setEngines] = useState<EngineStatus>({
+    browserEngine: 'playwright',
+    playwrightInstalled: true,
+    cloakbrowserInstalled: false,
+    hyperbrowserConfigured: false,
+    iv8Configured: false,
+    iv8SolverPresent: false,
+    captchaVisionConfigured: false,
+  })
 
   const load = useCallback(async () => {
     try {
-      const r = await api<{ cleaning: CleaningCfg; download: DownloadCfg }>('/api/settings')
+      const r = await api<{ cleaning: CleaningCfg; download: DownloadCfg; engines?: EngineStatus }>('/api/settings')
       setCleaning(r.cleaning)
       setDownload(r.download)
+      if (r.engines) setEngines(r.engines)
     } catch (e) {
       toast({ title: '加载失败', description: e instanceof Error ? e.message : String(e), variant: 'destructive' })
     }
@@ -159,8 +179,46 @@ export function SettingsPage() {
 
   if (!cleaning || !download) return <div className="py-16 text-center text-sm text-muted-foreground">加载中…</div>
 
+  const engineRows: { label: string; ok: boolean; okText: string; badText: string; hint: string }[] = [
+    {
+      label: '浏览器引擎',
+      ok: engines.browserEngine === 'cloakbrowser' ? engines.cloakbrowserInstalled : engines.playwrightInstalled,
+      okText: engines.browserEngine === 'cloakbrowser' ? 'CloakBrowser（源码级隐身）' : 'Playwright',
+      badText: '未安装',
+      hint: 'BROWSER_ENGINE=cloakbrowser 切换；CloakBrowser 启动失败自动回退 Playwright',
+    },
+    { label: 'iv8 补环境（JS cookie 挑战）', ok: engines.iv8Configured, okText: '已启用', badText: '未启用', hint: 'IV8_ENABLED=1 + pip install iv8；无浏览器算出通行 cookie' },
+    { label: 'Hyperbrowser 云隐身', ok: engines.hyperbrowserConfigured, okText: '已配置', badText: '未配置', hint: 'HYPERBROWSER_API_KEY 云端浏览器策略' },
+    { label: '验证码视觉识别', ok: engines.captchaVisionConfigured, okText: '已配置', badText: '未配置', hint: 'CAPTCHA_VISION_API_BASE/KEY/MODEL（GoEdge 验证码自动过）' },
+  ]
+
   return (
     <div className="grid gap-4 xl:grid-cols-2">
+      {/* 反反爬引擎状态（只读） */}
+      <Card>
+        <CardHeader>
+          <CardTitle className="text-base">反反爬引擎</CardTitle>
+        </CardHeader>
+        <CardContent className="space-y-2">
+          {engineRows.map((row) => (
+            <div key={row.label} className="flex items-start justify-between gap-3 rounded-md border p-2.5">
+              <div className="min-w-0">
+                <p className="text-sm">{row.label}</p>
+                <p className="text-[11px] text-muted-foreground">{row.hint}</p>
+              </div>
+              <span
+                className={`shrink-0 rounded-full px-2 py-0.5 text-[11px] ${row.ok ? 'bg-emerald-100 text-emerald-700 dark:bg-emerald-950 dark:text-emerald-300' : 'bg-amber-100 text-amber-700 dark:bg-amber-950 dark:text-amber-300'}`}
+              >
+                {row.ok ? row.okText : row.badText}
+              </span>
+            </div>
+          ))}
+          <p className="text-[11px] leading-relaxed text-muted-foreground">
+            降级链：HTTP 直连 → WAF 验证码 HTTP 求解 → iv8 补环境（JS cookie）→ 浏览器渲染（CloakBrowser/Playwright）→ Hyperbrowser 云。
+            环境变量配置详见 DEPLOY.md「反反爬引擎扩展」。
+          </p>
+        </CardContent>
+      </Card>
       {/* 内容清洗 */}
       <Card>
         <CardHeader>

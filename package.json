@@ -29,6 +29,7 @@
     "@xmldom/xmldom": "^0.9.12",
     "cheerio": "^1.2.0",
     "class-variance-authority": "^0.7.1",
+    "cloakbrowser": "^0.5.12",
     "clsx": "^2.1.1",
     "iconv-lite": "^0.7.3",
     "lucide-react": "^0.525.0",

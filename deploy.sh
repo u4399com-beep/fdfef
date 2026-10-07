@@ -16,6 +16,9 @@
 #   MIRROR=1                  受限网络模式：依赖与 Prisma 引擎走 npmmirror 国内镜像
 #   HYPERBROWSER_API_KEY=xxx  云端隐身采集（可选）
 #   AUTH_SECRET=xxx           会话签名密钥（可选，>=16 字符）
+#   BROWSER_ENGINE=xxx        浏览器引擎 playwright|cloakbrowser（可选，默认 playwright）
+#   IV8_ENABLED=1             iv8 补环境求解通道（可选，JS cookie 挑战；需 python3 + pip install iv8）
+#   IV8_COMMAND=xxx           自定义 iv8 求解命令（可选，覆盖内置脚本）
 # ============================================================
 set -euo pipefail
 
@@ -73,6 +76,12 @@ run_env() {
   export CAPTCHA_VISION_API_BASE="${CAPTCHA_VISION_API_BASE:-}"
   export CAPTCHA_VISION_API_KEY="${CAPTCHA_VISION_API_KEY:-}"
   export CAPTCHA_VISION_MODEL="${CAPTCHA_VISION_MODEL:-}"
+  # 浏览器引擎 / iv8 补环境求解通道（可选）
+  export BROWSER_ENGINE="${BROWSER_ENGINE:-}"
+  export CLOAKBROWSER_LICENSE_KEY="${CLOAKBROWSER_LICENSE_KEY:-}"
+  export CLOAKBROWSER_BINARY_PATH="${CLOAKBROWSER_BINARY_PATH:-}"
+  export IV8_ENABLED="${IV8_ENABLED:-}"
+  export IV8_COMMAND="${IV8_COMMAND:-}"
 }
 
 is_running() {

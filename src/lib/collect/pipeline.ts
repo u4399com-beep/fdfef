@@ -143,7 +143,10 @@ async function collectBookInfo(
 
   // 标题规整（保守行尾剥离）：提取「作者：xxx」后缀回填作者、剥离尾部章节范围数字。
   // 规整后的标题/作者同时用于唯一键、智能分类、下拉词，避免脏后缀分裂去重、污染关键词
-  const norm = normalizeBookMeta(parsedTitle, (parsed.author ?? '').trim(), rule.titleNormalize)
+  // 作者字段规整：剥离「作者：/著：」前缀（Legado 系书源 author 字段标准形态，
+  // 如 .booktag a 文本即「作者：XXX」；og:novel:author 等结构化来源天然无前缀不受影响）
+  const rawAuthor = (parsed.author ?? '').trim().replace(/^(?:作者|作\s*者|著|撰写)\s*[:：]\s*/, '')
+  const norm = normalizeBookMeta(parsedTitle, rawAuthor, rule.titleNormalize)
   const title = norm.title
   const author = norm.author
 

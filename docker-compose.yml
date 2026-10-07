@@ -22,6 +22,15 @@ services:
       - CAPTCHA_VISION_API_BASE=${CAPTCHA_VISION_API_BASE:-}
       - CAPTCHA_VISION_API_KEY=${CAPTCHA_VISION_API_KEY:-}
       - CAPTCHA_VISION_MODEL=${CAPTCHA_VISION_MODEL:-}
+      # 浏览器引擎（可选）：playwright（默认）| cloakbrowser（源码级隐身 Chromium，
+      # 需镜像内置 cloakbrowser 包；首次启动自动下载二进制 ~200MB，或挂载 CLOAKBROWSER_BINARY_PATH）
+      - BROWSER_ENGINE=${BROWSER_ENGINE:-}
+      - CLOAKBROWSER_LICENSE_KEY=${CLOAKBROWSER_LICENSE_KEY:-}
+      - CLOAKBROWSER_BINARY_PATH=${CLOAKBROWSER_BINARY_PATH:-}
+      # iv8 补环境求解通道（可选）：JS 计算型 cookie 挑战（瑞数等），需镜像内
+      # python3 + pip install iv8 + scripts/iv8-solver.py；IV8_COMMAND 可自定义命令
+      - IV8_ENABLED=${IV8_ENABLED:-}
+      - IV8_COMMAND=${IV8_COMMAND:-}
       - TZ=Asia/Shanghai
     volumes:
       # 数据库持久化（SQLite；git clone 自带全部在库数据）

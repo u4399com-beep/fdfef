@@ -365,6 +365,57 @@ CAPTCHA_VISION_MODEL=glm-4v-flash
 
 > 通行 cookie 通常有效数小时～数天；失效后重复以上步骤即可。解题成功的 cookie 系统也会自动持久化复用，无需每次手动。
 
+### 反反爬引擎扩展：CloakBrowser 与 iv8（可选增强）
+
+除内置 Playwright 与 Hyperbrowser 外，系统还支持两款第三方反反爬引擎，可按需启用（都不装则一切按默认行为，零影响）。
+
+**两者定位对比（互补而非替代）：**
+
+| 维度 | CloakBrowser | iv8 |
+|---|---|---|
+| 本质 | **源码级隐身 Chromium**：87 处 C++ 补丁（canvas/WebGL/音频/字体/GPU/网络时序/自动化信号），反爬系统看到的就是一台真实浏览器 | **V8 补环境运行时**：Python 原生扩展，C++ 层模拟 BOM/DOM/CSSOM，在无浏览器的进程里执行站点 JS |
+| 解决什么 | 真实渲染场景的指纹/行为检测：Cloudflare Turnstile、FingerprintJS、BrowserScan 等 30+ 检测实测通过 | JS 计算型 cookie 挑战（瑞数系/acw_sc__v2 类）：页面无验证码图，靠混淆 JS 算 cookie 后刷新 |
+| 资源开销 | 真实浏览器进程（二进制约 200MB，首次启动自动下载） | 极轻（Python 进程 + V8，无浏览器、毫秒级、可高并发） |
+| 接入方式 | npm 包 `cloakbrowser`，与 Playwright 同 API（返回标准 Browser 对象），fetcher 自动接入 | pip 包 `iv8`，经内置 `scripts/iv8-solver.py` 以外部命令协议接入（stdin/stdout JSON） |
+| 局限 | 有浏览器资源成本；个别站点检测 headless 需 Pro 版 humanize | 只能算 cookie/签名，不能渲染页面、不能过图片验证码；极复杂 JSVMP 需 Pro 版 |
+| 选型 | WAF 指纹检测强、需要真渲染时 | 目标站只差一枚 JS 算的 cookie、想免浏览器成本时 |
+
+**① CloakBrowser（浏览器引擎替换）**
+
+```bash
+# 裸机：项目目录安装包（首次用它启动时会自动下载隐身 Chromium 二进制，约 200MB）
+bun add cloakbrowser
+
+# 切换引擎（三选一）
+BROWSER_ENGINE=cloakbrowser ./deploy.sh restart          # 显式指定
+CLOAKBROWSER_LICENSE_KEY=cb_xxx ./deploy.sh restart      # 有 Pro 许可证时自动启用
+# Docker：.env 写 BROWSER_ENGINE=cloakbrowser 后 docker compose up -d --force-recreate
+```
+
+- 自动降级：CloakBrowser 启动失败（未装包/下载失败/二进制损坏）自动回退 Playwright，任务日志有 `[browser-engine]` 降级警告，采集不中断
+- 已装 cloakbrowser 但想用回 Playwright：`BROWSER_ENGINE=playwright` 即可
+- 离线服务器：`CLOAKBROWSER_BINARY_PATH=/path/to/chromium` 指向本地二进制免下载
+
+**② iv8 补环境求解通道（JS cookie 挑战）**
+
+```bash
+# 裸机：安装（Python 3.9-3.14；Linux x64/aarch64 官方 manylinux 轮子）
+pip3 install --upgrade iv8 -i https://pypi.org/simple
+python3 scripts/iv8-solver.py --selftest     # 自检：内置挑战页，PASS 即链路可用
+
+# 启用（二选一）
+IV8_ENABLED=1 ./deploy.sh restart            # 使用内置 scripts/iv8-solver.py
+IV8_COMMAND="python3 /abs/path/solver.py" ./deploy.sh restart   # 自定义求解命令
+
+# Docker：容器内需具备 python3 + iv8 + 脚本（标准镜像不含 python，可自行扩展或挂载）；
+# .env 写 IV8_COMMAND 指向容器内可达的求解命令
+```
+
+- 触发条件（自动，无需改规则）：HTTP 响应为 200 且命中「JS 写 cookie 后刷新」挑战特征（瑞数变量运算流 / `document.cookie=` + reload），规则也可显式加 `"iv8Cookies": true` 强制启用
+- 求解流程：挑战页 HTML 喂给求解器 → iv8 补环境执行站点 JS（`eventLoop.advance` 逻辑时间推进，无需真实等待 setTimeout）→ 取回通行 cookie 入 CookieJar → 同 UA 重放请求
+- 协议（自定义求解器只需实现）：stdin 收 `{"url","ua","html"}`，stdout 回 `{"ok":true,"cookies":[{"name","value"}]}` 或 `{"ok":false,"error":"..."}`
+- 未配置时：通道静默跳过，零开销；日志出现 `[iv8-solve]` 前缀即该通道在工作
+
 ---
 
 ## 7. 数据备份与恢复

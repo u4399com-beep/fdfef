@@ -192,6 +192,23 @@ function listPage(page: number): string {
 <body><ul class="book-list">${items}</ul>${next}</body></html>`
 }
 
+/** JS 计算型 cookie 挑战页（iv8 通道 E2E 靶场）：JS 算出 cookie 后 setTimeout 刷新。
+ * 注意：标题/文案刻意避开 WAF_SIGNATURES 特征（Verify Yourself/captcha 等），
+ * 否则会走 WAF→Playwright 通道而非被测的 iv8 通道 */
+function jsCookieChallenge(): string {
+  return `<!DOCTYPE html><html><head><meta charset="utf-8"><title>Security Check</title>
+<!-- mock js-cookie challenge: content only served with computed cookie -->
+<!-- iv8 channel integration test target -->
+<script>
+(function () {
+  var seed = 777;
+  var v = (function (s) { var r = 0, i; for (i = 0; i < s; i++) { r = (r * 31 + s - i) % 99991; } return r; })(seed);
+  document.cookie = 'mock_js_pass=' + v + '; path=/';
+  setTimeout(function () { location.reload(); }, 200);
+})();
+</script></head><body><noscript>Enable JavaScript</noscript></body></html>`
+}
+
 Bun.serve({
   port: PORT,
   fetch(req) {
@@ -211,6 +228,7 @@ Bun.serve({
     const m10 = /^\/qtoc\/(\d+)\.html$/.exec(p)
     const m11 = /^\/ajaxtoc\/(\d+)\/data$/.exec(p)
     const m12 = /^\/ajaxtoc\/(\d+)\.html$/.exec(p)
+    const m13 = /^\/jscookie\/book\/(\d+)\.html$/.exec(p)
     if (m1) {
       const b = BOOKS.find((x) => x.id === Number(m1[1]))
       body = b ? coverSvg(b) : 'x'
@@ -250,6 +268,12 @@ Bun.serve({
     } else if (m12) {
       const b = BOOKS.find((x) => x.id === Number(m12[1]))
       body = b ? ajaxtocPage(b, Number(url.searchParams.get('page') ?? '1')) : 'x'
+    } else if (m13) {
+      // 无 mock_js_pass cookie → 返回 JS 挑战页；有 → 正常书籍页（iv8 通道联调靶场）
+      const cookies = req.headers.get('cookie') ?? ''
+      const hasPass = /(?:^|;\s*)mock_js_pass=\d+(?:;|$)/.test(cookies)
+      const b = BOOKS.find((x) => x.id === Number(m13[1]))
+      body = !hasPass ? jsCookieChallenge() : b ? bookPage(b) : 'x'
     } else if (p === '/') {
       body = '<html><head><meta charset="utf-8"><title>模拟小说站</title></head><body><a href="/list/1.html">进入书库</a></body></html>'
     }

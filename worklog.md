@@ -1139,3 +1139,26 @@ Stage Summary:
 - kelexs（GoEdge 系）验证码突破不再依赖 Playwright/chromium：纯 HTTP 通道（表单解析+预处理+VLM+POST）为首选，服务器裸机部署即开箱全自动过码；Playwright 降为非 GoEdge 布局的兜底
 - 实证沉淀两条反反爬准则写入代码注释与 DEPLOY.md：①验证码图像预处理（放大+二值化）是 VLM 识别率关键；②WAF 指纹必须与 cookie 状态自洽（零 cookie 声称站内导航=最高嫌疑）
 - 全部验证绿灯：tsc 0 错误（临时脚本除外，已删）、lint 通过、HTTP 求解链 standalone 实测通过、fetchPage E2E 两场景通过、UI 端规则测试真实抓取通过、移动端渲染通过
+
+---
+Task ID: R21-engines
+Agent: Z.ai Code (主控)
+Task: 对比并集成 iv8 / CloakBrowser 双引擎 + yckceo 书源 7928（大文学无错 dwxwc.com）转换入库
+
+Work Log:
+- 【情报调研】①CloakBrowser = CloakHQ/cloakbrowser（npm 0.5.12），87 处 C++ 源码级指纹补丁的隐身 Chromium，Playwright 同 API（launch() 返回标准 Browser），过 Cloudflare Turnstile/FingerprintJS 等 30+ 检测；②iv8 = HanZzzzz000/iv8（PyPI 0.1.4），Python 原生 V8 扩展，C++ 层模拟 BOM/DOM/CSSOM，无浏览器执行站点 JS 算 cookie（瑞数/acw_sc__v2 类 JS 计算型 cookie 挑战）——两者互补：真渲染隐身 vs 轻量补环境
+- 【CloakBrowser 集成】fetcher getSharedBrowser 重构为引擎可插拔：selectBrowserEngine（BROWSER_ENGINE 显式 / CLOAKBROWSER_LICENSE_KEY|BINARY_PATH 自动启用）→ launchBrowserEngine 双分支（cloakbrowser.launch 与 playwright.chromium.launch，args 共享）→ cloakbrowser 启动失败自动降级 playwright（[browser-engine] 警告，采集不中断）；fetchWithPlaywright 引擎感知：cloakbrowser 跳过 STEALTH_SCRIPT（源码级隐身无需运行时补丁），结果 strategy 标注 cloakbrowser；bun add cloakbrowser（仅 tar 依赖，二进制首次启动下载）
+- 【iv8 集成】fetcher 新增 iv8 补环境求解通道：looksLikeJsCookieChallenge 保守启发式（瑞数特征流/document.cookie+reload，GoEdge 验证码页实测不误命中）→ solveCookiesViaIv8 子进程协议（stdin JSON {url,ua,html} → stdout JSON {ok,cookies[]}，extractLastJson 容忍日志行混流，45s 超时 SIGKILL）→ cookie 入 jar 同 UA 重放（JS cookie 与 UA 绑定，headers 显式捕获本次请求 UA）；触发条件 = 启发式命中 && (IV8_ENABLED=1 || IV8_COMMAND || 规则 iv8Cookies:true)，未配置零开销
+- 【scripts/iv8-solver.py】内置求解器：urllib 自抓挑战页（HTTPError 403/412/503 响应体照常喂 iv8）→ iv8 page.load 补环境执行 → eventLoop.advance 逻辑时间阶梯推进（0/300/1000/5000/15000ms，setTimeout 类挑战瞬时触发，实测 300ms 定时器 cookie 拿到）→ document.cookie+Set-Cookie 合并输出；OS 级 dup2 压制 iv8 C++ banner（Python 级 redirect 压不住直写 fd1）；--selftest 内置挑战页自检
+- 【E2E 实测】mock 站新增 /jscookie/book/N 挑战页（JS 算 cookie 后 setTimeout 刷新，标题刻意避开 WAF_SIGNATURES 防止误走 WAF 通道）：fetchPage(iv8Cookies:true) → [iv8-solve] 命中→求解→1 cookie→重放 → strategy=http 拿真实内容全程无浏览器；启发式三例（挑战/GoEdge 页/正常页）false-positive 全清
+- 【书源 7928 转换】yckceo 沙箱直连超时 → alidns DoH 解析真实 IP + curl --resolve 直连拿到 JSON；目标 = 大文学无错小说网 www.dwxwc.com（Legado 格式，含 U+2011 非断行连字符污染已归一化）；转换映射 class.bookbox→.bookbox、class.bookname@tag.a@text→.bookname a、id.list-chapterAll@tag.dd@tag.a→#list-chapterAll dd a、##作者：前缀→pipeline 作者字段规整（新增：作者/著/撰写 前缀剥离）
+- 【dwxwc 规则入库】四类规则（tests/register-dwxwc-rules.ts 幂等注册）：列表(.bookbox+分类分页模板)/书籍(.booktitle/.booktag/.bookcover/.bookintro/.bookchapter)/目录(#list-chapterAll dd a+乱序+去重)/正文(#content+推广正则)；反反爬配置 rotateUA=false+固定 UA（cookie 绑定）+throttleGap=2500（实测 0.8s 连发触发 IP 硬 403）+iv8Cookies 声明
+- 【dwxwc 实探】R20 WAF HTTP 求解通道对 dwxwc 首页一次通过（52KB 真实 HTML，首页为 s1/s2 推荐位模板）；分类/书籍页因求解后高频访问触发站侧 IP 硬 403（数小时自解，与 kelexs 同机制）——四规则待解封后跑 UI 规则测试回归（脚本/命令已备好，配置即用）
+- 【UI/文档】settings API 新增只读 engines 运行时状态（browserEngine/iv8Configured/hyperbrowserConfigured/captchaVisionConfigured 等，env+文件探测）；设置页新增「反反爬引擎」状态卡（四行徽章+降级链说明，截图确认渲染）；DEPLOY.md 新增「反反爬引擎扩展」节（iv8 vs CloakBrowser 六维对比表+双引擎安装/启用/协议文档）；docker-compose.yml + deploy.sh 透传 BROWSER_ENGINE/CLOAKBROWSER_*/IV8_*
+- 【运维实录】dev server 出现 SQLite "attempt to write a readonly database"（登录 500）→ 重启恢复（瞬时 SQLITE_READONLY_ROLLBACK 态）；mock 服务被 pkill 误杀重启（R18 同款坑，setsid 守护）；重启后登录/设置/规则测试/引擎卡 agent-browser 全链路 UI 验证通过
+- 【验证】tsc 0 错误、lint 0 错误；iv8 求解器 selftest+同步 cookie+setTimeout cookie 三例全绿；fetcher iv8 E2E 全绿；mock list/jstoc/content 规则测试 API 回归通过（jsPages 路径顺带实测新引擎选择层默认 playwright 分支）；cloakbrowser bun 导入验证通过
+
+Stage Summary:
+- 反反爬矩阵升级为五层可插拔引擎：HTTP 直连 → WAF 验证码 HTTP 求解（R20）→ iv8 补环境（JS cookie 挑战，新增）→ 浏览器渲染（playwright/cloakbrowser 可切换，CloakBrowser 新增）→ Hyperbrowser 云
+- 交付清单：fetcher 引擎层+iv8 通道、scripts/iv8-solver.py（自检可运行）、mock /jscookie 靶场、dwxwc 四规则入库、设置页引擎状态卡、DEPLOY.md 对比与配置文档、compose/deploy env 透传
+- 遗留：dwxwc 站侧 IP 封禁冷却中（数小时自解），解封后需跑四规则 UI 测试回归确认选择器与实战解析；iv8 通道需真实瑞数站点才能验证生产级效果（mock 已验证协议链路）
