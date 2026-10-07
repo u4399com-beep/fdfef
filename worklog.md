@@ -1162,3 +1162,27 @@ Stage Summary:
 - 反反爬矩阵升级为五层可插拔引擎：HTTP 直连 → WAF 验证码 HTTP 求解（R20）→ iv8 补环境（JS cookie 挑战，新增）→ 浏览器渲染（playwright/cloakbrowser 可切换，CloakBrowser 新增）→ Hyperbrowser 云
 - 交付清单：fetcher 引擎层+iv8 通道、scripts/iv8-solver.py（自检可运行）、mock /jscookie 靶场、dwxwc 四规则入库、设置页引擎状态卡、DEPLOY.md 对比与配置文档、compose/deploy env 透传
 - 遗留：dwxwc 站侧 IP 封禁冷却中（数小时自解），解封后需跑四规则 UI 测试回归确认选择器与实战解析；iv8 通道需真实瑞数站点才能验证生产级效果（mock 已验证协议链路）
+
+---
+Task ID: R20-101kks
+Agent: Z.ai Code (main)
+Task: 检查 101kks 规则（书页 https://101kks.com/book/6527.html + 目录页 https://101kks.com/book/6527/index.html）
+
+Work Log:
+- 查库确认无 101kks 规则（可乐=kelexs.com 为另一站点），需从零建设并实测。
+- 抓取四类真实页面分析结构：书页（杰奇系 og:novel meta 全套）、目录页（静态仅首15+尾20章，LoadMore() 走 AJAX /ajax_novels/chapterlist/{id}.html 一次返回全量660章）、正文页（div#txtcontent 单页无分页，尾部噪声 loadAdv(10,0);）、列表页（.newnovels ul li 推荐10条/页 + #pagelink a.next 分页；#article_list_content 为点击排行非分类列表）。
+- 关键实测结论：CF 按 TLS 指纹放行系统 curl、拦截 Bun fetch（403 挑战）与 headless Chromium（含 CloakBrowser 隐身引擎 18s 等待仍「请稍候…」）。
+- 引擎增强①：isWafChallengeHtml 新增 Cloudflare 中文挑战签名（请稍候/請稍候/_cf_chl_opt）并新增 WAF_LONGPAGE_SIGNATURES 长页高特异度签名集（修复 30KB 挑战页超长漏判）。
+- 引擎增强②：fetchWithPlaywright 增加 CF 托管挑战自动放行等待（轮询 page.title() 跨导航，上限 18s，PlaywrightPage 接口补 title()）。
+- 引擎增强③（核心）：新增 curl 子进程通道 fetchViaCurl/fetchWithCurl（node:child_process spawn 系统 curl，-D 头文件解析 status/Set-Cookie 入全局罐，-w url_effective 标记剥离，--compressed/--max-redirs/超时对齐 http 语义）；http 策略遇 WAF 挑战第一顺位降级 curl 重放（成功日志 [curl-fallback]），再走 GoEdge HTTP 求解与浏览器升级链；strategy:'curl' 可显式配置；UI 策略下拉新增「curl 指纹（TLS级反盾）」。
+- 引擎增强④：FieldSelector 新增 replace（提取后正则改写，$1..$9 引捕获组，parser.ts applyValueReplace 挂 finish 统一后处理口）——tocLink 用 CSS 取 og:novel:read_url 后 replace 将 /book/{id}/index.html 变换为 /ajax_novels/chapterlist/{id}.html，纯 HTTP 采全量目录、免 JS 渲染。
+- 四类规则入库（id: 101kks-list/book/toc/content）：列表（.newnovels ul li + next 分页 maxPages30）、书页（og meta 全字段 + tocLink replace）、目录（AJAX 端点 + Referer/X-Requested-With 头 + dedup/reorder）、正文（#txtcontent + loadAdv 等 extraAdPatterns）。
+- 实测（testRule 引擎层）：列表 10 条含分页 next ✓、书页全字段 + tocUrl 正确变换 ✓、目录 660 章全量 ✓、正文 2085 字 70 段干净 ✓——全部 strategy:curl 自动降级成功。
+- Agent Browser 自验证：首页渲染 ✓、admin 登录 ✓、四 tab 规则可见 ✓、编辑抽屉 curl 策略选项 ✓、UI 规则测试（API 路由）「书籍信息解析成功」✓（期间曾误点大文学无错行的编辑按钮，定位为操作失误非缺陷）。
+- 环境修复：dev server 僵死（SWC 原生绑定缺失致 Turbopack WASM 报错），bun add @next/swc-linux-x64-gnu@16.1.3 修复；平台 sudo 启动的服务进程勿 kill，重启须 setsid 脱离会话。
+- tsc/lint 归零；临时脚本已清理；commit 50f3634 推送 main。
+
+Stage Summary:
+- 101kks(101看書) 全链路接入并三重验证通过（引擎层/UI 层/浏览器层），数据随 db/custom.db 入仓。
+- 反反爬体系新增 curl 指纹通道（TLS 级降级，服务器无需任何额外依赖，系统 curl 即可），CF 中文挑战识别+浏览器放行等待两处修复对其他 CF 站点普适。
+- FieldSelector.replace 为通用能力，后续杰奇系书源转换可直接复用。
