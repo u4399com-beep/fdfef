@@ -1120,3 +1120,22 @@ Stage Summary:
 - 清洗系统 v2 落地：6 层清洗管线（不可见字符→URL/裸域名剥离→广告正则三层→章首垃圾→重复推广行→段落规范）+ 统计/样本可审计
 - 三本书全部真实噪声形态清零且正文无损（防误杀测试覆盖对话重复/合法qq群提及/章首8行外作者行）
 - 已部署用户无需改配置即生效（内置噪声层）；存量 1052 章已全库再清洗
+---
+Task ID: R20-captcha-http
+Agent: Z.ai Code (主控)
+Task: 可乐（kelexs）规则被 GoEdge 验证码拦截——验证码突破增强（纯 HTTP 无浏览器求解通道 + WAF 指纹一致性修复）
+
+Work Log:
+- 【实探挑战形态】curl 实测 kelexs：307 → /WAF/VERIFY/CAPTCHA?info=...（GoEdge 标准验证码页，#ui-captcha-image/#GOEDGE_WAF_CAPTCHA_CODE/#captcha-form 三选择器与既有求解器匹配）→ 判定问题不在选择器而在求解链路依赖与指纹画像
+- 【HTTP 求解可行性实证】自写临时脚本完整走通纯 HTTP 解题链：GET 挑战页 → 解析 captcha_id+图址 → 下载 PNG → sharp 预处理（600px 放大+灰度+normalise+threshold 128 二值化）→ z-ai VLM 识别 → POST 表单 → 303 + Set-Cookie ge_wc_20（2h）→ GET 200 真实内容。关键发现：①流程零 cookie 依赖（挑战状态在 info 参数）；②原始图 VLM 识别失败（"11B64"→"61565"），预处理后一次通过——预处理是识别率关键
+- 【fetcher.ts 六处改造】①fetchFollowingRedirects 支持 POST（method/body 参数+303/301/302 降级 GET+环检测按「方法+URL」计，防解题成功链误判重定向环）；②新增 withWafSolveLock 同主机求解串行锁（并发命中 WAF 只解一次，共享通行 cookie）；③新增 preprocessCaptchaForVlm（sharp 预处理，失败兜底原样返回）；④新增 parseGoEdgeCaptchaForm + solveWafCaptchaOverHttp（4 次识别尝试、逐次留痕 [waf-http-solve] 日志、WafVlmExhaustedError 类型化错误跳过无增益的 Playwright 升级——最坏耗时 209s→约 1 分钟）；⑤fetchPageInner WAF 升级链前置 HTTP 求解（成功直接返回内容，失败才升级 Playwright）；⑥Playwright 路径 solveWafChallenge 同步接入预处理+串行锁
+- 【WAF 指纹一致性修复（关键实验发现）】多轮对照实验（UA-only/CacheCtrl/AL+UIR/hints/SecFetch/Referer/完整头集 × 3 遍）：「声称浏览器导航却零 cookie」是嫌疑分最高组合（Sec-Fetch-Site: same-origin + Referer + 无 cookie 稳定触发 307 挑战乃至 403 硬封禁）；UA 简单客户端与带有效 cookie 的完整指纹均放行。据此重构 buildHeaders：cookie 合并前移→hasSessionCookie 决定画像——首访（无 cookie）按简单客户端（无 Sec-Fetch/无默认 Referer），回访（有 cookie）才发 Sec-Fetch 三件套+同源 Referer；Cache-Control/Pragma 一律移除（真实浏览器导航不发）
+- 【E2E 验证】fetchPage 真实调用 kelexs 章节页：第 1 次 5.9s 直连 200 真实正文（新画像未触发任何挑战）；第 2 次遇挑战走完整解题链 209.8s 最终成功拿到内容（当时为旧耗时结构，本次优化后同场景约 1 分钟封顶）
+- 【环境性封禁确认】测试高频压力触发 kelexs IP 级临时封禁（连 UA-only 也 403）——与画像无关，系统「硬 403 明确报错+3 分钟冷却」机制工作正常（这正是设计行为）；停止对生产站加压
+- 【清理与文档】删除 6 个临时测试脚本；DEPLOY.md 验证码章节重写（双通道架构图/指纹一致性策略/硬 403 与 IP 信誉说明/Q2 更新/附录链路更新）
+- 【UI 端到端自验证（agent-browser）】前台站点渲染→/admin 登录墙→登录→采集规则页→章节内容页 Tab→存书啦规则编辑器→规则测试真实抓取 cunshu.la 章节成功（正文解析 2126 字/840ms，指纹改动对其他站点零回归）→390px 移动端视口渲染正常→dev.log 无错误
+
+Stage Summary:
+- kelexs（GoEdge 系）验证码突破不再依赖 Playwright/chromium：纯 HTTP 通道（表单解析+预处理+VLM+POST）为首选，服务器裸机部署即开箱全自动过码；Playwright 降为非 GoEdge 布局的兜底
+- 实证沉淀两条反反爬准则写入代码注释与 DEPLOY.md：①验证码图像预处理（放大+二值化）是 VLM 识别率关键；②WAF 指纹必须与 cookie 状态自洽（零 cookie 声称站内导航=最高嫌疑）
+- 全部验证绿灯：tsc 0 错误（临时脚本除外，已删）、lint 通过、HTTP 求解链 standalone 实测通过、fetchPage E2E 两场景通过、UI 端规则测试真实抓取通过、移动端渲染通过

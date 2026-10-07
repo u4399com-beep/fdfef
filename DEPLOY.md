@@ -324,8 +324,17 @@ git pull && INSTALL_PLAYWRIGHT=true docker compose up -d --build
 
 ### 验证码自动识别（WAF 挑战页全自动过码）
 
-目标站弹出验证码（GoEdge 类 WAF，如 kelexs/存书啦/人气完本）时，系统自动走：
-HTTP 直连 → 检测到挑战页 → 升级 Playwright（stealth）→ 截图验证码 → **视觉模型识别** → 填表提交 → 通行 cookie 回写并持久化到 `storage/waf-cookies.json`（7 天 TTL，重启不丢）。
+目标站弹出验证码（GoEdge 类 WAF，如 kelexs/存书啦/人气完本）时，系统自动走**双通道求解**：
+
+1. **① 纯 HTTP 无浏览器求解（首选，无需安装 Playwright）**：
+   检测到挑战页 → HTTP 解析验证码表单 → 下载验证码图 → **放大+二值化预处理**（识别率关键环节）→ 视觉模型识别 → POST 表单提交 → 通行 cookie（`ge_wc_20`，约 2h 有效）自动入 jar 并持久化到 `storage/waf-cookies.json`（7 天 TTL，重启不丢）。kelexs 生产实测一次通过，**服务器不装浏览器也能全自动过码**。
+2. **② Playwright DOM 求解（兑底）**：仅当响应为非 GoEdge 布局/结构化失败时升级；同一 VLM 下不再对已解析的 GoEdge 表单做浏览器重试（无精度增益，避免无谓延迟）。
+
+辅助机制：
+
+- **同主机求解串行锁**：多线程采集并发命中 WAF 时只解一次，其余请求共享通行 cookie
+- **指纹一致性策略**：无会话 cookie 的首次访问按「简单客户端」画像发请求（不发 Sec-Fetch 声明）；带 cookie 的回访才发完整浏览器导航指纹——kelexs 实测「声称浏览器导航却零 cookie」是嫌疑分最高的组合，稳定触发 307 挑战乃至 403
+- **硬 403（IP 黑名单）**：明确报错并自动冷却 3 分钟，不无谓重试加剧封禁；请求频率过高会累积 IP 信誉惩罚，调大规则 `throttleGap`（如 3000~5000ms）可显著降低触发概率
 
 视觉识别有两条通道（自动降级）：
 
@@ -386,7 +395,7 @@ docker compose restart
 `docker compose logs novel-system` 查看日志；确认云服务器安全组/防火墙放行 3000（或用 Nginx 80/443 反代）。
 
 **Q2：采集时目标站返回 403/验证码？**
-依次尝试：规则里配置 Cookie 与 Referer → 切换 Playwright 策略（JS 渲染）→ 切换 Hyperbrowser 云隐身策略；并适当加大任务「间隔时间范围」。
+先配置视觉 API（见「验证码自动识别」节）——HTTP 无浏览器通道即可全自动过码；仍受限时再依次尝试：规则里配置 Cookie 与 Referer → 切换 Playwright 策略（JS 渲染）→ 切换 Hyperbrowser 云隐身策略；并适当加大任务「间隔时间范围」（请求过频会累积 IP 信誉惩罚，表现为连裸请求都 403）。
 
 **Q2.5：JS 渲染策略报 `launch: Target page, context or browser has been closed`？**
 chromium 已装但缺系统依赖库。裸机：`bunx playwright install-deps chromium`；Docker：`docker compose exec novel-system bun node_modules/playwright/cli.js install-deps chromium`（根治：`INSTALL_PLAYWRIGHT=true docker compose up -d --build`）。详见第 6 节。
@@ -414,7 +423,7 @@ chromium 已装但缺系统依赖库。裸机：`bunx playwright install-deps ch
 - 分页参数加密或点击后 URL 不变 → 需要 JS 渲染翻页
 
 ### 系统自动应对链路
-HTTP 直连 → WAF 检测 → 自动升级 Playwright（stealth 注入）→ 截图验证码 → VLM 自动识别求解 → 通行 cookie 回写全局 CookieJar 复用（**并持久化到 storage/waf-cookies.json，重启不丢**）→ 同域节流（throttleGap）+ 封禁冷却（reportBlock）
+HTTP 直连（无 cookie 首访按简单客户端画像，不易触发挑战）→ WAF 检测 → **① 纯 HTTP 求解**：解析验证码表单 → 下载图 → 放大+二值化预处理 → VLM 识别 → POST 表单（最多 4 次，每次自动刷新验证码）；表单已解析但 VLM 连续未命中则跳过浏览器重试直接报可行动错误 → **② Playwright 兑底**（仅非 GoEdge 布局）→ 通行 cookie 回写全局 CookieJar 复用（**并持久化到 storage/waf-cookies.json，重启不丢**）→ 同主机求解串行锁（并发只解一次）→ 同域节流（throttleGap）+ 封禁冷却（reportBlock）
 
 ### 长期稳定性机制（自动生效，无需配置）
 - **通行 cookie 持久化**：解题成果跨进程重启保留（7 天 TTL，过期自动放弃）

@@ -7,10 +7,14 @@ import type { FetchConfig } from '../collect-types'
 // 反反爬增强层：
 //   1. CookieJar 会话保持（WAF 通过后 cookie 全局复用，磁盘持久化跨重启保留）
 //   2. UA 轮换 + Client Hints / Sec-Fetch 真实浏览器指纹
-//   3. Playwright stealth 注入（移除 webdriver 特征）
-//   4. WAF 挑战页自动检测 + VLM 验证码求解
-//   5. HTTP 被 WAF 拦截时自动升级为浏览器渲染
-//   6. 编码识别（GBK/GB2312/Big5 经 iconv-lite）
+//   3. WAF 挑战页自动检测 + 验证码双通道求解：
+//      ① 纯 HTTP 无浏览器求解（GoEdge 系：GET 页→解析表单→VLM 识图→POST 表单，
+//        服务器无需安装 Playwright/chromium；kelexs 生产实测一次通过）
+//      ② Playwright DOM 求解兑底（非 GoEdge 布局或 HTTP 通道失败时自动升级）
+//   4. 同主机求解串行锁：并发章节同时遇 WAF 只解一次，通行 cookie 共享
+//   5. 验证码图片预处理（放大+二值化去噪）后再交 VLM——识别率关键环节
+//   6. HTTP 被 WAF 拦截时自动升级为浏览器渲染
+//   7. 编码识别（GBK/GB2312/Big5 经 iconv-lite）
 // ============================================================
 
 const UA_LIST = [
@@ -643,8 +647,6 @@ function buildHeaders(cfg: FetchConfig, url: string, uaOverride?: string): Recor
     'User-Agent': ua,
     Accept: 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8',
     'Accept-Language': 'zh-CN,zh;q=0.9,en;q=0.6',
-    'Cache-Control': 'no-cache',
-    Pragma: 'no-cache',
     'Upgrade-Insecure-Requests': '1',
   }
   // Chrome 系 UA 注入配套 Client Hints（品牌与版本号严格随 UA 家族，见 secChUaBrands）
@@ -655,19 +657,39 @@ function buildHeaders(cfg: FetchConfig, url: string, uaOverride?: string): Recor
     headers['sec-ch-ua-mobile'] = hints.mobile
     headers['sec-ch-ua-platform'] = hints.platform
   }
+  // 显式 cookies 与 jar 会话 cookie 合并：jar 同名键优先。
+  // WAF 通行 cookie 与 UA/会话绑定且会滚动更新，规则里保存的只是注册时刻的旧快照——
+  // 长期稳定采集必须让解题后新入 jar 的通行 cookie 覆盖旧快照，否则每次都要重新解题。
+  // 合并先于 Referer/Sec-Fetch 决策：是否携带会话 cookie 决定导航语义（见下）
+  {
+    const jarCookie = cookieJar.header(url)
+    if (cfg.cookies && jarCookie) headers.Cookie = mergeCookieStrings(cfg.cookies, jarCookie)
+    else if (cfg.cookies) headers.Cookie = cfg.cookies
+    else if (jarCookie) headers.Cookie = jarCookie
+  }
+  const hasSessionCookie = Boolean(headers.Cookie)
   if (cfg.referer) headers.Referer = cfg.referer
-  else {
-    // 默认 Referer 指纹：真实浏览器站内跳转必带同源 Referer，裸无 Referer 是明显爬虫特征
+  else if (hasSessionCookie) {
+    // 站内跳转指纹（携带会话 cookie 时与 cookie 相互印证）：真实浏览器站内跳转
+    // 必带同源 Referer + 存量 cookie，两者同时出现才是自洽的回访用户
     try {
       headers.Referer = `${new URL(url).origin}/`
     } catch {
       /* 非法 URL 已在入口拦 */
     }
   }
-  // Sec-Fetch 导航指纹（现代浏览器导航请求必带，缺失同样是爬虫特征）；
-  // Sec-Fetch-Site 与 Referer 的同源/同站/跨源关系保持一致，避免自相矛盾；
-  // 无 Referer 时按地址栏直达导航指纹处理（none），而非误报 cross-site
-  {
+  // kelexs/GoEdge 生产实测结论（2026-02，多轮对照实验）：
+  // 「声称浏览器导航却无任何 cookie」的请求嫌疑分最高——Sec-Fetch-Site: same-origin
+  // + Referer + 零 cookie 稳定触发 307 挑战乃至 403 硬封禁；带有效 cookie 的完整
+  // 指纹放行；纯 UA 简单客户端（curl 式）也稳定放行。因此：
+  // - 无会话 cookie（首次访问）→ 简单客户端画像：不发 Sec-Fetch-*，
+  //   不带默认 Referer（仅规则显式配置 cfg.referer 时才带），
+  //   语义等价于首次直达的真实工具型客户端，GoEdge 侧嫌疑分最低
+  // - 有会话 cookie（回访）→ 完整导航画像：Sec-Fetch 三件套 + 同源 Referer，
+  //   与 cookie 相互印证构成自洽的回访用户
+  // - Cache-Control/Pragma 一律不发：真实浏览器普通导航不带（reload 才带），
+  //   爬虫教程式全量头反而抬高 WAF 嫌疑分
+  if (hasSessionCookie || cfg.referer) {
     const refHost = urlHost(headers.Referer)
     const targetHost = urlHost(url)
     try {
@@ -684,15 +706,6 @@ function buildHeaders(cfg: FetchConfig, url: string, uaOverride?: string): Recor
     } catch {
       /* 非法 URL 已在入口拦 */
     }
-  }
-  // 显式 cookies 与 jar 会话 cookie 合并：jar 同名键优先。
-  // WAF 通行 cookie 与 UA/会话绑定且会滚动更新，规则里保存的只是注册时刻的旧快照——
-  // 长期稳定采集必须让解题后新入 jar 的通行 cookie 覆盖旧快照，否则每次都要重新解题
-  {
-    const jarCookie = cookieJar.header(url)
-    if (cfg.cookies && jarCookie) headers.Cookie = mergeCookieStrings(cfg.cookies, jarCookie)
-    else if (cfg.cookies) headers.Cookie = cfg.cookies
-    else if (jarCookie) headers.Cookie = jarCookie
   }
   if (cfg.headers) {
     // 兼容 UI 保存的 JSON 字符串形式（对象按原样合并，字符串则解析后再合并）
@@ -925,14 +938,20 @@ async function fetchPageInner(url: string, cfg: FetchConfig): Promise<FetchResul
     if (!isWafChallengeHtml(html)) {
       return { html, status, finalUrl, strategy: 'http', elapsedMs: Date.now() - started }
     }
-    // WAF 拦截：升级为 Playwright（带验证码求解），仅尝试一次
+    // WAF 挑战：先试纯 HTTP 无浏览器求解（GoEdge 系验证码可全程 HTTP 突破，
+    // 服务器无需安装 Playwright/chromium；成功后通行 cookie 全局复用）；
+    // 失败再升级浏览器渲染策略（DOM 求解兑底）
+    const solvedHttp = await withWafSolveLock(url, () => solveWafCaptchaOverHttp(url, cfg, timeout, started))
+    if (solvedHttp) return { ...solvedHttp, elapsedMs: Date.now() - started }
+    // HTTP 求解未通过：升级为 Playwright（带验证码求解），仅尝试一次
     try {
       const pwResult = await fetchWithPlaywright(url, cfg, timeout, started)
       return { ...pwResult, elapsedMs: Date.now() - started }
     } catch (e) {
       if (attempt === 1) {
         throw new Error(
-          `WAF 拦截且浏览器策略不可用：${e instanceof Error ? e.message : String(e)}（请安装 Playwright：bun add playwright && bunx playwright install chromium）`
+          `WAF 验证码自动求解未通过（HTTP 与浏览器两通道均失败）：${e instanceof Error ? e.message : String(e)}` +
+            `。可行解：①配置 OpenAI 兼容视觉 API（CAPTCHA_VISION_API_BASE/KEY/MODEL）后重试；②本机浏览器过验证码后把通行 cookie 粘贴到规则「Cookie」字段并关闭「UA 随机轮换」；③策略切换为 Hyperbrowser 云隐身`
         )
       }
       // 浏览器策略失败后稍候再试一轮 HTTP：此时 jar 里可能已有解题通行 cookie，直连即可通过
@@ -990,18 +1009,24 @@ async function fetchFollowingRedirects(
   startUrl: string,
   headers: Record<string, string>,
   explicitCookies: string,
-  timeout: number
+  timeout: number,
+  init?: { method?: string; body?: string }
 ): Promise<FetchRetryResult> {
   let current = startUrl
+  let method = (init?.method ?? 'GET').toUpperCase()
+  const body = init?.body
   const visited = new Set<string>()
   const deadline = Date.now() + timeout
   for (let hop = 0; hop <= MAX_REDIRECT_HOPS; hop++) {
-    if (visited.has(current)) {
-      // 环是确定性的：同 URL 重试只会重复同样的跳转链（对目标站白打 3 倍请求），按不可重试抛出；
+    // 环检测按「方法+URL」计：WAF 验证码 POST 通过后 303 跳回同 URL（改 GET）是正常链路，
+    // 不区分方法会把解题成功链误判为重定向环
+    const visitKey = `${method} ${current}`
+    if (visited.has(visitKey)) {
+      // 环是确定性的：同请求重试只会重复同样的跳转链（对目标站白打 3 倍请求），按不可重试抛出；
       // 错误文案仍按网络类分类，fetchPage 层依旧会转试镜像（不同链路可解）
       throw new NoRetryError(`请求失败: 重定向环（${current.slice(0, 120)}）`)
     }
-    visited.add(current)
+    visited.add(visitKey)
     // 逐跳重算 Cookie：jar 会话 cookie 按跳转目标域下发；显式 cookie 仅同站跳转携带
     const hopHeaders: Record<string, string> = { ...headers }
     const jarCookie = cookieJar.header(current)
@@ -1036,6 +1061,8 @@ async function fetchFollowingRedirects(
     const remain = deadline - Date.now()
     if (remain <= 500) throw new Error(`请求失败: 重定向链超时（${startUrl.slice(0, 120)}）`)
     const res = await fetch(current, {
+      method,
+      body: method === 'GET' || method === 'HEAD' ? undefined : body,
       headers: hopHeaders,
       redirect: 'manual',
       signal: AbortSignal.timeout(remain),
@@ -1063,6 +1090,11 @@ async function fetchFollowingRedirects(
     }
     // 释放未读 body，归还连接
     await res.body?.cancel().catch(() => undefined)
+    // 303（及 301/302）后 POST 语义降级为 GET（浏览器重定向规范）：
+    // WAF 验证码表单 POST → 303 回原页就是靠这个拿到正文；307/308 保持方法不变
+    if (method !== 'GET' && method !== 'HEAD' && res.status !== 307 && res.status !== 308) {
+      method = 'GET'
+    }
     current = next.href
   }
   throw new NoRetryError(
@@ -1133,6 +1165,189 @@ async function fetchWithRetry(
   throw lastErr instanceof Error && lastErr.message.startsWith('请求失败:')
     ? lastErr
     : new Error(`请求失败: ${lastErr instanceof Error ? lastErr.message : String(lastErr)}`)
+}
+
+// ============================================================
+// WAF 验证码纯 HTTP 求解（无浏览器，GoEdge 系）
+// ============================================================
+
+/**
+ * 同主机验证码求解串行锁：多线程采集并发命中 WAF 时，只放行一个请求去解题，
+ * 其余排队等待——解题成功后通行 cookie 已入 jar，后续请求直接放行，
+ * 避免同一验证码被并发重复识别/提交（VLM 成本翻倍且互相顶号）。
+ */
+const WAF_SOLVE_LOCKS = new Map<string, Promise<void>>()
+async function withWafSolveLock<T>(url: string, fn: () => Promise<T>): Promise<T> {
+  const key = urlHost(url) || '__global__'
+  const prev = WAF_SOLVE_LOCKS.get(key) ?? Promise.resolve()
+  let release!: () => void
+  const gate = new Promise<void>((r) => {
+    release = r
+  })
+  // 队列尾挂本任务的释放门；前序任务失败也不阻断排队（prev.then 双分支）
+  WAF_SOLVE_LOCKS.set(key, prev.then(() => gate, () => gate))
+  await prev.catch(() => undefined)
+  try {
+    return await fn()
+  } finally {
+    release()
+  }
+}
+
+/**
+ * 验证码图片预处理：3x 放大 → 灰度 → 对比度归一 → 阈值二值化。
+ * 实测（kelexs/GoEdge）：原图噪点+干扰线使 VLM 识别失败（"11B64"→"61565"），
+ * 二值化滤除浅色噪声后一次通过——预处理是识别率的关键环节而非可选优化。
+ * sharp 加载失败/异常时原样返回，识别通道自行兜底（最多损失识别率）。
+ */
+async function preprocessCaptchaForVlm(png: Buffer): Promise<Buffer> {
+  try {
+    interface SharpChain {
+      resize: (o: { width: number; kernel: string }) => SharpChain
+      grayscale: () => SharpChain
+      normalise: () => SharpChain
+      threshold: (v: number) => SharpChain
+      png: () => SharpChain
+      toBuffer: () => Promise<Buffer>
+    }
+    const mod = (await import('sharp').catch(() => null)) as {
+      default: (b: Buffer) => SharpChain
+    } | null
+    if (!mod) return png
+    return await mod
+      .default(png)
+      .resize({ width: 600, kernel: 'lanczos3' })
+      .grayscale()
+      .normalise()
+      .threshold(128)
+      .png()
+      .toBuffer()
+  } catch {
+    return png
+  }
+}
+
+/** GoEdge 验证码页表单解析（captcha_id + 图片地址；属性顺序无关） */
+export function parseGoEdgeCaptchaForm(html: string): { id: string; imgSrc: string } | null {
+  const id = /name="GOEDGE_WAF_CAPTCHA_ID"\s+value="([^"]+)"/i.exec(html)?.[1]
+  const imgSrc =
+    /<img[^>]+id="ui-captcha-image"[^>]+src="([^"]+)"/i.exec(html)?.[1] ??
+    /<img[^>]+src="([^"]+)"[^>]+id="ui-captcha-image"/i.exec(html)?.[1]
+  if (!id || !imgSrc) return null
+  return { id, imgSrc: imgSrc.replace(/&amp;/g, '&') }
+}
+
+/**
+ * GoEdge 验证码表单已解析但 VLM 连续未命中的类型化错误：
+ * 调用方据此跳过 Playwright 升级——同一 VLM 换浏览器重试无精度增益，
+ * 只会白白增加 ~2 分钟延迟与对 WAF 的请求量。
+ */
+class WafVlmExhaustedError extends Error {}
+
+/**
+ * GoEdge WAF（及同构验证码页）纯 HTTP 求解——无需浏览器：
+ * GET 挑战页 → 解析表单 → 下载图片（预处理+VLM 识别）→ POST 表单 → 303 落回原页。
+ * 通行 cookie 经逐跳 Set-Cookie 吸收进 jar（ge_wc_20 等，2h 有效），全站后续请求复用。
+ * 返回 null = 非 GoEdge 布局或结构性失败（调用方升级 Playwright DOM 求解）；
+ * 抛 WafVlmExhaustedError = 表单已解析但 VLM 连续未命中（跳过 Playwright 升级）；
+ * VLM 配置缺失/不可用的错误原样上抛（含中文配置指引，不得吞掉）。
+ */
+async function solveWafCaptchaOverHttp(
+  url: string,
+  cfg: FetchConfig,
+  timeout: number,
+  started: number
+): Promise<FetchResult | null> {
+  // 4 次识别尝试：每次挑战刷新验证码，按单次识别命中率 ~60% 估算，
+  // 4 连败概率 ~2.5%——与旧「HTTP 3 次 + Playwright 4 次」链路的通过率相当，
+  // 但无浏览器启动/导航/长等待开销，最坏耗时从 ~209s 压到 ~1 分钟内
+  const SOLVE_ATTEMPTS = 4
+  // 通行 cookie 与 UA 绑定：整条解题链（GET 页→GET 图→POST 表）共用同一组请求头指纹
+  const headers = buildHeaders(cfg, url)
+  let layoutMatched = false
+  let lastReason = '未知'
+  for (let attempt = 0; attempt < SOLVE_ATTEMPTS; attempt++) {
+    try {
+      // ① 取挑战页（jar 已持有有效通行 cookie 时这一步直接拿到正文并返回）
+      const { res, finalUrl: pageUrl } = await fetchFollowingRedirects(url, headers, cfg.cookies ?? '', timeout)
+      const buf = Buffer.from(await res.arrayBuffer())
+      const html = decodeBuffer(buf, detectCharset(buf, res.headers.get('content-type') ?? '', cfg.encoding ?? 'auto'))
+      if (!isWafChallengeHtml(html)) {
+        return { html, status: res.status, finalUrl: pageUrl, strategy: 'http', elapsedMs: Date.now() - started }
+      }
+      if (isHardDeniedHtml(html)) return null // IP 黑名单非验证码可解，交上层（Playwright/报错）处理
+      // ② 解析 GoEdge 表单
+      const form = parseGoEdgeCaptchaForm(html)
+      if (!form) return null
+      layoutMatched = true
+      // ③ 下载验证码图片：Referer 指向挑战页；剥离 Sec-Fetch document 导航指纹——
+      //    图片子资源应发 image 语义（与 Playwright 路径同一教训：GoEdge 校验
+      //    fetch-metadata 一致性，矛盾指纹会拒供验证码图）
+      const imgHeaders: Record<string, string> = {
+        ...headers,
+        Referer: pageUrl,
+        Accept: 'image/avif,image/webp,image/apng,image/*,*/*;q=0.8',
+      }
+      for (const k of Object.keys(imgHeaders)) {
+        if (k.toLowerCase().startsWith('sec-fetch-')) delete imgHeaders[k]
+      }
+      const img = await fetchFollowingRedirects(new URL(form.imgSrc, pageUrl).href, imgHeaders, '', timeout)
+      const png = Buffer.from(await img.res.arrayBuffer())
+      if (!img.res.ok || png.length < 100) {
+        lastReason = `验证码图下载失败（HTTP ${img.res.status}, ${png.length}B）`
+        console.warn(`[waf-http-solve] 第 ${attempt + 1}/${SOLVE_ATTEMPTS} 次: ${lastReason}`)
+        continue
+      }
+      // ④ 预处理 + VLM 识别（识别不可用错误原样上抛，含配置指引）
+      const code = await recognizeCaptcha(await preprocessCaptchaForVlm(png))
+      if (!code || code.length < 3) {
+        lastReason = 'VLM 空回复'
+        console.warn(`[waf-http-solve] 第 ${attempt + 1}/${SOLVE_ATTEMPTS} 次: ${lastReason}`)
+        continue
+      }
+      // ⑤ POST 表单（303 后自动转 GET 落回 from 原页；逐跳 Set-Cookie 已进 jar）
+      const postHeaders: Record<string, string> = {
+        ...headers,
+        Referer: pageUrl,
+        'Content-Type': 'application/x-www-form-urlencoded',
+      }
+      const post = await fetchFollowingRedirects(pageUrl, postHeaders, '', timeout, {
+        method: 'POST',
+        body: `GOEDGE_WAF_CAPTCHA_ID=${encodeURIComponent(form.id)}&GOEDGE_WAF_CAPTCHA_CODE=${encodeURIComponent(code)}`,
+      })
+      const postBuf = Buffer.from(await post.res.arrayBuffer())
+      const postHtml = decodeBuffer(
+        postBuf,
+        detectCharset(postBuf, post.res.headers.get('content-type') ?? '', cfg.encoding ?? 'auto')
+      )
+      if (!isWafChallengeHtml(postHtml)) {
+        // 放行：POST 303 的 from 落地页即原目标内容，直接作为结果返回
+        return { html: postHtml, status: post.res.status, finalUrl: post.finalUrl, strategy: 'http', elapsedMs: Date.now() - started }
+      }
+      // 未通过（识别错误）：WAF 重发新验证码，下一轮重试
+      lastReason = `识别答案 "${code.slice(0, 8)}" 未被接受`
+      console.warn(`[waf-http-solve] 第 ${attempt + 1}/${SOLVE_ATTEMPTS} 次: ${lastReason}，刷新重试`)
+      await sleep(randomInt(400, 900))
+    } catch (e) {
+      // VLM 配置性错误必须上抛（含手动过码指引，吞掉会让用户失去唯一行动线索）；
+      // 其余（网络抖动/重定向环）下一轮重试
+      if (e instanceof Error && /CAPTCHA_VISION|验证码识别|手动过码/.test(e.message)) throw e
+      lastReason = (e instanceof Error ? e.message : String(e)).slice(0, 140)
+      console.warn(`[waf-http-solve] 第 ${attempt + 1}/${SOLVE_ATTEMPTS} 次异常: ${lastReason}`)
+      if (attempt === SOLVE_ATTEMPTS - 1) return null
+      await sleep(randomInt(300, 700))
+    }
+  }
+  if (layoutMatched) {
+    // GoEdge 表单已解析、HTTP 通道本身工作正常：连续未命中是 VLM 识别率问题，
+    // 升级 Playwright（同一 VLM）无增益，直接给出可行动的错误并跳过浏览器升级
+    throw new WafVlmExhaustedError(
+      `WAF 验证码自动求解未通过（GoEdge 表单已解析，HTTP 通道正常，VLM 连续 ${SOLVE_ATTEMPTS} 次未命中，末次原因: ${lastReason}）。` +
+        '这通常是识别率问题而非网络/浏览器问题——直接重试任务即可（每次挑战会自动刷新验证码）；' +
+        '识别率持续偏低时更换视觉模型（CAPTCHA_VISION_MODEL，推荐 glm-4v-flash / glm-4v-plus）'
+    )
+  }
+  return null
 }
 
 // ============================================================
@@ -1328,9 +1543,9 @@ async function fetchWithPlaywright(url: string, cfg: FetchConfig, timeout: numbe
       }
     }
 
-    // WAF 挑战页 → 自动求解验证码
+    // WAF 挑战页 → 自动求解验证码（同主机串行：并发请求只解一次，其余共享通行 cookie）
     if (isWafChallengeHtml(html) && !isHardDeniedHtml(html)) {
-      const solved = await solveWafChallenge(page)
+      const solved = await withWafSolveLock(url, () => solveWafChallenge(page))
       if (solved) {
         await page.waitForTimeout(600)
         html = await page.content()
@@ -1474,7 +1689,7 @@ async function recognizeViaCustomApi(pngBase64: string, conf: VisionApiConf): Pr
       max_tokens: 32,
       temperature: 0,
     }),
-    signal: AbortSignal.timeout(25_000),
+    signal: AbortSignal.timeout(18_000),
   })
   if (!res.ok) {
     const t = await res.text().catch(() => '')
@@ -1544,7 +1759,9 @@ export async function recognizeCaptcha(pngBuffer: Buffer): Promise<string> {
           thinking: { type: 'disabled' },
         }),
         new Promise<never>((_, reject) => {
-          vlmTimer = setTimeout(() => reject(new Error('VLM 验证码识别超时')), 25000)
+          // 18s：主流视觉模型典型响应 3～10s，25s 的长尾等待在多次重试场景下
+          // 会线性放大求解总耗时（实测一次求解 209s 的主要成分）
+          vlmTimer = setTimeout(() => reject(new Error('VLM 验证码识别超时')), 18_000)
         }),
       ])
       const code = (response.choices?.[0]?.message?.content ?? '').replace(/[^a-zA-Z0-9]/g, '').slice(0, 8)
@@ -1589,7 +1806,8 @@ async function solveWafChallenge(page: PlaywrightPage): Promise<boolean> {
       const shot = await img.screenshot({ encoding: 'base64' })
       const base64 = typeof shot === 'string' ? shot : Buffer.from(shot).toString('base64')
       if (!base64) continue
-      const code = await recognizeCaptcha(Buffer.from(base64, 'base64'))
+      // 截图先经放大+二值化预处理再交 VLM（与 HTTP 通道同一结论：原图识别率低）
+      const code = await recognizeCaptcha(await preprocessCaptchaForVlm(Buffer.from(base64, 'base64')))
       if (!code || code.length < 3) continue
       const input = await page.$('#GOEDGE_WAF_CAPTCHA_CODE')
       const submit = await page.$('#captcha-form button')
