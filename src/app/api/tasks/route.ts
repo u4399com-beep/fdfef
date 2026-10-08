@@ -1,7 +1,8 @@
 import { NextRequest } from 'next/server'
 import { db } from '@/lib/db'
 import { taskManager } from '@/lib/collect/task-manager'
-import { json, badRequest, readJson, strId, ACTIVE_TASK_STATUSES, STORAGE_MODES, stringArray, toInt } from '../_lib/http'
+import { normalizeTaskInput, taskCreateData } from '@/lib/collect/task-input'
+import { json, badRequest, readJson, ACTIVE_TASK_STATUSES } from '../_lib/http'
 import { requireAuth } from '@/lib/auth'
 
 export const runtime = 'nodejs'
@@ -29,34 +30,15 @@ export async function GET(req: NextRequest) {
   return json({ tasks })
 }
 
-/** 新建任务 */
+/** 新建任务（与循环任务模板共用 normalizeTaskInput 规范化，防两路校验漂移） */
 export async function POST(req: NextRequest) {
   const denied = requireAuth(req)
   if (denied) return denied
   const body = await readJson(req)
   if (!body) return badRequest('请求体必须为 JSON 对象')
-  const name = String(body.name ?? '').trim()
-  if (!name) return json({ error: '任务名称必填' }, { status: 400 })
+  const norm = normalizeTaskInput(body)
+  if (!norm.ok) return badRequest(norm.error)
 
-  const task = await db.collectTask.create({
-    data: {
-      name,
-      targetType: body.targetType === 'range' ? 'range' : 'single',
-      listRuleId: strId(body.listRuleId),
-      bookRuleId: strId(body.bookRuleId),
-      tocRuleId: strId(body.tocRuleId),
-      contentRuleId: strId(body.contentRuleId),
-      targetUrls: JSON.stringify(stringArray(body.targetUrls)),
-      urlTemplate: String(body.urlTemplate ?? ''),
-      pageStart: toInt(body.pageStart, 1, 1),
-      pageEnd: toInt(body.pageEnd, 1, 1),
-      mode: body.mode === 'full' ? 'full' : 'incremental',
-      storageMode: STORAGE_MODES.includes(String(body.storageMode)) ? String(body.storageMode) : 'db',
-      threadMin: toInt(body.threadMin, 1, 1),
-      threadMax: toInt(body.threadMax, 3, 1),
-      intervalMin: toInt(body.intervalMin, 500, 0),
-      intervalMax: toInt(body.intervalMax, 2000, 0),
-    },
-  })
+  const task = await db.collectTask.create({ data: taskCreateData(norm.data) })
   return json({ task })
 }

@@ -111,6 +111,21 @@ model TaskLog {
   @@index([taskId, createdAt])
 }
 
+// 循环采集任务（定时调度）：按固定分钟间隔自动创建并启动 CollectTask
+model CollectSchedule {
+  id           String    @id @default(cuid())
+  name         String
+  enabled      Boolean   @default(true)
+  intervalMin  Int       @default(120) // 执行间隔（分钟），最小 5
+  taskTemplate String    @default("{}") // CollectTask 创建参数 JSON（与 POST /api/tasks 请求体同构，name 可省略）
+  lastRunAt    DateTime? // 上次触发时间（创建任务时点）
+  lastTaskId   String    @default("") // 上次触发的任务 id（避免上轮未跑完重复触发）
+  lastStatus   String    @default("") // 上次触发任务当前状态快照（供 UI 展示）
+  runCount     Int       @default(0)
+  createdAt    DateTime  @default(now())
+  updatedAt    DateTime  @updatedAt
+}
+
 // 站群配置：一套后台+数据库+本地文件，按域名/站名/主题/TDK/偏移量派生多站
 model SiteConfig {
   id          String   @id @default(cuid())

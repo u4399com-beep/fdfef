@@ -1206,3 +1206,26 @@ Stage Summary:
 - 全库 28 条规则全部实测通过且突破路径全覆盖：WAF 验证码 HTTP 求解（kelexs/rqwb）、curl TLS 指纹（101kks）、IP 解封回归（dwxwc）、镜像重定向（biqutu）。
 - dwxwc/biqutu 两站改版规则重写入库：新增验证了引擎 select 分页模式（dwxwc #indexselect）、XPath nextLink 文本精确匹配（bqgbe 下一页）、og:novel meta 书页族、内嵌目录+select 分页与乱序窗口目录两类新形态；reorder+byUrl 去重对「窗内乱序/窗间重叠/站点共享 URL 缺陷」三类脏目录的吸收能力得到实测验证。
 - verify-all-rules.ts 升级为 7 站全量回归基准（含策略接管标签输出），后续轮次可直接复用。
+
+---
+Task ID: R22-scheduler
+Agent: Z.ai Code (main)
+Task: 建立循环任务，采集 dwxwc 的最新更新
+
+Work Log:
+- 系统原无定时调度能力（CollectTask 为一次性手动任务）→ 新增 CollectSchedule 模型（name/enabled/intervalMin/taskTemplate/lastRunAt/lastTaskId/lastStatus/runCount）+ db:push。
+- src/lib/collect/task-input.ts：任务参数规范化器（normalizeTaskInput/taskCreateData/taskRowToTemplate/taskTemplateToStore），POST /api/tasks 与循环任务模板共用同一套校验，消除两路漂移。
+- src/lib/collect/task-launch.ts：任务启动共享入口（原子占位→运行时→异步 executeTask，防并发双开）；control 路由 start 分支重构为共用。
+- src/lib/collect/scheduler.ts：进程内调度器单例（globalThis 守卫），60s tick：到期（lastRunAt+interval，下限 5min）即触发；上轮任务 running 且运行时在本进程 → 跳过（防同站并发），运行时缺失（重启残留）→ 标记中断后照常触发（自愈）；触发即按模板建任务（名=调度名+时间戳）并 launchTask；tick 顺手回写 lastStatus 终态快照。
+- src/instrumentation.ts：服务器启动钩子拉起调度器（standalone/dev 通用，无需 crontab）。
+- API：/api/schedules（GET/POST）+ [id]（PUT/DELETE）+ [id]/control（runNow/enable/disable），全部鉴权；间隔夹取 5min~30d。
+- UI：src/components/admin/schedules-panel.tsx 挂任务页顶部——列表（每 N 分钟/启停开关/立即执行/删除/运行次数/上次触发）、新建对话框（从现有任务一键生成模板 + JSON 微调）、5s 轮询。
+- 种子：tests/register-dwxwc-schedule.ts 建「dwxwc最新更新循环采集」（120min，/sort/1/{page}/ 1~2 页增量，规则 id 按名解析不硬编码；lastRunAt=now 防部署即跑）。
+- 沙盒环境坑：误杀平台 sudo 管理的 dev server 后，平台在会话边界清扫所有 z 用户后台进程（sleep 探针实测）→ 验证改「单次调用自含」模式（调用内重启服务→操作→取证）。
+- 验证全绿：①调度器随 dev server 启动（日志）②schedules API 增删改查 ③mock 循环 runNow→自动建任务→done（books:1/chapters:10）→tick 回写 lastStatus=done（fresh boot 复验）④dwxwc 真实单本任务走完整管线：books:1(新增1)/chapters:58(新增58)/contents:58/errors:0（含 WAF 突破）⑤Agent Browser：循环任务面板渲染、开关/按钮/aria 齐全（截图）。
+- 测试循环与测试任务已清理；tsc/lint 归零；DEPLOY.md 新增「循环采集任务」章节。
+
+Stage Summary:
+- 系统具备定时自动采集能力：循环任务=调度器(instrumentation 自动拉起)+CollectSchedule 模板+任务页管理面板，无需外部 cron。
+- dwxwc最新更新循环采集已入库并启用（120min 增量）；用户服务器 git pull + 重启即生效，可 UI 调间隔/立即执行。
+- 复用资产：task-input 规范化器与 task-launch 启动器已收敛手动/自动两路；后续任何定时能力（如 SEO 预热）可直接挂 scheduler tick。

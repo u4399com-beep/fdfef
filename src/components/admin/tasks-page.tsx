@@ -18,6 +18,7 @@ import { Separator } from '@/components/ui/separator'
 import { Textarea } from '@/components/ui/textarea'
 import { useToast } from '@/hooks/use-toast'
 import { api, formatDate } from '@/lib/client-api'
+import { SchedulesPanel } from '@/components/admin/schedules-panel'
 import { toNumOr } from '@/lib/utils'
 import type { RuleType } from '@/lib/collect-types'
 import {
@@ -292,6 +293,7 @@ export function TasksPage() {
 
   return (
     <div className="space-y-4">
+      <SchedulesPanel />
       <div className="flex flex-wrap items-center justify-between gap-3">
         <div className="flex items-center gap-2 text-sm text-muted-foreground">
           <ListChecks className="h-4 w-4" />
