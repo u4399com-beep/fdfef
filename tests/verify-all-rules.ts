@@ -6,7 +6,7 @@
 import { PrismaClient } from '@prisma/client'
 import { testRule } from '../src/lib/collect/testing'
 
-const db = new PrismaClient()
+const db = new PrismaClient({ log: ['warn', 'error'] })
 
 interface SitePlan {
   /** 规则名前缀（分组键） */
@@ -23,7 +23,9 @@ const PLANS: SitePlan[] = [
   { prefix: '可乐小说', label: '可乐小说 kelexs', listUrl: 'https://www.kelexs.com/list-1/' },
   { prefix: '存书啦', label: '存书啦 cunshu', listUrl: 'https://www.cunshu.la/library.php?sort=latest&page=1' },
   { prefix: '人气完本', label: '人气完本 rqwb', listUrl: 'https://www.rqwb.com/' },
-  { prefix: '笔趣阁biqutu', label: '笔趣阁 biqutu(镜像bqgbe)', listUrl: 'http://www.biqutu.info/' },
+  { prefix: '笔趣阁biqutu', label: '笔趣阁 biqutu(镜像bqgbe)', listUrl: 'https://www.bqgbe.com/fenlei/1/1.html' },
+  { prefix: '大文学无错', label: '大文学无错 dwxwc', listUrl: 'https://www.dwxwc.com/sort/1/1/' },
+  { prefix: '101看書', label: '101看書 101kks', listUrl: 'https://101kks.com/novels/class' },
 ]
 
 async function pickFirstUrl(type: string, data: Record<string, unknown> | undefined): Promise<string> {
@@ -68,19 +70,20 @@ async function verifySite(plan: SitePlan): Promise<{ ok: boolean; detail: string
       return { ok: false, detail: `${summary.join(' → ')} → ${step}:❌ ${res.message.slice(0, 120)}` }
     }
     const d = res.data as Record<string, unknown>
+    const usedStrategy = typeof d?.strategy === 'string' ? d.strategy : ''
     if (step === 'list') {
       const total = d?.total as number
-      summary.push(`list:${total}项`)
+      summary.push(`list:${total}项${usedStrategy ? `[${usedStrategy}]` : ''}`)
       bookUrl = await pickFirstUrl('list', d)
     } else if (step === 'book') {
       const f = d?.fields as Record<string, string>
-      summary.push(`book:《${(f?.书名 ?? '').slice(0, 18)}》`)
+      summary.push(`book:《${(f?.书名 ?? '').slice(0, 18)}》${usedStrategy ? `[${usedStrategy}]` : ''}`)
       bookUrl = (d?.tocUrl as string) || (d?.finalUrl as string) || bookUrl
     } else if (step === 'toc') {
-      summary.push(`toc:${d?.total}章/去重${d?.dupRemoved}`)
+      summary.push(`toc:${d?.total}章/去重${d?.dupRemoved}${usedStrategy ? `[${usedStrategy}]` : ''}`)
       chapterUrl = await pickFirstUrl('toc', d)
     } else if (step === 'content') {
-      summary.push(`content:${d?.wordCount}字/${d?.pagesFetched}页`)
+      summary.push(`content:${d?.wordCount}字/${d?.pagesFetched}页${usedStrategy ? `[${usedStrategy}]` : ''}`)
     }
   }
   return { ok: true, detail: summary.join(' → ') }

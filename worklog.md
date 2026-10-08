@@ -1186,3 +1186,23 @@ Stage Summary:
 - 101kks(101看書) 全链路接入并三重验证通过（引擎层/UI 层/浏览器层），数据随 db/custom.db 入仓。
 - 反反爬体系新增 curl 指纹通道（TLS 级降级，服务器无需任何额外依赖，系统 curl 即可），CF 中文挑战识别+浏览器放行等待两处修复对其他 CF 站点普适。
 - FieldSelector.replace 为通用能力，后续杰奇系书源转换可直接复用。
+
+---
+Task ID: R21-rules-matrix
+Agent: Z.ai Code (main)
+Task: 利用新集成方案（五层反反爬引擎矩阵）对所有在库采集规则做全量测试和突破
+
+Work Log:
+- 盘点 db/custom.db：7 站 × 4 类共 28 条规则（演示/可乐kelexs/存书啦/人气完本rqwb/笔趣阁biqutu/大文学无错dwxwc/101看書101kks）。
+- 升级 tests/verify-all-rules.ts：PLANS 补齐 dwxwc（/sort/1/1/）与 101kks（/novels/class，实测首页无 .newnovels、分类页才有）两站，输出每环实际接管策略标签（[http]/[curl]/[waf-http-solve]）。
+- 全量实测首跑 5/7 通过；暴露两个站点改版：biqutu（biqutu.info 已 302 → bqgbe.com 新模板）与 dwxwc（IP 封禁解封后模板已重构，旧选择器全部落空）。
+- dwxwc 改版适配（重写 tests/register-dwxwc-rules.ts 四规则）：列表 .bookbox→ul.txt-list li（span.s2 书名+书目链接 /index/N/、s3 最新章、s4 作者、s1 分类）；书页改 og:novel meta 全套（与 101kks 同族杰奇系，含 status/lastest_chapter_name/read_url→tocLink）；目录改为书目页内嵌双 section-list（最新12+正文50/页）+ #indexselect 原生 select 分页（1-50章/51-72章）→ 引擎既有 select 分页模式纯 HTTP 枚举 option value；实测站点自身共享 URL 数据缺陷（第4/5章同 URL 且仅服务第4章）→ byUrl 去重忠实保留 62 可读章节；正文 #content 旧选择器仍兼容。
+- biqutu 镜像改版适配（重写 tests/register-biqutu-rules.ts 四规则）：新站 /fenlei/{cat}/{page}.html ul.list_l1 li（a 书名+链接 /slug/、span.y 作者），站点分页 URL 实测全部返回同一批书目 → 分页关闭；书页 og:novel meta 保留 + tocLink 改 a.btn-mulu（查看更多章节 → /slug/ml1.html 全量目录链入口，og:novel:read_url=第五十章 证实镜像从 50 章起收录）；目录链 ml1..ml20 每页 100+ 章且窗内乱序/窗间重叠（含每页重复的最新8章块）→ nextLink 纯 HTTP 跟随 XPath //a[@class='y' and contains(text(),'下一页')]（class=z 的上一页天然排除），reorder 乱序重排+byUrl 去重吸收，maxPages 30（实测 20 页 1965 章全链）；正文 17mb 家族 base64 writeln 段落加密与 _N.html 分页不变原样兼容。
+- 突破实录（新引擎矩阵自动接管，全程零人工）：kelexs「Verify Yourself」验证码 → WAF HTTP 求解通道直接通过；rqwb 同款验证码 → 求解答案未接受自动刷新重试后通过；101kks CF 挑战 → curl 指纹通道四环全接管（[curl-fallback] 重放成功日志）；dwxwc IP 硬 403 已自然解封 → http 直连恢复。
+- 终局回归：7 站 28 规则全链路 7/7 通过（演示 12章 → kelexs 352章/2114字 → 存书啦 2893章 → rqwb 72章 → biqutu 164章(去重96) → dwxwc 186章(去重56) → 101kks 850章/2481字）。
+- tsc 0 错误 / lint 0 错误；db/custom.db 规则更新随仓提交（数据即代码）。
+
+Stage Summary:
+- 全库 28 条规则全部实测通过且突破路径全覆盖：WAF 验证码 HTTP 求解（kelexs/rqwb）、curl TLS 指纹（101kks）、IP 解封回归（dwxwc）、镜像重定向（biqutu）。
+- dwxwc/biqutu 两站改版规则重写入库：新增验证了引擎 select 分页模式（dwxwc #indexselect）、XPath nextLink 文本精确匹配（bqgbe 下一页）、og:novel meta 书页族、内嵌目录+select 分页与乱序窗口目录两类新形态；reorder+byUrl 去重对「窗内乱序/窗间重叠/站点共享 URL 缺陷」三类脏目录的吸收能力得到实测验证。
+- verify-all-rules.ts 升级为 7 站全量回归基准（含策略接管标签输出），后续轮次可直接复用。

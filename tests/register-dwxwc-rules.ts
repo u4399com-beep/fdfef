@@ -1,15 +1,18 @@
 /**
- * dwxwc.com（大文学无错）四类规则注册
- * 来源：yckceo 书源 7928 https://www.yckceo.com/yuedu/shuyuan/json/id/7928.json
- * 转换：Legado(jsoup 简写) → 本系统 CollectRule.config（css/regex/xpath 三合一 JSON）
- *   class.bookbox            → .bookbox
- *   class.bookname@tag.a@text → .bookname a / text
- *   id.list-chapterAll@tag.dd@tag.a → #list-chapterAll dd a
- *   ##作者： 前缀剥离 → pipeline 作者字段规整（系统性支持，无需规则层处理）
- * 注：原 JSON 含 U+2011 非断行连字符（User‑Agent/list‑chapterAll），已归一化为 ASCII '-'。
- * 反反爬配置：站点为 GoEdge 系 WAF（实测 307→验证码挑战，R20 HTTP 求解通道可直接复用）；
- *   rotateUA=false 固定 UA（通行 cookie 与 UA 绑定）+ throttleGap=2500 宽限流
- *   （实测 0.8s 间隔连发触发 IP 硬 403）+ iv8Cookies 通道声明。
+ * dwxwc.com（大文学无错）四类规则注册 —— 2026-10 站点改版适配
+ *
+ * 旧结构（yckceo 书源 7928 转换，.bookbox/.booktitle/#list-chapterAll）已随站方模板
+ * 重构失效（列表 0 项/书名解析为空），新结构实探结论：
+ *   - 分类列表页 /sort/{cat}/{page}/：推荐位(.layout dl) + 文本行 ul.txt-list li
+ *     （span.s1 分类 / span.s2 书名+书籍链接 /index/N/ / span.s3 最新章 / span.s4 作者）
+ *   - 书目页 /index/N/：杰奇系 og:novel meta 全套（与 101kks 同族），目录内嵌于本页
+ *     两个 ul.section-list（「最新章节」12 条 + 「正文」50 条/页），正文区
+ *     #indexselect 原生 select 分页（/index/N/ = 1-50章，/index/N/2/ = 51-72章）
+ *   - 章节页 /read/{book}/{ch}.html：div#content 不变，仍走旧选择器
+ * 去重：站点自身存在共享 URL 数据缺陷（如第4/5章同指一个 URL，实测该 URL 仅服务
+ *   第4章内容），byUrl 去重忠实保留 62 个可读章节、不存重复正文。
+ * 反反爬：GoEdge 系 WAF（R20 HTTP 求解通道）+ IP 硬 403 冷却；固定 UA +
+ *   throttleGap=2500 宽限流 + iv8Cookies 通道声明。
  */
 import { db } from '../src/lib/db'
 
@@ -30,12 +33,12 @@ const RULES: { name: string; type: string; config: Record<string, unknown> }[] =
     config: {
       ...COMMON,
       items: {
-        item: { mode: 'css', expr: '.bookbox' },
-        title: { mode: 'css', expr: '.bookname a', attr: 'text' },
-        link: { mode: 'css', expr: '.bookname a', attr: 'href' },
-        author: { mode: 'css', expr: '.author', attr: 'text' },
-        cover: { mode: 'css', expr: '.bookbox img', attr: 'src' },
-        latestChapter: { mode: 'css', expr: '.cat a', attr: 'text' },
+        item: { mode: 'css', expr: 'ul.txt-list li' },
+        title: { mode: 'css', expr: '.s2 a', attr: 'text' },
+        link: { mode: 'css', expr: '.s2 a', attr: 'href' },
+        author: { mode: 'css', expr: '.s4', attr: 'text' },
+        category: { mode: 'css', expr: '.s1 a', attr: 'text' },
+        latestChapter: { mode: 'css', expr: '.s3 a', attr: 'text' },
       },
       pagination: {
         enabled: true,
@@ -53,12 +56,14 @@ const RULES: { name: string; type: string; config: Record<string, unknown> }[] =
     config: {
       ...COMMON,
       fields: {
-        title: { mode: 'css', expr: '.booktitle', attr: 'text' },
-        author: { mode: 'css', expr: '.booktag a', attr: 'text' },
-        category: { mode: 'css', expr: '.booktag span', attr: 'text' },
-        cover: { mode: 'css', expr: '.bookcover img', attr: 'src' },
-        intro: { mode: 'css', expr: '.bookintro', attr: 'html' },
-        latestChapter: { mode: 'css', expr: '.bookchapter', attr: 'text' },
+        title: { mode: 'css', expr: "meta[property='og:novel:book_name']", attr: 'content' },
+        author: { mode: 'css', expr: "meta[property='og:novel:author']", attr: 'content' },
+        category: { mode: 'css', expr: "meta[property='og:novel:category']", attr: 'content' },
+        status: { mode: 'css', expr: "meta[property='og:novel:status']", attr: 'content' },
+        latestChapter: { mode: 'css', expr: "meta[property='og:novel:lastest_chapter_name']", attr: 'content' },
+        cover: { mode: 'css', expr: "meta[property='og:image']", attr: 'content' },
+        intro: { mode: 'css', expr: "meta[property='og:description']", attr: 'content' },
+        tocLink: { mode: 'css', expr: "meta[property='og:novel:read_url']", attr: 'content' },
       },
       smartCategory: true,
       smartCompletion: true,
@@ -71,7 +76,15 @@ const RULES: { name: string; type: string; config: Record<string, unknown> }[] =
     type: 'toc',
     config: {
       ...COMMON,
-      items: { item: { mode: 'css', expr: '#list-chapterAll dd a' } },
+      // 书目页即目录页：两个 section-list（最新章节+正文）一并捕获，
+      // select 模式枚举 #indexselect option（第 1 页 option 与起始页相同被跳过）
+      items: { item: { mode: 'css', expr: 'ul.section-list li a' } },
+      pagination: {
+        enabled: true,
+        mode: 'select',
+        nextLink: { mode: 'css', expr: '#indexselect option', attr: 'value' },
+        maxPages: 5,
+      },
       dedup: { byUrl: true, byTitle: false },
       reorder: { enabled: true },
     },
