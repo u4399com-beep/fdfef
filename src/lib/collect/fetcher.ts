@@ -385,12 +385,48 @@ if (jarState.store.size === 0) loadPersistedJar()
 interface ThrottleState {
   queues: Map<string, Promise<number>>
   blockedUntil: Map<string, number>
+  /** 自适应巡航状态：host → { factor 当前间隔倍率, streak 连续干净响应计数 } */
+  pace: Map<string, { factor: number; streak: number }>
 }
 const THROTTLE_STATE_KEY = '__novelThrottleState'
 const globalForThrottle = globalThis as unknown as { [THROTTLE_STATE_KEY]?: ThrottleState }
 const throttleState: ThrottleState =
-  globalForThrottle[THROTTLE_STATE_KEY] ?? { queues: new Map(), blockedUntil: new Map() }
+  globalForThrottle[THROTTLE_STATE_KEY] ??
+  { queues: new Map(), blockedUntil: new Map(), pace: new Map() }
+if (!throttleState.pace) throttleState.pace = new Map() // 老状态热重载迁移
 globalForThrottle[THROTTLE_STATE_KEY] = throttleState
+
+// ============================================================
+// 采集速度档位 → 自适应巡航下限系数（相对规则配置 throttleGap 的倍率下限）。
+// polite=始终全间隔（等价旧版行为）；balanced=下限 0.45×；fast=下限 0.3×。
+// 巡航节奏：连续 2 次干净响应降一档（每次 -0.15，从 1.0 到下限约需 8 次成功），
+// 任何挑战/封禁/请求失败立即回满 —— 安全第一：起步永远是站点配置的完整间隔。
+// 档位存 SystemConfig.collect.speed，此处内存缓存 + 15s 惰性刷新（设置保存时即时生效）。
+// ============================================================
+const COLLECT_SPEED_FLOORS: Record<string, number> = { polite: 1, balanced: 0.45, fast: 0.3 }
+let collectSpeedFloor = COLLECT_SPEED_FLOORS.balanced
+let speedFloorLastCheck = 0
+
+function refreshCollectSpeedFloor(): void {
+  const now = Date.now()
+  if (now - speedFloorLastCheck < 15_000) return
+  speedFloorLastCheck = now
+  void (async () => {
+    try {
+      const { loadCollectSpeed } = await import('./system-config')
+      const speed = await loadCollectSpeed()
+      collectSpeedFloor = COLLECT_SPEED_FLOORS[speed] ?? COLLECT_SPEED_FLOORS.balanced
+    } catch {
+      /* 配置不可读时保持现值（默认 balanced） */
+    }
+  })()
+}
+
+/** 设置页保存速度档位时调用：内存下限立即生效（不等 15s 刷新窗口） */
+export function applyCollectSpeed(speed: string): void {
+  collectSpeedFloor = COLLECT_SPEED_FLOORS[speed] ?? COLLECT_SPEED_FLOORS.balanced
+  speedFloorLastCheck = Date.now()
+}
 
 class DomainThrottle {
   private queues = throttleState.queues
@@ -408,6 +444,7 @@ class DomainThrottle {
     } catch {
       return
     }
+    refreshCollectSpeedFloor()
     // 封禁冷却期：等待解除后继续（避免在封禁期继续请求加剧封禁）。
     // 循环处理「等待期间又收到更长冷却」的情形；reportBlock 只会延长冷却（until 单调递增），
     // 因此仅当存储值仍是等过的那个值时才清除——修复：早先实现无条件 delete，
@@ -419,7 +456,11 @@ class DomainThrottle {
       if (now < until) await sleep(until - now + 200)
       if ((this.blockedUntil.get(host) ?? 0) <= until) this.blockedUntil.delete(host)
     }
-    const gap = Math.max(0, customGap ?? 1200)
+    const base = Math.max(0, customGap ?? 1200)
+    if (base <= 0) return
+    // 自适应巡航：干净站点按倍率下限压缩间隔；起步/刚出挑战时 factor=1 即完整间隔
+    const factor = throttleState.pace.get(host)?.factor ?? 1
+    const gap = base * (factor < 1 ? factor : 1)
     if (gap <= 0) return
     const prev = this.queues.get(host)
     if (!prev) {
@@ -441,13 +482,44 @@ class DomainThrottle {
     await release
   }
 
-  /** 目标站封禁（硬 403）：设置同域全局冷却期 */
+  /**
+   * 请求结果反馈（fetchPage 统一接线，覆盖全部引擎通道）：
+   * ok=true 累积干净响应并按档位逐步压缩该域间隔；ok=false（挑战/封禁/失败）
+   * 立即回满完整间隔 —— 反反爬安全优先，提速只发生在站点已证明容忍时。
+   */
+  reportOutcome(url: string, ok: boolean): void {
+    let host = ''
+    try {
+      host = new URL(url).hostname
+    } catch {
+      return
+    }
+    if (!ok) {
+      throttleState.pace.delete(host)
+      return
+    }
+    const rec = throttleState.pace.get(host)
+    if (!rec) {
+      throttleState.pace.set(host, { factor: 1, streak: 1 })
+      return
+    }
+    rec.streak++
+    if (rec.streak >= 2) {
+      rec.streak = 0
+      rec.factor = Math.max(collectSpeedFloor, rec.factor - 0.15)
+    }
+    // 容量保险：异常场景下防无限增长（正常每域一条，几百域已覆盖站群规模）
+    if (throttleState.pace.size > 500) throttleState.pace.clear()
+  }
+
+  /** 目标站封禁（硬 403）：设置同域全局冷却期，并将该域巡航倍率回满（冷却后从安全间隔重新起步） */
   reportBlock(url: string, ms = 180_000): void {
     try {
       const host = new URL(url).hostname
       const until = Date.now() + ms + Math.random() * 60_000
       const prev = this.blockedUntil.get(host) ?? 0
       if (until > prev) this.blockedUntil.set(host, until)
+      throttleState.pace.delete(host)
     } catch {
       /* ignore */
     }
@@ -755,8 +827,11 @@ export async function fetchPage(url: string, cfg: FetchConfig = {}): Promise<Fet
   try {
     const r = await fetchPageInner(mirrored.url, cfg)
     recordNetworkSuccess(mirrored.url)
+    // 自适应巡航反馈：wafChallenged=true 的返回（求解未遂的最终失败页）按挑战处理
+    domainThrottle.reportOutcome(mirrored.url, !r.wafChallenged)
     return r
   } catch (e) {
+    domainThrottle.reportOutcome(mirrored.url, false) // 失败即回满间隔（挑战/封禁/网络故障一律从安全间隔重新起步）
     const networkErr = isNetworkUnreachableError(e)
     if (networkErr) recordNetworkFailure(mirrored.url)
     if (networkErr && cfg.mirrorUrls?.length) {
@@ -776,10 +851,12 @@ export async function fetchPage(url: string, cfg: FetchConfig = {}): Promise<Fet
         try {
           const r = await fetchPageInner(alt, cfg)
           recordNetworkSuccess(alt)
+          domainThrottle.reportOutcome(alt, !r.wafChallenged)
           // 记忆可用镜像：后续请求跳过已死主域，直至冷却期结束复检
           markMirrorAlive(url, alt)
           return r
         } catch (err) {
+          domainThrottle.reportOutcome(alt, false)
           if (isNetworkUnreachableError(err)) recordNetworkFailure(alt)
           lastErr = err
         }

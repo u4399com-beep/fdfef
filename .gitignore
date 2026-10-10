@@ -65,3 +65,7 @@ db/custom.backup*.db
 *.backup-r7*.db
 # 后台认证密钥（自动生成，勿入库）
 db/auth-secret
+
+# SQLite WAL 运行时副产物（检查点后提交 db 快照）
+db/custom.db-wal
+db/custom.db-shm

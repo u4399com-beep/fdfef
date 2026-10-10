@@ -35,3 +35,4 @@ const ctl = await fetch(`${BASE}/api/tasks/${task.id}/control`, {
   body: JSON.stringify({ action: 'start' }),
 })
 console.log('启动:', ctl.status, await ctl.text())
+export {}

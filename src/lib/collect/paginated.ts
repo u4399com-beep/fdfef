@@ -46,7 +46,9 @@ export async function fetchPaginated(
   // maxPages≤0/负数的配置错误不产生空页集（nextLink 模式循环不执行会返回 []，上游误判"目录为空"）
   const cap = Math.max(1, Math.min(pagination.maxPages ?? hardCap, hardCap))
   const pages: { url: string; html: string }[] = []
-  const sleepBetween = () => sleep(randomInt(400, 1200))
+  // 页间轻抖动：同域请求间隔已由 DomainThrottle 统一保证（自适应巡航），
+  // 此处仅保留小幅随机化对抗朴素频率统计，不再叠加整段长睡（旧 400-1200ms 为双重等待）
+  const sleepBetween = () => sleep(randomInt(200, 600))
 
   if (pagination.mode === 'template' && pagination.urlTemplate) {
     const start = Math.max(1, pagination.startPage ?? 1)
@@ -169,7 +171,8 @@ export async function fetchCleanedContent(
     // （部分站点把"下一章"伪装成"下一页"，误跟会把整本书正文合并进一章）
     if (pagination.sameChapterOnly && pageBase(next) !== pageBase(res.finalUrl)) break
     url = next
-    await sleep(randomInt(300, 1000))
+    // 页间轻抖动：同域间隔已由 DomainThrottle 保证，这里仅对抗频率统计（旧 300-1000ms 为冗余叠加）
+    await sleep(randomInt(120, 400))
   }
   return { text: parts.filter(Boolean).join('\n'), pages }
 }

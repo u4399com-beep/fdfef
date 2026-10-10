@@ -157,5 +157,6 @@ model SystemConfig {
   id        String   @id @default("main")
   cleaning  String   @default("{}")
   download  String   @default("{}")
+  collect   String   @default("{}")
   updatedAt DateTime @updatedAt
 }

@@ -30,3 +30,4 @@ async function main() {
   console.log('可乐内容规则更新:', res.ok ? 'OK' : await res.text())
 }
 void main()
+export {}

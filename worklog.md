@@ -1229,3 +1229,28 @@ Stage Summary:
 - 系统具备定时自动采集能力：循环任务=调度器(instrumentation 自动拉起)+CollectSchedule 模板+任务页管理面板，无需外部 cron。
 - dwxwc最新更新循环采集已入库并启用（120min 增量）；用户服务器 git pull + 重启即生效，可 UI 调间隔/立即执行。
 - 复用资产：task-input 规范化器与 task-launch 启动器已收敛手动/自动两路；后续任何定时能力（如 SEO 预热）可直接挂 scheduler tick。
+
+---
+Task ID: R23-speedup
+Agent: Z.ai Code (main)
+Task: 利用 HTTP + iv8 + CloakBrowser 三层架构集成方案进行所有在库采集规则测试、突破和章节采集提速
+
+Work Log:
+- 会话收口：远端已含 R21/R22 全部工作（68e1076），本地分叉仅为垃圾 UUID 提交+同内容未跟踪文件 → 备份比对后 reset 对齐，收编存量资产（shadcn ui 集/历史测试工具/实采数据）推送 317035b；随即发现收编的 30 个 shadcn 组件缺依赖致 tsc 漂红且应用零引用（仅 sidebar 簇内部互引）→ git rm 整簇清理，tsc 归零。
+- 章节采集提速三件套：
+  ① SQLite WAL 化：journal_mode=delete+FULL 每写事务建/删日志文件+独占锁+双 fsync 多线程串行化 → instrumentation 启动时 ensureSqliteWal（bun:sqlite，持久化模式+checkpoint 收敛）+ 手动立即激活 + .gitignore 排除 -wal/-shm；微基准 2000 小事务 242ms→24ms = 10.2×。
+  ② DomainThrottle 自适应巡航：throttleState 增 pace(host→factor/streak)，连续 2 次干净响应降一档（-0.15）至档位下限；任何挑战/封禁/失败立即回满+reportBlock 清巡航；fetchPage 统一接线 reportOutcome（主/镜像/异常三路，wafChallenged 判定），覆盖全部引擎通道；安全设计=起步永远全间隔，提速只发生在站点证明容忍后。
+  ③ 采集速度档位（SystemConfig.collect.speed）：polite=1.0（等价旧版）/balanced=0.45（默认）/fast=0.3；system-config 15s 缓存+fetcher 15s 惰性刷新+设置保存 invalidate+applyCollectSpeed 即时生效双保险；设置页新「采集速度（自适应节流）」卡（三档单选+当前徽标+原理解释）；GET/PUT /api/settings 全链鉴权+校验。
+  ④ 分页间冗余等待收紧：fetchCleanedContent 300-1000ms→120-400ms、fetchPaginated 400-1200→200-600（同域间隔已由节流器保证，仅留轻抖动抗频率统计）。
+- 机制仿真 tests/sim-throttle-pacing.ts 五断言全过：①起步全间隔 ②巡航逐档（1000→450ms balanced）③失败秒回满 ④polite 等价旧版 ⑤fast 下限 300ms。
+- 全库 7 站回归（引擎矩阵全程接管）：演示✅ / 101kks✅(curl 指纹 853章/2459字) / biqutu✅(**镜像二次改版**：ul.list_l1→ul.sort_list+杰奇 s1-s5 族、书目 slug 变六字缀、目录 yanqing_list→ul.chapter-list、分页 URL 族 lastupdate_{cat}_0_0_{page}——列表/目录规则重写注册，正文 17mb 加密族原样兼容) / dwxwc✅(45项→186章/去重56→1389字) / kelexs✅(20项→645章→2123字) / cunshu✅(**新部署 VBWI/GoEdge WAF** 307→/WAF/VERIFY/CAPTCHA，HTTP 求解链自动突破)。
+- 突破实录：VLM 网关整体 429 限流（文本+视觉同限）期间自研「curl 会话+亲自读图」路径——同 UA/IP 会话取挑战页→解析 GOEDGE_WAF_CAPTCHA_ID→下载验证码 PNG→人工识读 931546→同罐 POST→303→200 真实页，通行 cookie ge_wc_20 注入 dwxwc 四规则；VLM 恢复后 kelexs/cunshu 全自动通过。
+- dwxwc 验证码试错触发站点级 TCP 空路由（exit 7，连接拒绝级），区分本机网络（baidu/bqgbe 均 200）确认站点拉黑，等待自然解封（R20 已知冷却机制）；循环采集任务自愈语义不受影响。
+- 提速实测（tests/bench-collect-speed.ts 通用 A/B 基准，cunshu 147 章同书同规则全量重采，两档 0 错误）：polite 229.9s/1.56s均章 vs fast 103.0s/0.70s均章 = **2.23× 提速**（渐进巡航全程未触发 WAF）。
+- UI 端到端（agent-browser）：设置页速度卡渲染/三档切换/保存→API 读回 fast→恢复 balanced 全环通过；dev server 需重启加载新 Prisma Client（旧进程 Unknown argument collect 500 已排除）。
+- 基准脚本坑：testRule 需传对象非 JSON 串；档位须双写（SystemConfig 落库防 15s 刷新回切+进程内直切）；846 章大书超时改 30-147 章小书；平台进程清扫 → 单次调用自含模式。
+
+Stage Summary:
+- 章节采集链路三层提速落地并可证：自适应巡航 2.23×（147 章实测）+ SQLite WAL 10.2×（写事务微基准）+ 分页冗余等待消除；三档位 UI 可控，礼貌档=旧行为零风险回退。
+- 7 站 28 规则回归 7/7，新增两类突破样本：cunshu 新部署 WAF 自动攻克、dwxwc VBWI 手动会话破译+cookie 注入、biqutu 二次改版规则重写。
+- 新基建：tests/sim-throttle-pacing.ts（节流机制回归）、tests/bench-collect-speed.ts（任意站点 A/B 提速基准）、SystemConfig.collect 档位通道。

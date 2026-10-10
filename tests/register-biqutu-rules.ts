@@ -1,19 +1,15 @@
 /**
- * biqutu.info → bqgbe.com（笔趣阁镜像）四类规则注册 —— 2026-10 站点改版适配
+ * biqutu.info → bqgbe.com（笔趣阁镜像）四类规则注册 —— 2026-10 第二次改版适配
  *
- * 旧规则基于 biqutu.info 17mb 模板家族结构（s1-s5 面板正则/#list rel=chapter/#fmimg/#intro），
- * 实测 biqutu.info 已 302 → https://www.bqgbe.com/，新站模板完全不同（biquge/pc 主题）：
- *   - 分类列表页 /fenlei/{cat}/{page}.html：ul.list_l1 li（a 书名+链接 /slug/，span.y 作者）；
- *     站点分页 URL（/fenlei/1/2.html、/fenlei/lastupdate_N_N_N_N.html）实测均返回同一批
- *     书目（分页形同虚设）→ 分页关闭，单页 60 本。
- *   - 书籍页 /slug/：og:novel meta 全套（latest_chapter_name 正拼写）；章节窗口 ul
- *     （100 条）+ a.btn-mulu「查看更多章节...」→ /slug/ml1.html（全量目录链入口）。
- *     og:novel:read_url 指向正文第一章 = 第五十章 → 本镜像从第 50 章起收录。
- *   - 目录链 /slug/ml{N}.html：ml1..ml20（章节按 100+ 一窗、窗内乱序、窗间重叠漂移，
- *     且各页含最新 8 章重复块）→ 纯 HTTP nextLink 跟随 a.y「下一页」；
- *     reorder 乱序重排 + byUrl 去重正好吸收（引擎既有能力）。
- *   - 章节页 /slug/{ch}.html + _N.html 分页：17mb 家族 JS 段落加密不变
- *     （document.writeln(随机名.随机名('base64')) → <p>段落</p>），旧规则原样兼容。
+ * 首改（10月初）：biqutu.info 302 → bqgbe.com biquge/pc 主题（ul.list_l1 li / a.btn-mulu / yanqing_list）。
+ * 二改（本轮实测探明）：镜像切换为杰奇系 mobile 模板（与 dwxwc 同族）——
+ *   - 分类列表页 /fenlei/lastupdate_{cat}_0_0_{page}.html（旧 /fenlei/{cat}/{page}.html 仍 200 兼容）：
+ *     ul.sort_list li（span.s1 [分类] / span.s2>a 书名+链接 /slug六字缀/（title=最新章）/
+ *     span.s4 作者 / span.s5 日期），下一页 a[href*=lastupdate]「下一页」→ XPath 精确匹配跟随。
+ *   - 书籍页 /slug/：og:novel meta 全套不变（latest_chapter_name 正拼写）；目录链入口 a.btn-mulu 不变。
+ *   - 目录链 /slug/ml{N}.html：容器 ul.yanqing_list → ul.chapter-list（100 章/窗、窗内乱序、
+ *     窗间重叠、各页重复最新块特性不变）→ 纯 HTTP nextLink a.y「下一页」+ reorder + byUrl 吸收。
+ *   - 章节页：17mb 家族 JS 段落加密不变（document.writeln(随机名.随机名('base64'))），原样兼容。
  */
 import { db } from '../src/lib/db'
 
@@ -47,10 +43,23 @@ const RULES: { name: string; type: string; config: Record<string, unknown> }[] =
     config: {
       ...COMMON,
       items: {
-        item: { mode: 'css', expr: 'ul.list_l1 li' },
-        title: { mode: 'css', expr: 'a', attr: 'text' },
-        link: { mode: 'css', expr: 'a', attr: 'href' },
-        author: { mode: 'css', expr: 'span.y', attr: 'text' },
+        item: { mode: 'css', expr: 'ul.sort_list li' },
+        title: { mode: 'css', expr: '.s2 a', attr: 'text' },
+        link: { mode: 'css', expr: '.s2 a', attr: 'href' },
+        author: { mode: 'css', expr: '.s4', attr: 'text' },
+        category: { mode: 'css', expr: '.s1', attr: 'text' },
+      },
+      pagination: {
+        enabled: true,
+        mode: 'nextLink',
+        // 「下一页」锚点 href 含 lastupdate（/fenlei/lastupdate_1_0_0_2.html），
+        // 上一页/分类导航均不含该词组合 → 双条件 XPath 天然排除
+        nextLink: {
+          mode: 'xpath',
+          expr: "//a[contains(@href,'lastupdate') and contains(text(),'下一页')]",
+          attr: 'href',
+        },
+        maxPages: 3,
       },
     },
   },
@@ -87,7 +96,7 @@ const RULES: { name: string; type: string; config: Record<string, unknown> }[] =
     config: {
       ...COMMON,
       items: {
-        item: { mode: 'css', expr: 'ul.yanqing_list li a' },
+        item: { mode: 'css', expr: 'ul.chapter-list li a' },
       },
       pagination: {
         enabled: true,

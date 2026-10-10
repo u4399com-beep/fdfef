@@ -13,7 +13,15 @@ import { Textarea } from '@/components/ui/textarea'
 import { useToast } from '@/hooks/use-toast'
 import { api } from '@/lib/client-api'
 import { toNumOr } from '@/lib/utils'
-import { Beaker, KeyRound, Loader2, Save } from 'lucide-react'
+import { Beaker, Gauge, KeyRound, Loader2, Save } from 'lucide-react'
+
+type CollectSpeed = 'polite' | 'balanced' | 'fast'
+
+const COLLECT_SPEED_META: Record<CollectSpeed, { label: string; desc: string }> = {
+  polite: { label: '礼貌模式', desc: '始终使用规则配置的完整间隔，适合严格反爬站点' },
+  balanced: { label: '均衡模式（推荐）', desc: '站点容忍时逐渐提速至 45% 间隔，遇拦截立即回满' },
+  fast: { label: '极速模式', desc: '逐渐提速至 30% 间隔，速度优先，适合无 WAF 站点' },
+}
 
 /** 输入过程保留空段/空行（否则逗号、换行会被 onChange 过滤吞掉，无法连续输入多段），提交前统一剔除空段 */
 function compactCleaning(c: CleaningCfg): CleaningCfg {
@@ -60,6 +68,7 @@ export function SettingsPage() {
   const { toast } = useToast()
   const [cleaning, setCleaning] = useState<CleaningCfg | null>(null)
   const [download, setDownload] = useState<DownloadCfg | null>(null)
+  const [collectSpeed, setCollectSpeed] = useState<CollectSpeed>('balanced')
   const [saving, setSaving] = useState(false)
   const [testHtml, setTestHtml] = useState('')
   const [testOut, setTestOut] = useState('')
@@ -81,9 +90,10 @@ export function SettingsPage() {
 
   const load = useCallback(async () => {
     try {
-      const r = await api<{ cleaning: CleaningCfg; download: DownloadCfg; engines?: EngineStatus }>('/api/settings')
+      const r = await api<{ cleaning: CleaningCfg; download: DownloadCfg; collect?: { speed?: CollectSpeed }; engines?: EngineStatus }>('/api/settings')
       setCleaning(r.cleaning)
       setDownload(r.download)
+      if (r.collect?.speed) setCollectSpeed(r.collect.speed)
       if (r.engines) setEngines(r.engines)
     } catch (e) {
       toast({ title: '加载失败', description: e instanceof Error ? e.message : String(e), variant: 'destructive' })
@@ -96,7 +106,7 @@ export function SettingsPage() {
     if (!cleaning || !download) return
     setSaving(true)
     try {
-      await api('/api/settings', { method: 'PUT', body: JSON.stringify({ cleaning: compactCleaning(cleaning), download: compactDownload(download) }) })
+      await api('/api/settings', { method: 'PUT', body: JSON.stringify({ cleaning: compactCleaning(cleaning), download: compactDownload(download), collect: { speed: collectSpeed } }) })
       toast({ title: '设置已保存' })
     } catch (e) {
       toast({ title: '保存失败', description: e instanceof Error ? e.message : String(e), variant: 'destructive' })
@@ -219,6 +229,38 @@ export function SettingsPage() {
           </p>
         </CardContent>
       </Card>
+      {/* 采集速度（自适应节流档位） */}
+      <Card>
+        <CardHeader>
+          <CardTitle className="text-base flex items-center gap-2"><Gauge className="h-4 w-4" /> 采集速度（自适应节流）</CardTitle>
+        </CardHeader>
+        <CardContent className="space-y-3">
+          <div className="grid gap-2">
+            {(Object.keys(COLLECT_SPEED_META) as CollectSpeed[]).map((speed) => (
+              <button
+                key={speed}
+                type="button"
+                onClick={() => setCollectSpeed(speed)}
+                aria-pressed={collectSpeed === speed}
+                className={`flex items-start justify-between gap-3 rounded-md border p-2.5 text-left transition-colors hover:bg-muted/40 ${collectSpeed === speed ? 'border-primary bg-primary/5' : ''}`}
+              >
+                <span className="min-w-0">
+                  <span className="block text-sm">{COLLECT_SPEED_META[speed].label}</span>
+                  <span className="block text-[11px] text-muted-foreground">{COLLECT_SPEED_META[speed].desc}</span>
+                </span>
+                {collectSpeed === speed && <span className="shrink-0 rounded-full bg-emerald-100 px-2 py-0.5 text-[11px] text-emerald-700 dark:bg-emerald-950 dark:text-emerald-300">当前</span>}
+              </button>
+            ))}
+          </div>
+          <p className="text-[11px] leading-relaxed text-muted-foreground">
+            自适应巡航：起步永远使用规则配置的完整间隔（反 WAF 安全第一）；连续干净响应才逐档提速，
+            任何验证码挑战/封禁/失败立即回满间隔重新起步。提速上限 = 该档位下限 × 规则间隔
+            （礼貌 100% / 均衡 45% / 极速 30%），对严格站点选「礼貌模式」即完全等价旧版行为。
+            同时配合 SQLite WAL 写入提速（多线程章节落库不再串行 fsync）。
+          </p>
+        </CardContent>
+      </Card>
+
       {/* 内容清洗 */}
       <Card>
         <CardHeader>

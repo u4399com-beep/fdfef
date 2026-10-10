@@ -3,6 +3,13 @@ import fs from 'node:fs'
 import path from 'node:path'
 import { db } from '@/lib/db'
 import { DEFAULT_DOWNLOAD, mergeCleaning } from '@/lib/collect-types'
+import {
+  COLLECT_SPEEDS,
+  invalidateCollectSpeedCache,
+  loadCollectSpeed,
+  type CollectSpeed,
+} from '@/lib/collect/system-config'
+import { applyCollectSpeed } from '@/lib/collect/fetcher'
 import { json, badRequest, isPlainObject, readJson } from '../_lib/http'
 import { requireAuth } from '@/lib/auth'
 
@@ -44,7 +51,8 @@ export async function GET(req: NextRequest) {
   try {
     if (row?.download) download = { ...download, ...JSON.parse(row.download) }
   } catch { /* keep defaults */ }
-  return json({ cleaning: mergeCleaning(row?.cleaning), download, engines: engineStatus() })
+  const collect = { speed: await loadCollectSpeed() }
+  return json({ cleaning: mergeCleaning(row?.cleaning), download, collect, engines: engineStatus() })
 }
 
 /** 保存系统配置 */
@@ -60,15 +68,29 @@ export async function PUT(req: NextRequest) {
   if (body.download !== undefined && !isPlainObject(body.download)) {
     return badRequest('download 必须为对象')
   }
+  if (body.collect !== undefined) {
+    if (!isPlainObject(body.collect)) return badRequest('collect 必须为对象')
+    const speed = (body.collect as { speed?: unknown }).speed
+    if (!COLLECT_SPEEDS.includes(speed as CollectSpeed)) {
+      return badRequest('collect.speed 必须为 polite | balanced | fast')
+    }
+  }
   const data = {
     ...(body.cleaning !== undefined ? { cleaning: JSON.stringify(body.cleaning) } : {}),
     ...(body.download !== undefined ? { download: JSON.stringify(body.download) } : {}),
+    ...(body.collect !== undefined ? { collect: JSON.stringify(body.collect) } : {}),
   }
-  if (Object.keys(data).length === 0) return badRequest('请提供 cleaning 或 download 配置')
+  if (Object.keys(data).length === 0) return badRequest('请提供 cleaning / download / collect 配置')
   await db.systemConfig.upsert({
     where: { id: 'main' },
     create: { id: 'main', ...data },
     update: data,
   })
+  if (body.collect !== undefined) {
+    const speed = ((body.collect as { speed?: unknown }).speed ?? '') as CollectSpeed
+    // 立即生效：档位缓存失效 + 采集器内存下限直接切换，不等 15s 刷新窗口
+    invalidateCollectSpeedCache()
+    applyCollectSpeed(speed)
+  }
   return json({ ok: true })
 }
