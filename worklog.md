@@ -1254,3 +1254,22 @@ Stage Summary:
 - 章节采集链路三层提速落地并可证：自适应巡航 2.23×（147 章实测）+ SQLite WAL 10.2×（写事务微基准）+ 分页冗余等待消除；三档位 UI 可控，礼貌档=旧行为零风险回退。
 - 7 站 28 规则回归 7/7，新增两类突破样本：cunshu 新部署 WAF 自动攻克、dwxwc VBWI 手动会话破译+cookie 注入、biqutu 二次改版规则重写。
 - 新基建：tests/sim-throttle-pacing.ts（节流机制回归）、tests/bench-collect-speed.ts（任意站点 A/B 提速基准）、SystemConfig.collect 档位通道。
+
+---
+Task ID: R22-clean-fields
+Agent: Z.ai Code (主控)
+Task: ①噪声清洗范围覆盖所有获取的数据 ②参考关关采集器逻辑优化采集能力与速度
+
+Work Log:
+- 【重复实现发现与采纳决策】本地独立实现 DomainThrottle 自适应限速（成功渐进收窄/受阻回退/wafLock 硬锁定）并完成 14 断言测试后，推送时发现远程 main 已有 754f27f「自适应巡航」（同机制+SystemConfig.collect.speed 三档位+设置页+2.23× 实测）——rebase 冲突评估后采纳远程版本（更完整且已实测），放弃本地节流实现；远程未改动的 cleaner/testing/pipeline（基线核验：远程最后提交分别为 11609fb/28b4606/5408cbf）安全承载本轮独有改动
+- 【字段级清洗层（诉求1核心）】cleaner.ts 新增 cleanFieldText(kind)：不可见字符剥离→实体解码兜底（regex 提取路径不做实体解码）→行内 URL/裸域名剥离（复用正文清洗同源正则）→全角空格/空白折叠→kind 特定词缀循环剥离（至稳定防叠缀）→边缘连接符清理→清洗为空守卫回退原值；七类 kind：bookTitle（《》包裹+站名家族+无弹窗话术）/author/category/status/keywords（保守仅基础清洗）/latestChapter（「最新章节：」前缀+词缀）/chapterTitle（分页残留 (2/3)、（第N页）、_N+词缀）
+- 【管线全覆盖】collectBookInfo：书名/作者/分类/状态/最新章节全部清洗先行，后续 normalizeBookMeta 规整/智能分类/智能完结/唯一键/下拉词全部使用干净值；collectTocEntries：章节标题清洗提前到 extractChapterNumber 序号提取/reorder 排序键/byTitle 去重键之前——脏标题不再污染乱序重排与去重，且与正文清洗的章首识别上下文（Chapter.title）一致；collectBookInfo 关键词逐 token 清洗后重组
+- 【测试对齐】testing.ts testBook/testToc 与管线同规则同顺序（清洗→规整→智能判定），测试预览即入库结果原则保持
+- 【关关式增强（与远程提速互补）】pipeline 内容阶段：①章节正文失败/空文本自动重试（3 次尝试、1.2s×attempt+抖动退避、stoppableSleep 可中断，与远程 fetchPage 内部镜像轮换/熔断分层不冲突）②内容线程数书级配置翻倍（上限 8，同域速率由 domainThrottle 巡航兜底，单站点不提速、多站点混合任务并行受益）③字数<80 低字数预警（残缺页/反爬半页运维可见，数据照常入库）
+- 【验证】tests/test-cleaner-fields.ts 35 断言全绿（书名/章节标题/最新章节清洗、保守字段不误伤、守卫回退、破折号数字不误剥、修订标记保留）；tests/verify-e2e-r22.ts 10 项全绿（mock 全链路规则测试零破坏+连抓冒烟）；回归 test-cleaner-v2 27/27、远程 sim-throttle-pacing 全过；tsc 0（prisma generate 补 CollectSchedule Client 后）、lint 通过；UI 实测：规则测试「书籍信息解析成功」108ms 字段干净、设置页清洗配置区/引擎状态卡正常、390px 移动端无横向溢出
+
+Stage Summary:
+- 噪声清洗范围从「正文+简介」扩展到全部采集字段（书名/作者/分类/状态/关键词/最新章节/章节标题），标题类字段词缀剥离、非标题字段保守基础清洗、清洗为空守卫回退
+- 章节标题入清洗管线连带收益：序号提取/乱序重排/去重键/章首识别上下文全线使用干净值
+- 关关式能力补齐（相对远程 754f27f 三层提速之外）：章节级失败自动重试、内容阶段并行度翻倍、低字数完整性预警
+- 节流提速统一采纳远程自适应巡航+速度档位（本地重复实现已弃，备份分支 r22-backup）

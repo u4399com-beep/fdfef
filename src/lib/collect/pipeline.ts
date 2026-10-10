@@ -17,6 +17,7 @@ import { interruptibleSleep, runRandomPool, taskLog, taskManager } from './task-
 import type { TaskRuntime } from './task-manager'
 import { fetchCleanedContent, fetchPaginated } from './paginated'
 import { loadSystemCleaningRaw } from './system-config'
+import { cleanFieldText } from './cleaner'
 
 // ============================================================
 // 采集管线：列表页 → 书籍信息页 → 章节目录页 → 章节内容页
@@ -69,7 +70,11 @@ async function collectTocEntries(
     pages[i] = { url: page.url, html: '' } // 及时释放已解析页 HTML（50 页上限 × MB 级页面，多线程叠加可观）
     for (const e of entries) {
       if (!e.title && !e.url) continue
-      all.push({ title: e.title || e.url, url: e.url, no: extractChapterNumber(e.title, rule.reorder?.numberPattern) })
+      // 字段级清洗提前到排序/去重之前：脏标题（「第12章 xxx_笔趣阁(2/3)」）会污染
+      // extractChapterNumber 的序号提取、reorder 排序键与 byTitle 去重键；
+      // 清洗后标题与正文清洗的章首识别上下文（Chapter.title）也保持一致
+      const title = cleanFieldText(e.title || e.url, 'chapterTitle') || e.title || e.url
+      all.push({ title, url: e.url, no: extractChapterNumber(title, rule.reorder?.numberPattern) })
     }
   }
 
@@ -138,14 +143,16 @@ async function collectBookInfo(
   const res = await fetchPage(bookUrl, rule)
   const fields = rule.fields ?? ({} as BookRuleConfig['fields'])
   const parsed = parseFields(res.html, fields as Record<string, FieldSelector | undefined>, res.finalUrl)
-  const parsedTitle = parsed.title?.trim()
+  // 字段级噪声清洗（范围覆盖所有采集字段）：书名/作者/分类/状态/最新章节均过 cleanFieldText
+  // （不可见字符/URL token/推广词缀剥离）；清洗先行，后续规整/智能分类/去重全部使用干净值
+  const parsedTitle = cleanFieldText(parsed.title ?? '', 'bookTitle')
   if (!parsedTitle) return null
 
   // 标题规整（保守行尾剥离）：提取「作者：xxx」后缀回填作者、剥离尾部章节范围数字。
   // 规整后的标题/作者同时用于唯一键、智能分类、下拉词，避免脏后缀分裂去重、污染关键词
   // 作者字段规整：剥离「作者：/著：」前缀（Legado 系书源 author 字段标准形态，
   // 如 .booktag a 文本即「作者：XXX」；og:novel:author 等结构化来源天然无前缀不受影响）
-  const rawAuthor = (parsed.author ?? '').trim().replace(/^(?:作者|作\s*者|著|撰写)\s*[:：]\s*/, '')
+  const rawAuthor = cleanFieldText(parsed.author ?? '', 'author').replace(/^(?:作者|作\s*者|著|撰写)\s*[:：]\s*/, '')
   const norm = normalizeBookMeta(parsedTitle, rawAuthor, rule.titleNormalize)
   const title = norm.title
   const author = norm.author
@@ -154,16 +161,16 @@ async function collectBookInfo(
   const { cleanIntro } = await import('./cleaner')
   const intro = parsed.intro ? cleanIntro(parsed.intro, cleaningCfg, rule.extraAdPatterns ?? []) : ''
 
-  // 关键词规范化
+  // 关键词规范化（逐个字段清洗后再重组：URL/不可见字符 token 不入关键词）
   const keywords = (parsed.keywords ?? '')
     .split(/[,，、|\s]+/)
-    .map((k) => k.trim())
+    .map((k) => cleanFieldText(k, 'keywords'))
     .filter(Boolean)
     .slice(0, 12)
     .join(',')
 
   // 智能分类
-  let category = (parsed.category ?? '').trim()
+  let category = cleanFieldText(parsed.category ?? '', 'category')
   let categoryScore = category ? 0.9 : 0
   if (opts.smartCategory || !category) {
     const match = smartMatchCategory({ title, intro, keywords: keywords.split(',').filter(Boolean), sourceCategory: category })
@@ -173,13 +180,16 @@ async function collectBookInfo(
     }
   }
 
-  // 智能完结
+  // 智能完结（status/latestChapter 均用清洗后值：detectCompletion 依据「大结局/番外」等
+  // 尾部特征判断完结态，推广词缀残留会干扰判断）
+  const statusRaw = cleanFieldText(parsed.status ?? '', 'status')
+  const latestRaw = cleanFieldText(parsed.latestChapter ?? '', 'latestChapter')
   const completion = detectCompletion({
-    status: parsed.status,
-    latestChapter: parsed.latestChapter,
+    status: statusRaw,
+    latestChapter: latestRaw,
     intro,
   })
-  const status = opts.smartCompletion || !parsed.status ? completion.status : parsed.status.includes('完') ? '完结' : '连载'
+  const status = opts.smartCompletion || !statusRaw ? completion.status : statusRaw.includes('完') ? '完结' : '连载'
   const statusConfidence = opts.smartCompletion || !parsed.status ? completion.confidence : 0.9
   const statusSource = completion.source
 
@@ -214,7 +224,7 @@ async function collectBookInfo(
     status,
     statusConfidence,
     statusSource,
-    latestChapter: (parsed.latestChapter ?? '').trim(),
+    latestChapter: latestRaw,
     suggestKeywords,
     tocUrl,
     finalUrl: res.finalUrl,
@@ -696,28 +706,67 @@ export async function executeTask(taskId: string): Promise<void> {
           let contentDone = 0
           // 内容阶段实时回写 stats/进度（长书采集时 UI 不再长时间停留在旧阶段/旧统计）
           await writeStats(`正文采集《${info.title}》`, -1)
+          // 关关式提速：章节页小而快，内容阶段线程数在书级配置上放大一倍（上限 8）。
+          // 同域实际速率仍由 fetcher domainThrottle 节流兜底（gap 恒定、请求同域串行化），
+          // 单站点任务不提速；多站点混合任务 / 章节URL跨域（镜像）时并行度受益。
+          const contentThreadMin = Math.min(8, Math.max(1, task.threadMin * 2))
+          const contentThreadMax = Math.min(8, Math.max(contentThreadMin, task.threadMax * 2))
+          if (contentThreadMax > task.threadMax) {
+            await taskLog(taskId, 'info', `内容阶段线程提升：${task.threadMin}~${task.threadMax} → ${contentThreadMin}~${contentThreadMax}（章节页轻量，同域速率仍由节流器兜底）`)
+          }
           await runRandomPool({
             items: todo,
             taskId,
-            threadMin: Math.max(1, task.threadMin),
-            threadMax: Math.max(1, task.threadMax),
+            threadMin: contentThreadMin,
+            threadMax: contentThreadMax,
             intervalMin: task.intervalMin,
             intervalMax: task.intervalMax,
             process: async (chapter) => {
               try {
-                // 书名/章节标题透传清洗器：章首混入的书名行/标题行冗余（Chapter.title 已存）可被识别清除
-                const { text } = await fetchCleanedContent(chapter.url, contentCfg, cleaningCfg, {
-                  bookTitle: info.title,
-                  chapterTitle: chapter.title,
-                })
+                // 关关式失败自动重试：网络错误/正文为空均按「瞬时失败」处理，
+                // 指数退避重试（1.2s → 2.4s，叠加随机抖动），可被暂停/停止打断。
+                // 镜像轮换/熔断器由 fetchPage 内部处理，这里只管管线级重试。
+                const MAX_ATTEMPTS = 3
+                let text = ''
+                for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
+                  try {
+                    // 书名/章节标题透传清洗器：章首混入的书名行/标题行冗余（Chapter.title 已存）可被识别清除
+                    const r = await fetchCleanedContent(chapter.url, contentCfg, cleaningCfg, {
+                      bookTitle: info.title,
+                      chapterTitle: chapter.title,
+                    })
+                    text = r.text
+                  } catch (e) {
+                    if (attempt === MAX_ATTEMPTS) {
+                      throw e
+                    }
+                    if (attempt === 1) {
+                      await taskLog(taskId, 'info', `正文抓取异常（第 1 次，将重试）《${info.title}》${chapter.title}：${e instanceof Error ? e.message : String(e)}`)
+                    }
+                    await stoppableSleep(rt, 1200 * attempt + randomInt(0, 900))
+                    continue
+                  }
+                  if (text) break
+                  if (attempt < MAX_ATTEMPTS) {
+                    // 空文本：站点临时拦截/选择器半失配常见，退避后重试往往能拿到
+                    if (attempt === 1) {
+                      await taskLog(taskId, 'info', `正文为空（第 1 次，将重试）《${info.title}》${chapter.title}`)
+                    }
+                    await stoppableSleep(rt, 1200 * attempt + randomInt(0, 900))
+                  }
+                }
                 if (!text) {
-                  await taskLog(taskId, 'warn', `正文为空《${info.title}》${chapter.title}`)
+                  await taskLog(taskId, 'warn', `正文为空（已重试 ${MAX_ATTEMPTS - 1} 次，可能被目标站拦截或选择器失配）《${info.title}》${chapter.title}`)
                   stats.errors++
                   return
                 }
                 const data: { content?: string; contentLocal?: string; collected: boolean; wordCount: number } = {
                   collected: true,
                   wordCount: text.replace(/\s/g, '').length,
+                }
+                // 低字数预警（关关式完整性校验）：疑似残缺页/反爬半页，数据照常入库但运维可见
+                if (data.wordCount < 80) {
+                  await taskLog(taskId, 'warn', `正文字数异常偏低（${data.wordCount} 字，疑似残缺页/反爬半页）《${info.title}》${chapter.title}`)
                 }
                 if (task.storageMode === 'db' || task.storageMode === 'both') data.content = text
                 if (task.storageMode === 'txt' || task.storageMode === 'both') {

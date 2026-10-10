@@ -346,3 +346,88 @@ export function cleanIntro(rawHtml: string, cfg: CleaningConfig, extraAdPatterns
   // 按码点截断，避免把增补平面字符切成孤立代理项进入 JSON 响应
   return Array.from(result.text).slice(0, 3000).join('')
 }
+
+// ============================================================
+// 字段级噪声清洗（短文本元数据）：
+// 噪声清洗范围此前只覆盖正文与简介，书名/作者/分类/最新章节/章节标题等
+// 短字段仍可能混入不可见字符、URL token、推广词缀（「书名-笔趣阁无弹窗」、
+// 「第12章 xxx(2/3)」）——脏标题还会连带污染去重键与正文清洗的章首识别上下文。
+// 与正文清洗同源复用 URL/域名剥离正则，规则均为「短文本中出现即噪声」级别。
+// ============================================================
+
+export type MetaFieldKind =
+  | 'bookTitle' // 书名：《》包裹剥离 + 尾部站名/话术词缀
+  | 'author' // 作者：仅基础清洗（URL/不可见字符/空白），词缀不适用
+  | 'category' // 分类：仅基础清洗（分段/映射由 matcher 负责）
+  | 'status' // 状态：仅基础清洗（连载/完结判定由 matcher 负责）
+  | 'keywords' // 关键词：仅基础清洗（管线按分隔符拆分后逐个清洗）
+  | 'latestChapter' // 最新章节：前缀「最新章节：」+ 尾部词缀 + 页码残留
+  | 'chapterTitle' // 章节标题：尾部站名/话术词缀 + 分页残留（序号在前不受影响）
+
+/**
+ * 尾部推广词缀（强特征，连同前置连接符一并吞掉）：
+ * 站名家族（笔趣阁/小说网/文学网…）、无弹窗话术、阅读话术、最新章节、全本/TXT 下载。
+ * 仅匹配字符串尾部——「回到过去当学阀」类正常标题不受影响。
+ */
+const META_SUFFIX_JUNK_RES: RegExp[] = [
+  /[-_—·~～\s]*(?:无弹窗|无广告)(?:广告)?(?:全文|免费|在线)?(?:阅读)?(?:最新章节)?$/i,
+  /[-_—·~～\s]*[一-龥]{0,6}(?:小说网|文学网|看书网|读书网|章节网|小说网)(?:最新章节)?$/,
+  /[-_—·~～\s]*笔趣阁(?:最新章节)?$/,
+  /[-_—·~～\s]*(?:全文|在线|免费|完整版)(?:阅读|读)$/,
+  /[-_—·~～\s]*最新(?:章节|更新)(?:列表|目录)?$/,
+  /[-_—·~～\s]*(?:全本|完本)(?:T?XT)?(?:下载|阅读)?$/i,
+  /[-_—·~～\s]*T?XT(?:全集|下载|电子书|全集下载)?$/i,
+  /[-_—·~～\s]*(?:章节目录|目录|正文卷)$/,
+  /[-_—·~～\s]*[（(]?(?:全书完|全书完本|正文完|大结局完结)[)）]?$/,
+]
+
+/** 章节标题尾部分页残留：「(2/3)」「（第2/3页）」「(第2页)」「_2」（下划线形态才剥，破折号数字是标题正文） */
+const CHAPTER_PAGE_SUFFIX_RES: RegExp[] = [
+  /[（(]\s*第?\s*[0-9０-９]{1,4}\s*[/／]\s*[0-9０-９]{1,4}\s*页?\s*[)）]$/,
+  /[（(]\s*第\s*[0-9０-９]{1,4}\s*页\s*[)）]$/,
+  /_{1,2}[0-9０-９]{1,3}$/,
+]
+
+/** 最新章节字段前缀：og:meta/选择器文本偶带「最新章节：」残留 */
+const META_LATEST_PREFIX_RE = /^(?:本书)?(?:最新章节|最新更新|最新)[:：]\s*/
+
+/** 前导/尾随连接符清理（词缀剥离后的残壳）：[0]=前导 [1]=尾随 */
+const META_EDGE_CONNECTOR_RES = [/^[-_—·~～||]+\s*/, /\s*[-_—·~～|]+$/]
+
+/**
+ * 短文本字段清洗：不可见字符剥离 → 实体解码兜底（regex 提取路径不做实体解码）→
+ * URL/裸域名剥离（元数据字段中任何链接/域名 token 均为推广）→ 全角空格/空白折叠 →
+ * kind 特定词缀循环剥离（至稳定，防「-笔趣阁-无弹窗」叠缀）→ 边缘连接符清理。
+ * 守卫：清洗结果为空时回退原值（宁可保留脏字段也不丢字段）。
+ */
+export function cleanFieldText(raw: string, kind: MetaFieldKind): string {
+  if (!raw) return ''
+  const original = raw.trim()
+  let s = decodeEntities(original)
+  s = s.replace(/[\u200b-\u200f\u2060\ufeff]/g, '')
+  s = s.replace(INLINE_URL_RE, '').replace(BARE_DOMAIN_RE, '')
+  s = s.replace(/[\u3000\u00a0]/g, ' ').replace(/\s+/g, ' ').trim()
+  if (!s) return original
+
+  // kind 特定规则：词缀剥离仅适用于标题类字段（作者/分类/状态/关键词保守不动）
+  const applySuffix = kind === 'bookTitle' || kind === 'latestChapter' || kind === 'chapterTitle'
+  const pageRes = kind === 'chapterTitle' || kind === 'latestChapter' ? CHAPTER_PAGE_SUFFIX_RES : []
+  for (let round = 0; round < 3; round++) {
+    const before = s
+    if (kind === 'latestChapter') s = s.replace(META_LATEST_PREFIX_RE, '')
+    if (applySuffix) {
+      for (const re of META_SUFFIX_JUNK_RES) s = s.replace(re, '')
+    }
+    for (const re of pageRes) s = s.replace(re, '')
+    if (s === before) break
+  }
+  s = s.replace(META_EDGE_CONNECTOR_RES[0], '').replace(META_EDGE_CONNECTOR_RES[1], '').trim()
+
+  // 书名整串《》包裹剥离（列表/og:title 常见形态；剥后非空才采用）
+  if (kind === 'bookTitle') {
+    const m = /^《([^》]{1,120})》$/.exec(s)
+    if (m && m[1].trim()) s = m[1].trim()
+  }
+
+  return s || original
+}

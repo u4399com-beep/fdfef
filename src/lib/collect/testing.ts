@@ -2,7 +2,7 @@ import type { BookRuleConfig, ContentRuleConfig, FieldSelector, ListRuleConfig, 
 import { mergeCleaning, normalizeBookMeta } from '../collect-types'
 import { fetchPage } from './fetcher'
 import { parseFields, parseListEntries, resolveUrl, selectValue } from './parser'
-import { cleanIntro } from './cleaner'
+import { cleanFieldText, cleanIntro } from './cleaner'
 import { loadSystemCleaningRaw } from './system-config'
 import { detectCompletion, extractChapterNumber, smartMatchCategory } from './matcher'
 import { hashText } from './storage'
@@ -72,27 +72,31 @@ async function testBook(cfg: BookRuleConfig, url: string, started: number): Prom
   if (!cfg?.fields?.title?.expr) return { ok: false, message: '书名选择器不能为空' }
   const res = await fetchPage(url, cfg)
   const parsed = parseFields(res.html, cfg.fields as Record<string, FieldSelector | undefined>, res.finalUrl)
-  const parsedTitle = parsed.title?.trim()
+  // 与采集管线 collectBookInfo 同规则：字段级噪声清洗先行（URL/不可见字符/推广词缀），
+  // 再做标题规整（作者后缀回填/章节范围剥离），保证测试预览即入库结果
+  const parsedTitle = cleanFieldText(parsed.title ?? '', 'bookTitle')
   if (!parsedTitle) return { ok: false, message: '书名解析为空，请检查书名选择器', elapsedMs: Date.now() - started }
 
-  // 与采集管线 collectBookInfo 同规则：标题规整（作者后缀回填/章节范围剥离），保证测试预览即入库结果
-  const norm = normalizeBookMeta(parsedTitle, (parsed.author ?? '').trim(), cfg.titleNormalize)
+  const norm = normalizeBookMeta(parsedTitle, cleanFieldText(parsed.author ?? '', 'author'), cfg.titleNormalize)
   const title = norm.title
 
   const intro = parsed.intro ? cleanIntro(parsed.intro, mergeCleaning(await loadSystemCleaningRaw()), cfg.extraAdPatterns ?? []) : ''
   const keywords = (parsed.keywords ?? '')
     .split(/[,，、|\s]+/)
-    .map((k) => k.trim())
+    .map((k) => cleanFieldText(k, 'keywords'))
     .filter(Boolean)
     .slice(0, 12)
     .join(',')
+  const category = cleanFieldText(parsed.category ?? '', 'category')
+  const statusRaw = cleanFieldText(parsed.status ?? '', 'status')
+  const latestRaw = cleanFieldText(parsed.latestChapter ?? '', 'latestChapter')
   const match = smartMatchCategory({
     title,
     intro,
     keywords: keywords.split(',').filter(Boolean),
-    sourceCategory: parsed.category,
+    sourceCategory: category,
   })
-  const completion = detectCompletion({ status: parsed.status, latestChapter: parsed.latestChapter, intro })
+  const completion = detectCompletion({ status: statusRaw, latestChapter: latestRaw, intro })
   let coverResolved = parsed.cover ?? ''
   if (coverResolved) coverResolved = resolveUrl(coverResolved, res.finalUrl)
 
@@ -115,10 +119,10 @@ async function testBook(cfg: BookRuleConfig, url: string, started: number): Prom
       fields: {
         书名: title,
         作者: norm.author,
-        分类: parsed.category ?? '',
+        分类: category,
         关键词: keywords,
-        状态: parsed.status ?? '',
-        最新章节: parsed.latestChapter ?? '',
+        状态: statusRaw,
+        最新章节: latestRaw,
         封面: coverResolved,
         简介: intro.slice(0, 300),
       },
@@ -136,7 +140,10 @@ async function testToc(cfg: TocRuleConfig, url: string, started: number): Promis
   for (const page of pages) {
     for (const e of parseListEntries(page.html, cfg.items, page.url)) {
       if (!e.title && !e.url) continue
-      all.push({ title: e.title || e.url, url: e.url, no: extractChapterNumber(e.title, cfg.reorder?.numberPattern) })
+      // 与管线 collectTocEntries 同规则：章节标题字段级清洗先行（推广词缀/分页残留），
+      // 序号提取/乱序判定/去重均基于干净标题
+      const title = cleanFieldText(e.title || e.url, 'chapterTitle') || e.title || e.url
+      all.push({ title, url: e.url, no: extractChapterNumber(title, cfg.reorder?.numberPattern) })
     }
   }
   const numbers = all.map((e) => e.no).filter((n) => n >= 0)
