@@ -102,6 +102,50 @@ const BARE_DOMAIN_RE =
   /(?<![a-zA-Z0-9.\-])(?:[a-zA-Z0-9](?:[a-zA-Z0-9-]*[a-zA-Z0-9])?\.)+(?:com|net|cc|org|info|la|me|top|xyz|vip|site|book|io|cn|app|tv|biz|club|fun|live|shop|link|icu|online|store|art|pw)(?![a-zA-Z0-9-])(?:\/[^\s]*)?/gi
 
 /**
+ * 混淆域名 token（scrambled domain）剥离：
+ * 站点为规避裸域名剥离，把推广域名打散成「字母间穿插反引号/变音符/中点/斜杠/问号」
+ * 的形态，如「`r¨c!y·x`s\.?c/o?m?」（去混淆 = rcyxs.com）。中文正文中半角符号
+ * 成串夹在字母之间本身就是噪声特征，判定三要件同时成立才剥离（严防误伤）：
+ * ① token 仅由字母数字与混淆符构成；② 字母 ≥6 且混淆符 ≥2；
+ * ③ 去混淆后以常见 TLD 结尾（与 BARE_DOMAIN_RE 同表）。
+ */
+const SCRAMBLE_CLASS = '!\u0060\u00a8\u00b7\\\\./?*_~^|\u00a6\u2020\u2021\u2030\uff65'
+const SCRAMBLED_DOMAIN_RE = new RegExp(
+  `(?<![a-zA-Z0-9${SCRAMBLE_CLASS}])[${SCRAMBLE_CLASS}]{0,2}[a-zA-Z0-9](?:[${SCRAMBLE_CLASS}]{1,3}[a-zA-Z0-9]){4,}[${SCRAMBLE_CLASS}]{0,2}(?![a-zA-Z0-9])`,
+  'g'
+)
+const SCRAMBLE_CHARS_RE = new RegExp(`[${SCRAMBLE_CLASS}]`, 'g')
+const TLD_TAIL_RE =
+  /(?:com|net|cc|org|info|la|me|top|xyz|vip|site|book|io|cn|app|tv|biz|club|fun|live|shop|link|icu|online|store|art|pw)$/i
+
+function isScrambledDomainToken(token: string): boolean {
+  const letters = token.replace(SCRAMBLE_CHARS_RE, '')
+  if (letters.length < 6) return false
+  const scrambleCount = token.length - letters.length
+  if (scrambleCount < 2) return false
+  return TLD_TAIL_RE.test(letters)
+}
+
+/** 剥离混淆域名 token（供正文行级清洗与元数据短字段共用） */
+export function stripScrambledDomains(s: string): string {
+  return s.replace(SCRAMBLED_DOMAIN_RE, (tok) => (isScrambledDomainToken(tok) ? '' : tok))
+}
+
+/**
+ * 结构性实体残渣剥离（站方模板转义故障，dwxwc og:description 实测）：
+ * 站点把分隔符写成 `&amp;;`（解码后 `&;` 连串）、把 `</>` 写成 `&lt;/&gt;`。
+ * 解码后残留的这两类片段在中文元数据/正文中无合法语义，折叠为空格。
+ */
+const ENTITY_JUNK_RES = [/(?:&\s*;)+/g, /<\/>/g]
+/** 尾随半截实体（站方 meta 按长度截断把 &amp; 切成 &am）：仅端部剥离，中段保留防误伤 */
+const TRAILING_ENTITY_RE = /\s*&[a-zA-Z0-9#]{0,8}$/
+
+export function stripEntityJunk(s: string): string {
+  for (const re of ENTITY_JUNK_RES) s = s.replace(re, ' ')
+  return s.replace(TRAILING_ENTITY_RE, '').trimEnd()
+}
+
+/**
  * 章首结构性垃圾模式（removeHeaderJunk，仅章首 8 行内生效）：
  * - 纯序号标题行（「第1段」）：章节标题冗余混入（Chapter.title 已存标题，正文行删除无损）
  * - 「小说」「简介：」「正文：」独立行：站点模板残留
@@ -259,11 +303,8 @@ export function cleanContent(
     let urlStripped = false
     if (stripUrls && cleaned) {
       const before = cleaned
-      cleaned = cleaned
-        .replace(INLINE_URL_RE, '')
-        .replace(BARE_DOMAIN_RE, '')
-        .replace(/[ \t]{2,}/g, ' ')
-        .trim()
+      cleaned = stripScrambledDomains(cleaned.replace(INLINE_URL_RE, '').replace(BARE_DOMAIN_RE, ''))
+      cleaned = cleaned.replace(/[ \t]{2,}/g, ' ').trim()
       urlStripped = cleaned !== before
     }
 
@@ -343,8 +384,10 @@ export function cleanIntro(rawHtml: string, cfg: CleaningConfig, extraAdPatterns
   // 模板转义残留（如 17mb 系简介字段把换行写成字面 \r\n）：还原为真实换行再按行清洗
   const normalized = rawHtml.replace(/\\r\\n|\\n|\\r/g, '\n')
   const result = cleanContent(normalized, { ...cfg, minParagraphLength: 0 }, extraAdPatterns)
+  // 实体解码后的站方模板残渣（&; 连串 / </> 片段）在解码后才显现，故在清洗后剥离
+  const text = stripEntityJunk(result.text)
   // 按码点截断，避免把增补平面字符切成孤立代理项进入 JSON 响应
-  return Array.from(result.text).slice(0, 3000).join('')
+  return Array.from(text).slice(0, 3000).join('')
 }
 
 // ============================================================
@@ -406,6 +449,8 @@ export function cleanFieldText(raw: string, kind: MetaFieldKind): string {
   let s = decodeEntities(original)
   s = s.replace(/[\u200b-\u200f\u2060\ufeff]/g, '')
   s = s.replace(INLINE_URL_RE, '').replace(BARE_DOMAIN_RE, '')
+  s = stripScrambledDomains(s)
+  s = stripEntityJunk(s)
   s = s.replace(/[\u3000\u00a0]/g, ' ').replace(/\s+/g, ' ').trim()
   if (!s) return original
 

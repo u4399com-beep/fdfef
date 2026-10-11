@@ -3,7 +3,8 @@
  * 噪声清洗范围覆盖所有采集字段——书名/作者/分类/状态/关键词/最新章节/章节标题。
  * 运行：bun tests/test-cleaner-fields.ts
  */
-import { cleanFieldText } from '../src/lib/collect/cleaner'
+import { cleanContent, cleanFieldText, cleanIntro } from '../src/lib/collect/cleaner'
+import type { CleaningConfig } from '../src/lib/collect-types'
 
 let pass = 0
 let fail = 0
@@ -62,6 +63,38 @@ console.log('— 守卫 —')
 expect('清洗为空回退原值', cleanFieldText('https://t.co/abc', 'bookTitle'), 'https://t.co/abc')
 expect('空串', cleanFieldText('', 'bookTitle'), '')
 expect('纯空白', cleanFieldText('   ', 'bookTitle'), '')
+
+console.log('— 混淆域名 token（scrambled domain）——dwxwc 实战样本 —')
+const SCRAM = '`r\u00a8c!y\u00b7x`s\\.?c/o?m?'
+expect('字段：章节标题含混淆域名', cleanFieldText('第一章 御马侍童' + SCRAM, 'chapterTitle'), '第一章 御马侍童')
+expect('字段：书名含混淆域名', cleanFieldText('斗破苍穹' + SCRAM, 'bookTitle'), '斗破苍穹')
+expect('字段：作者含混淆域名', cleanFieldText('天蚕土豆' + SCRAM, 'author'), '天蚕土豆')
+{
+  const html = '<p>' + SCRAM + '</p>'
+  const r = cleanContent(html, {} as CleaningConfig, [])
+  expect('正文：整行混淆域名清空', r.text.trim(), '')
+  const r2 = cleanContent('<p>麦收之月，丹伦王国。' + SCRAM + '</p>', {} as CleaningConfig, [])
+  expect('正文：行内混淆域名剥离保留正文', r2.text.trim(), '麦收之月，丹伦王国。')
+}
+{
+  // 防误伤：字母数不足 / 无 TLD 尾 / 纯数字 / 正常标点组合 均不得剥离
+  const safe = ['他唱了一句 WOW?!', '表达式 x*y*z*a*b 的结果', '圆周率 3.14.15.926', 'U.S.A 简称', 'iPhone15Pro 上市']
+  let allSafe = true
+  for (const t of safe) {
+    if (cleanFieldText(t, 'chapterTitle') !== t) { allSafe = false; console.log('      误伤样本:', JSON.stringify(t), '->', JSON.stringify(cleanFieldText(t, 'chapterTitle'))) }
+  }
+  expect('防误伤：5 类正常文本原样保留', allSafe ? 'OK' : 'BAD', 'OK')
+}
+
+console.log('— 结构性实体残渣（站方模板转义故障）—')
+expect('章节标题含 &; 与 </>', cleanFieldText('第10章 风起&;&;云涌</>时刻', 'chapterTitle'), '第10章 风起 云涌 时刻')
+expect('作者含 &; 连串', cleanFieldText('狂风破浪&;&;', 'author'), '狂风破浪')
+{
+  const og = '《书名》 &amp;;&amp;;婚期将至。&lt;/&gt;&amp;;实则是功高盖主。'
+  const intro = cleanIntro(og, {} as CleaningConfig, [])
+  expect('intro：解码后残渣剥离', intro.includes('&;') || intro.includes('</>') ? 'BAD' : 'OK', 'OK')
+  expect('intro：正文保留', intro.includes('婚期将至') && intro.includes('功高盖主') ? 'OK' : 'BAD', 'OK')
+}
 
 console.log(`\n结果：${pass} 通过，${fail} 失败`)
 if (fail > 0) process.exit(1)

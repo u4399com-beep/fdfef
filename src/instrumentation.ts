@@ -11,10 +11,15 @@
  * - 容错设计：非 bun 运行时/bun:sqlite 不可用/文件缺失一律静默跳过（Prisma 自身仍可用）。
  */
 async function ensureSqliteWal(): Promise<void> {
+  // 变量说明符：阻止打包器把 bun:sqlite / node:* 静态打包进 edge bundle
+  // （edge 静态解析报错会连带 instrumentation 注册失败 → 调度器不启动）
+  const bunSqlite = 'bun:sqlite'
+  const nodeFs = 'node:fs'
+  const nodePath = 'node:path'
   try {
-    const { Database } = await import('bun:sqlite')
-    const fs = await import('node:fs')
-    const path = await import('node:path')
+    const { Database } = await import(bunSqlite)
+    const fs = await import(nodeFs)
+    const path = await import(nodePath)
     const candidates = ['db/custom.db', 'prisma/db/custom.db', 'custom.db'].map((p) => path.resolve(p))
     const dbPath = candidates.find((p) => fs.existsSync(p))
     if (!dbPath) return
@@ -38,7 +43,8 @@ export async function register() {
   if (process.env.NEXT_RUNTIME !== 'nodejs') return
   void ensureSqliteWal()
   try {
-    const { startScheduler } = await import('./lib/collect/scheduler')
+    const schedulerMod = './lib/collect/scheduler'
+    const { startScheduler } = await import(schedulerMod)
     startScheduler()
   } catch (e) {
     console.error('[instrumentation] 循环采集调度器启动失败:', e)

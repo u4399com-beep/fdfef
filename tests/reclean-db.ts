@@ -19,7 +19,7 @@ async function main() {
       const cfg = JSON.parse(r.config) as { extraAdPatterns?: string[] }
       // 以规则名前缀粗略关联：从配置里拿不到域名，用书源 URL 匹配站点名关键字
       const keyword =
-        r.name.includes('存书啦') ? 'cunshu' : r.name.includes('人气完本') ? 'rqwb' : r.name.includes('可乐') ? 'kelexs' : r.name.includes('笔趣阁') ? 'biqutu' : ''
+        r.name.includes('存书啦') ? 'cunshu' : r.name.includes('人气完本') ? 'rqwb' : r.name.includes('可乐') ? 'kelexs' : r.name.includes('笔趣阁') ? 'biqutu' : r.name.includes('大文学无错') ? 'dwxwc' : ''
       if (keyword) ruleByDomain.push({ match: keyword, patterns: cfg.extraAdPatterns ?? [] })
     } catch {
       /* ignore */
@@ -36,7 +36,7 @@ async function main() {
   const sampleAgg = new Map<string, number>()
   for (const book of books) {
     const keyword =
-      book.sourceUrl.includes('cunshu') ? 'cunshu' : book.sourceUrl.includes('rqwb') ? 'rqwb' : book.sourceUrl.includes('kelexs') ? 'kelexs' : book.sourceUrl.includes('biqutu') ? 'biqutu' : ''
+      book.sourceUrl.includes('cunshu') ? 'cunshu' : book.sourceUrl.includes('rqwb') ? 'rqwb' : book.sourceUrl.includes('kelexs') ? 'kelexs' : book.sourceUrl.includes('biqutu') ? 'biqutu' : book.sourceUrl.includes('dwxwc') ? 'dwxwc' : ''
     const extra = ruleByDomain.find((r) => r.match === keyword)?.patterns ?? []
     let bookChanged = 0
     for (const ch of book.chapters) {
